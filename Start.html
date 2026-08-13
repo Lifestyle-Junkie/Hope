@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Holographic Checkbox</title>
+  <!-- Preload intro.html to reduce loading delay -->
+  <link rel="preload" href="intro.html" as="document">
+  <!-- Preload space.png to ensure it's ready -->
+  <link rel="preload" href="space.png" as="image">
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-image: url('window frame.png'); /* PNG background */
+      background-size: cover; /* Scale image to cover entire viewport */
+      background-position: center; /* Center the image */
+      background-repeat: no-repeat; /* Prevent tiling */
+      background-color: #000000; /* Black fill for uncovered areas */
+      overflow: hidden;
+      font-family: 'Arial', sans-serif;
+      position: relative;
+      transition: opacity 0.8s ease; /* Fade-out duration */
+    }
+    body.fade-out {
+      opacity: 0; /* Fade out effect */
+    }
+    .checkbox-container {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 300px;
+      height: 300px;
+      z-index: 10;
+    }
+    .holo-checkbox-input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .holo-checkbox {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      cursor: pointer;
+      transform-style: preserve-3d;
+      perspective: 1000px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .holo-box {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border: 2px solid rgba(0, 162, 255, 0.7); /* Static blue border */
+      border-radius: 12px;
+      background: linear-gradient(to right, rgba(0, 162, 255, 0.1) 1%, transparent 40%, transparent 60%, rgba(0, 162, 255, 0.1) 100%);
+      box-shadow: inset 0 0 10px rgba(0, 162, 255, 0.4), 0 0 9px 3px rgba(0, 162, 255, 0.1); /* Static blue shadow */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+      transform-style: preserve-3d;
+    }
+    .holo-inner {
+      position: absolute;
+      width: 30%;
+      height: 30%;
+      fill: rgba(0, 162, 255, 0.5);
+      opacity: 1;
+      transform: scale(1) rotate(45deg);
+      transition: all 0.3s ease;
+      filter: drop-shadow(0 0 15px rgba(0, 162, 255, 0.8));
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .holo-box {
+      border: 2px solid rgba(0, 255, 136, 0.7); /* Green border when checked */
+      box-shadow: inset 0 0 10px rgba(0, 255, 136, 0.6), 0 0 9px 3px rgba(0, 255, 136, 0.2); /* Green shadow when checked */
+      background: linear-gradient(to right, rgba(0, 255, 136, 0.1) 1%, transparent 40%, transparent 60%, rgba(0, 255, 136, 0.1) 100%);
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .holo-inner {
+      fill: rgba(0, 255, 136, 0.7);
+      filter: drop-shadow(0 0 15px rgba(0, 255, 136, 1));
+      opacity: 1;
+      transform: scale(1) rotate(45deg);
+      animation: logo-spin 5s linear infinite;
+    }
+    @keyframes logo-spin {
+      from {
+        transform: scale(1) rotate(45deg);
+      }
+      to {
+        transform: scale(1) rotate(405deg);
+      }
+    }
+    .corner-accent {
+      position: absolute;
+      width: 15px;
+      height: 15px;
+      border-style: solid;
+      border-width: 2px;
+      border-color: rgba(0, 162, 255, 0.5);
+      transition: all 0.3s ease;
+    }
+    .corner-accent:nth-child(1) {
+      top: -5px;
+      left: -5px;
+      border-right: none;
+      border-bottom: none;
+      border-radius: 5px 0 0 0;
+    }
+    .corner-accent:nth-child(2) {
+      top: -5px;
+      right: -5px;
+      border-left: none;
+      border-bottom: none;
+      border-radius: 0 5px 0 0;
+    }
+    .corner-accent:nth-child(3) {
+      bottom: -5px;
+      left: -5px;
+      border-right: none;
+      border-top: none;
+      border-radius: 0 0 0 5px;
+    }
+    .corner-accent:nth-child(4) {
+      bottom: -5px;
+      right: -5px;
+      border-left: none;
+      border-top: none;
+      border-radius: 0 0 5px 0;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .corner-accent {
+      width: 20px;
+      height: 20px;
+      border-color: rgba(0, 255, 136, 0.7);
+    }
+    .status-text {
+      margin-top: 30px;
+      font-size: 16px;
+      font-weight: 500;
+      color: rgba(0, 162, 255, 0.8);
+      text-shadow: 0 0 5px rgba(0, 162, 255, 0.5);
+      position: relative;
+      transition: all 0.3s ease;
+    }
+    .status-text::before {
+      content: "SYSTEM DEACTIVATED";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .holo-checkbox-input:checked ~ .status-text::before {
+      content: "SYSTEM ACTIVATED";
+      color: rgba(0, 255, 136, 0.8);
+      text-shadow: 0 0 5px rgba(0, 255, 136, 0.5);
+    }
+    .activation-rings {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0; /* Hidden by default */
+      transition: opacity 0.3s ease;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .activation-rings {
+      opacity: 1; /* Visible when checked */
+    }
+    .activation-ring {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 40%;
+      height: 40%;
+      border: 1px solid rgba(0, 255, 136, 0);
+      border-radius: 50%;
+      transform: translate(-50%, -50%) scale(0);
+      opacity: 0;
+      transition: all 0.3s ease;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .activation-ring {
+      animation: ring-expand 2s ease-out forwards;
+      border-color: rgba(0, 255, 136, 0.7);
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .activation-ring:nth-child(1) {
+      animation-delay: 0s;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .activation-ring:nth-child(2) {
+      animation-delay: 0.3s;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .activation-ring:nth-child(3) {
+      animation-delay: 0.6s;
+    }
+    @keyframes ring-expand {
+      0% {
+        transform: translate(-50%, -50%) scale(0);
+        opacity: 1;
+      }
+      100% {
+        transform: translate(-50%, -50%) scale(2.5);
+        opacity: 0;
+      }
+    }
+    .holo-particles {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .holo-particle {
+      position: absolute;
+      background-color: rgba(0, 162, 255, 0.7);
+      border-radius: 50%;
+      width: 3px;
+      height: 3px;
+      opacity: 0;
+      filter: blur(1px);
+      transition: all 0.3s ease;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .holo-particle {
+      background-color: rgba(0, 255, 136, 0.7);
+      animation: particle-float 3s infinite ease-in-out;
+    }
+    .holo-particle:nth-child(1) {
+      top: 20%;
+      left: 30%;
+      animation-delay: 0.1s;
+    }
+    .holo-particle:nth-child(2) {
+      top: 70%;
+      left: 20%;
+      animation-delay: 0.7s;
+    }
+    .holo-particle:nth-child(3) {
+      top: 40%;
+      left: 80%;
+      animation-delay: 1.3s;
+    }
+    .holo-particle:nth-child(4) {
+      top: 60%;
+      left: 60%;
+      animation-delay: 1.9s;
+    }
+    .holo-particle:nth-child(5) {
+      top: 30%;
+      left: 45%;
+      animation-delay: 2.5s;
+    }
+    .holo-particle:nth-child(6) {
+      top: 60%;
+      left: 40%;
+      animation-delay: 3.1s;
+    }
+    @keyframes particle-float {
+      0% {
+        transform: translateY(0) scale(1);
+        opacity: 0;
+      }
+      20% {
+        opacity: 1;
+      }
+      80% {
+        opacity: 1;
+      }
+      100% {
+        transform: translateY(-20px) scale(0);
+        opacity: 0;
+      }
+    }
+    .cube-transform {
+      position: absolute;
+      width: 30%;
+      height: 30%;
+      transform-style: preserve-3d;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .cube-face {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 162, 255, 0.3);
+      border: 1px solid rgba(0, 162, 255, 0.5);
+      box-shadow: 0 0 5px rgba(0, 162, 255, 0.3);
+      transition: all 0.3s ease;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .cube-transform {
+      opacity: 1;
+      animation: cube-rotate 5s infinite linear;
+    }
+    .holo-checkbox-input:checked + .holo-checkbox .cube-face {
+      background-color: rgba(0, 255, 136, 0.3);
+      border-color: rgba(0, 255, 136, 0.5);
+      box-shadow: 0 0 5px rgba(0, 255, 136, 0.3);
+    }
+    .cube-face:nth-child(1) {
+      transform: translateZ(15px);
+    }
+    .cube-face:nth-child(2) {
+      transform: rotateY(180deg) translateZ(15px);
+    }
+    .cube-face:nth-child(3) {
+      transform: rotateY(90deg) translateZ(15px);
+    }
+    .cube-face:nth-child(4) {
+      transform: rotateY(-90deg) translateZ(15px);
+    }
+    .cube-face:nth-child(5) {
+      transform: rotateX(90deg) translateZ(15px);
+    }
+    .cube-face:nth-child(6) {
+      transform: rotateX(-90deg) translateZ(15px);
+    }
+    @keyframes cube-rotate {
+      0% {
+        transform: rotateX(0) rotateY(0) rotateZ(0);
+      }
+      100% {
+        transform: rotateX(360deg) rotateY(360deg) rotateZ(360deg);
+      }
+    }
+    .frequency-spectrum {
+      display: flex;
+      justify-content: center;
+      align-items: flex-end;
+      height: 40px;
+      width: 260px;
+      margin-top: 30px;
+      gap: 3px;
+    }
+    .frequency-bar {
+      width: 4px;
+      height: 5px;
+      background: rgba(0, 162, 255, 0.5);
+      border-radius: 2px 2px 0 0;
+      transition:
+        height 0.3s ease,
+        background 0.3s ease;
+    }
+    .holo-checkbox-input:checked ~ .frequency-spectrum .frequency-bar {
+      background: rgba(0, 255, 136, 0.5);
+      animation: frequency-animation 1.5s infinite ease;
+    }
+    .frequency-bar:nth-child(1) {
+      animation-delay: 0.1s;
+    }
+    .frequency-bar:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    .frequency-bar:nth-child(3) {
+      animation-delay: 0.1s;
+    }
+    .frequency-bar:nth-child(4) {
+      animation-delay: 0.3s;
+    }
+    .frequency-bar:nth-child(5) {
+      animation-delay: 0.5s;
+    }
+    .frequency-bar:nth-child(6) {
+      animation-delay: 0.2s;
+    }
+    .frequency-bar:nth-child(7) {
+      animation-delay: 0.4s;
+    }
+    .frequency-bar:nth-child(8) {
+      animation-delay: 0.1s;
+    }
+    .frequency-bar:nth-child(9) {
+      animation-delay: 0.3s;
+    }
+    .frequency-bar:nth-child(10) {
+      animation-delay: 0.2s;
+    }
+    .frequency-bar:nth-child(11) {
+      animation-delay: 0.5s;
+    }
+    .frequency-bar:nth-child(12) {
+      animation-delay: 0.3s;
+    }
+    .frequency-bar:nth-child(13) {
+      animation-delay: 0.1s;
+    }
+    .frequency-bar:nth-child(14) {
+      animation-delay: 0.4s;
+    }
+    .frequency-bar:nth-child(15) {
+      animation-delay: 0.2s;
+    }
+    .frequency-bar:nth-child(16) {
+      animation-delay: 0.3s;
+    }
+    .frequency-bar:nth-child(17) {
+      animation-delay: 0.1s;
+    }
+    .frequency-bar:nth-child(18) {
+      animation-delay: 0.5s;
+    }
+    .frequency-bar:nth-child(19) {
+      animation-delay: 0.2s;
+    }
+    .frequency-bar:nth-child(20) {
+      animation-delay: 0.4s;
+    }
+    @keyframes frequency-animation {
+      0% {
+        height: 5px;
+      }
+      50% {
+        height: 35px;
+      }
+      100% {
+        height: 5px;
+      }
+    }
+    .data-chips {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      color: white;
+    }
+    .data-chip {
+      position: absolute;
+      padding: 5px 8px;
+      background-color: rgba(0, 24, 55, 0.7);
+      border: 1px solid rgba(0, 162, 255, 0.5);
+      border-radius: 4px;
+      font-size: 10px;
+      opacity: 0;
+      transform: scale(0);
+      transition: all 0.3s ease;
+    }
+    .holo-checkbox-input:checked ~ .data-chips .data-chip {
+      animation: chip-appear 0.5s ease forwards;
+      border-color: rgba(0, 255, 136, 0.5);
+    }
+    @keyframes chip-appear {
+      0% {
+        opacity: 0;
+        transform: scale(0);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+    .data-chip:nth-child(1) {
+      top: -60px;
+      left: 50px;
+      animation-delay: 0.5s;
+    }
+    .data-chip:nth-child(2) {
+      top: 40px;
+      left: -120px;
+      animation-delay: 1.2s;
+    }
+    .data-chip:nth-child(3) {
+      top: 120px;
+      left: 60px;
+      animation-delay: 1.8s;
+    }
+    .data-chip:nth-child(4) {
+      top: 20px;
+      left: 120px;
+      animation-delay: 2.3s;
+    }
+    .data-chip:nth-child(5) {
+      top: 80px;
+      left: -160px;
+      animation-delay: 2.8s;
+    }
+    #hope-chip.flashing {
+      animation: text-flash 0.5s infinite alternate;
+    }
+    @keyframes text-flash {
+      0% {
+        opacity: 1;
+      }
+      100% {
+        opacity: 0.4;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="checkbox-container">
+    <input class="holo-checkbox-input" id="holo-check" type="checkbox" />
+    <label class="holo-checkbox" for="holo-check">
+      <div class="holo-box">
+        <svg class="holo-inner" viewBox="0 0 841.9 595.3" xmlns="http://www.w3.org/2000/svg">
+          <g>
+            <path
+              d="M666.3 296.5c0-32.5-40.7-63.3-103.1-82.4 14.4-63.6 8-114.2-20.2-130.4-6.5-3.8-14.1-5.6-22.4-5.6v22.3c4.6 0 8.3.9 11.4 2.6 13.6 7.8 19.5 37.5 14.9 75.7-1.1 9.4-2.9 19.3-5.1 29.4-19.6-4.8-41-8.5-63.5-10.9-13.5-18.5-27.5-35.3-41.6-50 32.6-30.3 63.2-46.9 84-46.9V78c-27.5 0-63.5 19.6-99.9 53.6-36.4-33.8-72.4-53.2-99.9-53.2v22.3c20.7 0 51.4 16.5 84 46.6-14 14.7-28 31.4-41.3 49.9-22.6 2.4-44 6.1-63.6 11-2.3-10-4-19.7-5.2-29-4.7-38.2 1.1-67.9 14.6-75.8 3-1.8 6.9-2.6 11.5-2.6V78.5c-8.4 0-16 1.8-22.6 5.6-28.1 16.2-34.4 66.7-19.9 130.1-62.2 19.2-102.7 49.9-102.7 82.3 0 32.5 40.7 63.3 103.1 82.4-14.4 63.6-8 114.2 20.2 130.4 6.5 3.8 14.1 5.6 22.5 5.6 27.5 0 63.5-19.6 99.9-53.6 36.4 33.8 72.4 53.2 99.9 53.2 8.4 0 16-1.8 22.6-5.6 28.1-16.2 34.4-66.7 19.9-130.1 62-19.1 102.5-49.9 102.5-82.3zm-130.2-66.7c-3.7 12.9-8.3 26.2-13.5 39.5-4.1-8-8.4-16-13.1-24-4.6-8-9.5-15.8-14.4-23.4 14.2 2.1 27.9 4.7 41 7.9zm-45.8 106.5c-7.8 13.5-15.8 26.3-24.1 38.2-14.9 1.3-30 2-45.2 2-15.1 0-30.2-.7-45-1.9-8.3-11.9-16.4-24.6-24.2-38-7.6-13.1-14.5-26.4-20.8-39.8 6.2-13.4 13.2-26.8 20.7-39.9 7.8-13.5 15.8-26.3 24.1-38.2 14.9-1.3 30-2 45.2-2 15.1 0 30.2.7 45 1.9 8.3 11.9 16.4 24.6 24.2 38 7.6 13.1 14.5 26.4 20.8 39.8-6.3 13.4-13.2 26.8-20.7 39.9zm32.3-13c5.4 13.4 10 26.8 13.8 39.8-13.1 3.2-26.9 5.9-41.2 8 4.9-7.7 9.8-15.6 14.4-23.7 4.6-8 8.9-16.1 13-24.1zM421.2 430c-9.3-9.6-18.6-20.3-27.8-32 9 .4 18.2.7 27.5.7 9.4 0 18.7-.2 27.8-.7-9 11.7-18.3 22.4-27.5 32zm-74.4-58.9c-14.2-2.1-27.9-4.7-41-7.9 3.7-12.9 8.3-26.2 13.5-39.5 4.1 8 8.4 16 13.1 24 4.7 8 9.5 15.8 14.4 23.4zM420.7 163c9.3 9.6 18.6 20.3 27.8 32-9-.4-18.2-.7-27.5-.7-9.4 0-18.7.2-27.8.7 9-11.7 18.3-22.4 27.5-32zm-74 58.9c-4.9 7.7-9.8 15.6-14.4 23.7-4.6 8-8.9 16-13 24-5.4-13.4-10-26.8-13.8-39.8 13.1-3.1 26.9-5.8 41.2-7.9zm-90.5 125.2c-35.4-15.1-58.3-34.9-58.3-50.6 0-15.7 22.9-35.6 58.3-50.6 8.6-3.7 18-7 27.7-10.1 5.7 19.6 13.2 40 22.5 60.9-9.2-20.8-16.6-41.1-22.2-60.6 9.9-3.1 19.3-6.5 28-10.2zM310 490c-13.6-7.8-19.5-37.5-14.9-75.7 1.1-9.4 2.9-19.3 5.1-29.4 19.6 4.8 41 8.5 63.5 10.9 13.5 18.5 27.5 35.3 41.6 50-32.6 30.3-63.2 46.9-84 46.9-4.5-.1-8.3-1-11.3-2.7zm237.2-76.2c4.7 38.2-1.1 67.9-14.6 75.8-3 1.8-6.9 2.6-11.5 2.6-20.7 0-51.4-16.5-84-46.6 14-14.7 28-31.4 41.3-49.9 22.6-2.4 44-6.1 63.6-11 2.3 10.1 4.1 19.8 5.2 29.1zm38.5-66.7c-8.6 3.7-18 7-27.7 10.1-5.7-19.6-13.2-40-22.5-60.9 9.2-20.8 16.6-41.1 22.2-60.6 9.9 3.1 19.3 6.5 28.1 10.2 35.4 15.1 58.3 34.9 58.3 50.6-.1 15.7-23 35.6-58.4 50.6zM320.8 78.4z"
+            ></path>
+            <circle r="45.7" cy="296.5" cx="420.9"></circle>
+            <path d="M520.5 78.1z"></path>
+          </g>
+        </svg>
+        <div class="holo-particles">
+          <div class="holo-particle"></div>
+          <div class="holo-particle"></div>
+          <div class="holo-particle"></div>
+          <div class="holo-particle"></div>
+          <div class="holo-particle"></div>
+          <div class="holo-particle"></div>
+        </div>
+        <div class="activation-rings">
+          <div class="activation-ring"></div>
+          <div class="activation-ring"></div>
+          <div class="activation-ring"></div>
+        </div>
+        <div class="cube-transform">
+          <div class="cube-face"></div>
+          <div class="cube-face"></div>
+          <div class="cube-face"></div>
+          <div class="cube-face"></div>
+          <div class="cube-face"></div>
+          <div class="cube-face"></div>
+        </div>
+      </div>
+      <div class="corner-accent"></div>
+      <div class="corner-accent"></div>
+      <div class="corner-accent"></div>
+      <div class="corner-accent"></div>
+    </label>
+    <div class="status-text"></div>
+    <div class="frequency-spectrum">
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+      <div class="frequency-bar"></div>
+    </div>
+    <div class="data-chips">
+      <div class="data-chip" id="status-chip">STATUS: IDLE [0x4F]</div>
+      <div class="data-chip" id="quantum-verify">QUANTUM VERIFY: 0%</div>
+      <div class="data-chip" id="synch-status">SYNCH: PENDING</div>
+      <div class="data-chip" id="hex-code">0x7A2C8B9F</div>
+      <div class="data-chip" id="hope-chip">Initializing biometric scan… Hope AI signature detected.</div>
+    </div>
+  </div>
+  <script>
+    const checkbox = document.getElementById('holo-check');
+    const quantumVerify = document.getElementById('quantum-verify');
+    const synchStatus = document.getElementById('synch-status');
+    const statusChip = document.getElementById('status-chip');
+    const hopeChip = document.getElementById('hope-chip');
+    const hexCode = document.getElementById('hex-code');
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        let percentage = 0;
+        const duration = 2000; // Animation duration in milliseconds
+        const increment = 100 / (duration / 16); // Assuming 60fps (1000ms / 60 ≈ 16ms per frame)
+        hopeChip.classList.add('flashing');
+        const updatePercentage = () => {
+          if (percentage < 100) {
+            percentage = Math.min(percentage + increment, 100);
+            quantumVerify.textContent = `QUANTUM VERIFY: ${Math.round(percentage)}%`;
+            requestAnimationFrame(updatePercentage);
+          } else {
+            quantumVerify.textContent = `QUANTUM VERIFY: 100%`;
+            quantumVerify.style.color = 'rgba(0, 255, 136, 0.8)';
+            synchStatus.textContent = `SYNCH: ACTIVE`;
+            synchStatus.style.color = 'rgba(0, 255, 136, 0.8)';
+            statusChip.textContent = `STATUS: ONLINE`;
+            statusChip.style.color = 'rgba(0, 255, 136, 0.8)';
+            hexCode.style.color = 'rgba(0, 255, 136, 0.8)';
+            hopeChip.classList.remove('flashing');
+            hopeChip.style.color = 'rgba(0, 255, 136, 0.8)';
+            // Wait 1 second before starting fade-out
+            setTimeout(() => {
+              document.body.classList.add('fade-out');
+              // Redirect after fade-out completes
+              setTimeout(() => {
+                window.location.href = 'intro.html';
+              }, 800); // Match the CSS transition duration
+            }, 1000); // 1-second delay before fade-out
+          }
+        };
+        requestAnimationFrame(updatePercentage);
+      } else {
+        quantumVerify.textContent = `QUANTUM VERIFY: 0%`;
+        quantumVerify.style.color = 'white';
+        synchStatus.textContent = `SYNCH: PENDING`;
+        synchStatus.style.color = 'white';
+        statusChip.textContent = `STATUS: IDLE [0x4F]`;
+        statusChip.style.color = 'white';
+        hexCode.style.color = 'white';
+        hopeChip.style.color = 'white';
+        hopeChip.classList.remove('flashing');
+      }
+    });
+  </script>
+</body>
+</html>

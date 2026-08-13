@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hope v2 – AI Input</title>
+  <link rel="preload" href="UI.png" as="image">
+  <style>
+    :root {
+      color-scheme: dark;
+      --primary-color: #2e2e2e;
+      --neutral-color: #d3d3d3;
+      --text: #bffef3;
+      --neon: #00ffd5;
+      --neon-dim: rgba(0,255,213,.25);
+      --bar-bg: rgba(0,12,22,.55);
+      --placeholder: #77ffe7;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: url('UI.png');
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      background-color: #000000;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+      color: var(--text);
+      opacity: 0;
+      transition: opacity 0.6s ease;
+    }
+    body.ready { opacity: 1; }
+    .app-title {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      padding: 12px 16px;
+      color: var(--neon);
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      user-select: none;
+    }
+    main {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    body::-webkit-scrollbar { width: 8px; }
+    body::-webkit-scrollbar-track { background: transparent; }
+    body::-webkit-scrollbar-thumb {
+      background-color: var(--neon);
+      border-radius: 10px;
+      border: 2px solid transparent;
+    }
+    #chat-thread {
+      flex: 1 1 auto;
+      width: min(92%, 44rem);
+      margin: 0 auto;
+      padding: 8px 8px 0 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      scroll-behavior: smooth;
+    }
+    .chat-bubble {
+      align-self: flex-start;
+      max-width: 100%;
+      padding: 0;
+      background: none;
+      color: inherit;
+      border-radius: 0;
+      box-shadow: none;
+      white-space: pre-wrap;
+      font-size: 1rem;
+      line-height: 1.55;
+    }
+    .chat-bubble strong {
+      font-weight: bold !important;
+      color: var(--neon) !important;
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      color: var(--neon);
+    }
+    .chat-bubble.user img {
+      max-width: 300px;
+      border-radius: 10px;
+      border: 1px solid var(--neon);
+      box-shadow: 0 0 12px var(--neon-dim);
+      margin-top: 8px;
+      display: block;
+    }
+    .chat-marquee {
+      --gap: 1em;
+      display: flex;
+      gap: var(--gap);
+      width: min(92%, 44rem);
+      margin: 6px auto 10px;
+      mask-image: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,1) 20%, rgba(0,0,0,1) 80%, rgba(0,0,0,0));
+      overflow: hidden;
+    }
+    .chat-marquee > ul {
+      display: flex;
+      gap: var(--gap);
+      flex-shrink: 0;
+      justify-content: space-around;
+      list-style: none;
+      animation: scroll-marquee-left 30s linear infinite;
+      padding: 0;
+      margin: 0;
+    }
+    .chat-marquee > ul > li {
+      padding: 0.5rem 1rem;
+      background-color: var(--bar-bg);
+      border: 1px solid var(--neon);
+      border-radius: 10px;
+      color: var(--neon);
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease-in-out;
+      white-space: nowrap;
+      box-shadow: 0 0 12px var(--neon-dim);
+    }
+    .chat-marquee > ul > li:hover {
+      background-color: rgba(0,255,213,.08);
+    }
+    .chat-marquee:hover > ul {
+      animation-play-state: paused !important;
+    }
+    @keyframes scroll-marquee-left {
+      to { transform: translateX(calc(-100% - var(--gap))); }
+    }
+    .AI-Input-wrap {
+      position: sticky;
+      bottom: 0;
+      width: 100%;
+      background: linear-gradient(to top, rgba(0,0,0,.5), rgba(0,0,0,0));
+      padding: 10px 0 16px;
+      z-index: 4;
+    }
+    .AI-Input {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      position: relative;
+      width: min(92%, 44rem);
+      user-select: none;
+      z-index: 1;
+      margin: 0 auto;
+    }
+    #voice, #mic, #camera, #photos, #files, #search {
+      display: none;
+    }
+    #voice + label,
+    #mic + label {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: absolute;
+      bottom: 0;
+      padding: 1rem;
+      background-color: var(--bar-bg);
+      border: 1px solid var(--neon);
+      border-radius: 50%;
+      opacity: 0;
+      cursor: pointer;
+      pointer-events: none;
+      transform: translateY(100%);
+      transition: all 0.2s ease-in-out;
+      box-shadow: 0 0 12px var(--neon-dim);
+    }
+    #voice + label {
+      margin-right: 5rem;
+      right: 50%;
+    }
+    #mic + label {
+      margin-left: 5rem;
+      left: 50%;
+      width: 62px;
+      aspect-ratio: 1/1;
+    }
+    #mic + label > svg {
+      position: absolute;
+      transition: all 0.2s ease-in-out;
+    }
+    #mic + label > svg:first-of-type {
+      opacity: 1;
+      fill: var(--neon);
+    }
+    #mic + label > svg:last-of-type {
+      opacity: 0;
+      fill: rgba(0,255,213,.5);
+    }
+    #mic:checked + label {
+      background-color: rgba(0,255,213,.1);
+    }
+    #mic:checked + label > :first-child { opacity: 0; }
+    #mic:checked + label > :last-child { opacity: 1; }
+    #voice:checked ~ label {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: all;
+    }
+    #voice:checked ~ .chat-container {
+      width: 10rem;
+      height: 10rem;
+      top: -6em;
+      border-radius: 30% 45% 30% 40%;
+      animation: rotate 10s 0.2s linear infinite;
+    }
+    #voice:checked ~ .chat-container > .chat-wrapper {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .chat-container {
+      position: relative;
+      top: 0;
+      width: 100%;
+      border-radius: 18px;
+      border: 1.5px solid var(--neon);
+      background: var(--bar-bg);
+      box-shadow:
+        0 0 0 1px rgba(0,255,213,.08) inset,
+        0 0 22px var(--neon-dim),
+        0 0 60px rgba(0,255,213,.08);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      overflow: hidden;
+      transition: all 0.5s cubic-bezier(0.3, 1.5, 0.6, 1);
+      z-index: 0;
+      min-height: 58px;
+    }
+    .chat-container:focus-within {
+      box-shadow:
+        0 0 0 1.5px rgba(0,255,213,.18) inset,
+        0 0 28px rgba(0,255,213,.35),
+        0 0 80px rgba(0,255,213,.14);
+    }
+    .chat-wrapper {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-direction: row;
+      padding: 12px;
+      z-index: 200;
+    }
+    #chat-input {
+      flex: 1;
+      padding: 16px 18px;
+      width: 100%;
+      min-height: 3rem;
+      max-height: 10rem;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      caret-color: var(--neon);
+      font-size: 18px;
+      line-height: 1.2;
+      outline: none;
+      resize: none;
+      order: 2;
+    }
+    #chat-input::placeholder {
+      color: var(--placeholder);
+      opacity: 0.7;
+    }
+    .button-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      width: 100%;
+    }
+    .left-buttons {
+      display: flex;
+      gap: 0.5rem;
+      order: 1;
+    }
+    .left-buttons > label {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--neon);
+      border-radius: 12px;
+      cursor: pointer;
+      background: var(--bar-bg);
+      box-shadow: 0 0 12px var(--neon-dim);
+    }
+    .right-buttons {
+      display: flex;
+      gap: 1rem;
+      order: 3;
+    }
+    .right-buttons > label,
+    .right-buttons > button {
+      background: transparent;
+      border: 1px solid var(--neon);
+      cursor: pointer;
+      color: var(--neon);
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
+      box-shadow: 0 0 12px var(--neon-dim);
+    }
+    .right-buttons > label:hover,
+    .right-buttons > button:hover {
+      transform: translateY(-2px);
+      background: rgba(0,255,213,.08);
+    }
+    @keyframes rotate {
+      0% { transform: rotate(0); border-radius: 30% 45% 30% 40%; }
+      25% { transform: rotate(90deg); border-radius: 40% 30% 45% 30%; }
+      50% { transform: rotate(180deg); border-radius: 45% 30% 40% 30%; }
+      75% { transform: rotate(270deg); border-radius: 30% 40% 30% 45%; }
+      100% { transform: rotate(360deg); border-radius: 30% 45% 30% 40%; }
+    }
+    @media (max-width: 560px) {
+      #chat-input { font-size: 16px; padding: 14px; }
+      .chat-container { min-height: 54px; }
+    }
+    .chat-container.drag-over {
+      border-color: var(--neon) !important;
+      background-color: rgba(0, 255, 213, 0.1);
+    }
+    .image-preview {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      width: 100%;
+      padding: 8px;
+      background: var(--bar-bg);
+      border-radius: 10px;
+    }
+    .image-preview.active { display: flex; }
+    .image-preview img {
+      max-width: 100px;
+      max-height: 100px;
+      border-radius: 8px;
+      border: 1px solid var(--neon);
+    }
+    .image-preview button {
+      background: transparent;
+      border: 1px solid var(--neon);
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--neon);
+    }
+    .listening-active {
+      box-shadow: 0 0 22px #00ffd5 !important;
+      background-color: rgba(0, 255, 213, 0.18) !important;
+    }
+    /* Wake word status indicator */
+    #wake-status {
+      position: fixed;
+      bottom: 100px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,12,22,.85);
+      border: 1px solid var(--neon);
+      color: var(--neon);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      z-index: 20;
+      opacity: 0.85;
+      pointer-events: none;
+      transition: all 0.3s ease;
+    }
+    #wake-status.active {
+      background: rgba(0,255,213,.15);
+      box-shadow: 0 0 18px var(--neon-dim);
+    }
+  </style>
+</head>
+<body>
+  <div class="app-title">Hope v2</div>
+  <div id="wake-status">Click anywhere to start listening…</div>
+
+  <main>
+    <div id="chat-thread"></div>
+    <div class="chat-marquee" aria-hidden="true">
+      <ul>
+        <li>Create an image</li><li>Give me ideas</li><li>Write a text</li>
+        <li>Create a chart</li><li>Plan a trip</li><li>Help me pick</li>
+        <li>Write a Python script</li>
+      </ul>
+      <ul>
+        <li>Create an image</li><li>Give me ideas</li><li>Write a text</li>
+        <li>Create a chart</li><li>Plan a trip</li><li>Help me pick</li>
+        <li>Write a Python script</li>
+      </ul>
+    </div>
+    <div class="AI-Input-wrap">
+      <div class="AI-Input">
+        <input type="file" id="camera" accept="image/*" capture="environment" />
+        <input type="file" id="photos" accept="image/*" />
+        <input type="file" id="files" />
+        <input id="voice" type="checkbox" />
+        <label for="voice" aria-label="Close voice mode">
+          <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" fill="var(--neon)" viewBox="0 0 16 16">
+            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708"/>
+          </svg>
+        </label>
+        <input id="mic" type="checkbox" />
+        <label for="mic" aria-label="Microphone">
+          <svg viewBox="0 0 16 16" fill="var(--neon)" height="30" width="30" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5"/>
+            <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3"/>
+          </svg>
+          <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" fill="var(--neon)" viewBox="0 0 16 16">
+            <path d="M13 8c0 .564-.094 1.107-.266 1.613l-.814-.814A4 4 0 0 0 12 8V7a.5.5 0 0 1 1 0zm-5 4c.818 0 1.578-.245 2.212-.667l.718.719a5 5 0 0 1-2.43.923V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5"/>
+            <path d="m9.486 10.607-.748-.748A2 2 0 0 1 6 8v-.878l-1-1V8a3 3 0 0 0 4.486 2.607m-7.84-9.253 12 12 .708-.708-12-12z"/>
+          </svg>
+        </label>
+        <div class="chat-container" id="dropZone">
+          <label for="chat-input" class="chat-wrapper">
+            <div class="button-bar">
+              <div class="left-buttons">
+                <input id="search" type="checkbox" />
+                <label for="search" title="Search mode">
+                  <svg viewBox="0 0 16 16" fill="var(--neon)" height="20" width="20" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8m7.5-6.923c-.67.204-1.335.82-1.887 1.855q-.215.403-.395.872c.705.157 1.472.257 2.282.287zM4.249 3.539q.214-.577.481-1.078a7 7 0 0 1 .597-.933A7 7 0 0 0 3.051 3.05q.544.277 1.198.49zM3.509 7.5c.036-1.07.188-2.087.436-3.008a9 9 0 0 1-1.565-.667A6.96 6.96 0 0 0 1.018 7.5zm1.4-2.741a12.3 12.3 0 0 0-.4 2.741H7.5V5.091c-.91-.03-1.783-.145-2.591-.332M8.5 5.09V7.5h2.99a12.3 12.3 0 0 0-.399-2.741c-.808.187-1.681.301-2.591.332zM4.51 8.5c.035.987.176 1.914.399 2.741A13.6 13.6 0 0 1 7.5 10.91V8.5zm3.99 0v2.409c.91.03 1.783.145 2.591.332.223-.827.364-1.754.4-2.741zm-3.282 3.696q.18.469.395.872c.552 1.035 1.218 1.65 1.887 1.855V11.91c-.81.03-1.577.13-2.282.287zm.11 2.276a7 7 0 0 1-.598-.933 9 9 0 0 1-.481-1.079 8.4 8.4 0 0 0-1.198.49 7 7 0 0 0 2.276 1.522zm-1.383-2.964A13.4 13.4 0 0 1 3.508 8.5h-2.49a6.96 6.96 0 0 0 1.362 3.675c.47-.258.995-.482 1.565-.667m6.728 2.964a7 7 0 0 0 2.275-1.521 8.4 8.4 0 0 0-1.197-.49 9 9 0 0 1-.481 1.078 7 7 0 0 1-.597.933M8.5 11.909v3.014c.67-.204 1.335-.82 1.887-1.855q.216-.403.395-.872A12.6 12.6 0 0 0 8.5 11.91zm3.555-.401c.57.185 1.095.409 1.565.667A6.96 6.96 0 0 0 14.982 8.5h-2.49a13.4 13.4 0 0 1-.437 3.008M14.982 7.5a6.96 6.96 0 0 0-1.362-3.675c-.47.258-.995.482-1.565.667.248.92.4 1.938.437 3.008zM11.27 2.461q.266.502.482 1.078a8.4 8.4 0 0 0 1.196-.49 7 7 0 0 0-2.275-1.52c.218.283.418.597.597.932m-.488 1.343a8 8 0 0 0-.395-.872C9.835 1.897 9.17 1.282 8.5 1.077V4.09c.81-.03 1.577-.13 2.282-.287z"/>
+                  </svg>
+                </label>
+              </div>
+              <textarea id="chat-input" placeholder="Ask anything (or say “Hey Hope”)" spellcheck="true"></textarea>
+              <div class="right-buttons">
+                <label for="voice" title="Voice mode">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="var(--neon)" viewBox="0 0 16 16">
+                    <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5"/>
+                    <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3"/>
+                  </svg>
+                </label>
+                <button type="button" id="submitBtn" title="Send">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="var(--neon)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="22" height="22" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M22 2L11 13"></path>
+                    <path d="M22 2l-7 20-4-9-9-4 20-7z"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </label>
+          <div class="image-preview" id="imagePreview">
+            <img id="previewImage" src="" alt="Pasted image preview" />
+            <button id="removeImage" title="Remove image">❌</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="typing-animation.js"></script>
+  <script>
+    const BACKEND_URL = window.BACKEND_URL || 'http://localhost:5002';
+
+    // ---------- Audio Unlock (fixes NotAllowedError) ----------
+    let audioUnlocked = false;
+
+    function unlockAudio() {
+      if (audioUnlocked) return;
+      // Play a tiny silent sound to unlock audio context
+      const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+      silent.volume = 0.01;
+      silent.play().then(() => {
+        audioUnlocked = true;
+        console.log("Audio unlocked by user interaction");
+        setStatus('Listening for “Hope”…');
+        startWakeWordMode(); // only start listening after unlock
+      }).catch(() => {
+        // still mark as unlocked so we don't keep trying
+        audioUnlocked = true;
+        startWakeWordMode();
+      });
+    }
+
+    // Unlock on first click or touch
+    document.body.addEventListener('click', unlockAudio, { once: true });
+    document.body.addEventListener('touchstart', unlockAudio, { once: true });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.body.classList.add('ready');
+      // Do NOT start wake word automatically anymore
+      // It will start after the first click
+    });
+
+    const ta = document.getElementById('chat-input');
+    const submitBtn = document.getElementById('submitBtn');
+    const chatThread = document.getElementById('chat-thread');
+    const dropZone = document.getElementById('dropZone');
+    const imagePreview = document.getElementById('imagePreview');
+    const previewImage = document.getElementById('previewImage');
+    const removeImage = document.getElementById('removeImage');
+    const micCheckbox = document.getElementById('mic');
+    const micLabel = document.querySelector('label[for="mic"]');
+    const wakeStatus = document.getElementById('wake-status');
+
+    // ---------- State ----------
+    let mode = 'wake';          // 'wake' | 'command'
+    let recognition = null;
+    let isProcessing = false;
+
+    // ---------- Helpers ----------
+    function setStatus(text, active = false) {
+      wakeStatus.textContent = text;
+      wakeStatus.classList.toggle('active', active);
+    }
+
+    function mdToHTML(s) {
+      if (!s) return "";
+      return s
+        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\n\n/g, '<br><br>');
+    }
+
+    function autoresize() {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
+    }
+    ['input', 'change'].forEach(ev => ta.addEventListener(ev, autoresize));
+
+    // ---------- Speech Recognition ----------
+    function createRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.warn("Speech Recognition not supported");
+        setStatus("Speech not supported in this browser");
+        return null;
+      }
+
+      const recog = new SpeechRecognition();
+      recog.continuous = false;
+      recog.interimResults = false;
+      recog.lang = 'en-US';
+      return recog;
+    }
+
+    function startWakeWordMode() {
+      mode = 'wake';
+      setStatus('Listening for “Hope”…');
+
+      if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+      }
+
+      recognition = createRecognition();
+      if (!recognition) return;
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript.toLowerCase().trim();
+        console.log("[Wake] Heard:", transcript);
+
+        if (transcript.includes('hope') || transcript.includes('hey hope')) {
+          console.log("[Wake] Wake word detected!");
+          startCommandMode();
+        } else {
+          // Keep listening for wake word
+          setTimeout(() => {
+            if (mode === 'wake') startWakeWordMode();
+          }, 300);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.log("[Wake] Error:", event.error);
+        if (mode === 'wake' && event.error !== 'aborted') {
+          setTimeout(() => startWakeWordMode(), 600);
+        }
+      };
+
+      recognition.onend = () => {
+        if (mode === 'wake') {
+          setTimeout(() => startWakeWordMode(), 400);
+        }
+      };
+
+      try {
+        recognition.start();
+      } catch (e) {
+        console.warn("Could not start wake recognition:", e);
+        setTimeout(() => startWakeWordMode(), 1000);
+      }
+    }
+
+    function startCommandMode() {
+      mode = 'command';
+      setStatus('Listening… speak now', true);
+      micLabel.classList.add('listening-active');
+
+      if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+      }
+
+      recognition = createRecognition();
+      if (!recognition) return;
+
+      recognition.onresult = async (event) => {
+        const transcript = event.results[0][0].transcript.trim();
+        console.log("[Command] Heard:", transcript);
+
+        if (transcript) {
+          ta.value = transcript;
+          autoresize();
+          await handleVoiceCommand(transcript);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.log("[Command] Error:", event.error);
+        micLabel.classList.remove('listening-active');
+        startWakeWordMode();
+      };
+
+      recognition.onend = () => {
+        micLabel.classList.remove('listening-active');
+        // If we didn't get a result, go back to wake mode
+        if (mode === 'command') {
+          setTimeout(() => startWakeWordMode(), 500);
+        }
+      };
+
+      try {
+        recognition.start();
+      } catch (e) {
+        console.warn("Could not start command recognition:", e);
+        startWakeWordMode();
+      }
+    }
+
+    // ---------- Voice Command Handler ----------
+    async function handleVoiceCommand(text) {
+      if (isProcessing) return;
+      isProcessing = true;
+
+      setStatus('Thinking…');
+
+      // Show user bubble
+      const userBubble = document.createElement("div");
+      userBubble.className = "chat-bubble user";
+      userBubble.textContent = text;
+      chatThread.appendChild(userBubble);
+      userBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+
+      // AI placeholder
+      const aiBubble = document.createElement("div");
+      aiBubble.className = "chat-bubble";
+      aiBubble.innerHTML = "<span class='dot'>.</span><span class='dot'>.</span><span class='dot'>.</span>";
+      chatThread.appendChild(aiBubble);
+      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+
+      let reply = "No response available.";
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/ask`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text })
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        reply = data.reply || data.liveweb_analyzed || "No response available.";
+      } catch (e) {
+        reply = `⚠️ ${e.message || "Network error"}`;
+        console.error(e);
+      }
+
+      // Show text reply
+      aiBubble.innerHTML = mdToHTML(reply);
+      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+
+      // Speak the reply using backend /speak
+      try {
+        setStatus('Speaking…', true);
+        const speakRes = await fetch(`${BACKEND_URL}/speak`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: reply })
+        });
+
+        if (speakRes.ok) {
+          const audioBlob = await speakRes.blob();
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+
+          audio.onended = () => {
+            URL.revokeObjectURL(audioUrl);
+            isProcessing = false;
+            startWakeWordMode();
+          };
+
+          audio.onerror = () => {
+            console.error("Audio playback error");
+            isProcessing = false;
+            startWakeWordMode();
+          };
+
+          // This should now work because we unlocked audio on first click
+          await audio.play();
+        } else {
+          console.error("Speak failed:", await speakRes.text());
+          isProcessing = false;
+          startWakeWordMode();
+        }
+      } catch (err) {
+        console.error("TTS error:", err);
+        isProcessing = false;
+        startWakeWordMode();
+      }
+    }
+
+    // ---------- Manual text send (still works) ----------
+    submitBtn.addEventListener('click', async () => {
+      const text = ta.value.trim();
+      if (!text) return;
+
+      ta.value = '';
+      autoresize();
+
+      // Use normal text flow (no voice)
+      if (window.simulateChatResponse) {
+        await window.simulateChatResponse(text, chatThread, 35);
+      } else {
+        // Fallback
+        const userBubble = document.createElement("div");
+        userBubble.className = "chat-bubble user";
+        userBubble.textContent = text;
+        chatThread.appendChild(userBubble);
+
+        const aiBubble = document.createElement("div");
+        aiBubble.className = "chat-bubble";
+        aiBubble.textContent = "…";
+        chatThread.appendChild(aiBubble);
+
+        try {
+          const res = await fetch(`${BACKEND_URL}/ask`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message: text })
+          });
+          const data = await res.json();
+          aiBubble.innerHTML = mdToHTML(data.reply || "No response");
+        } catch (e) {
+          aiBubble.textContent = "Error contacting Hope";
+        }
+      }
+    });
+
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitBtn.click();
+      }
+    });
+
+    // Manual mic toggle still works if user wants it
+    micCheckbox.addEventListener('change', () => {
+      if (micCheckbox.checked) {
+        startCommandMode();
+      } else {
+        startWakeWordMode();
+      }
+    });
+
+    // Image paste / drag-drop (kept from previous version)
+    function showImagePreview(base64Data) {
+      previewImage.src = base64Data;
+      imagePreview.classList.add('active');
+    }
+    function clearImagePreview() {
+      previewImage.src = '';
+      imagePreview.classList.remove('active');
+      delete window.imageDataFromPaste;
+      delete window.imageDataFromDrop;
+    }
+    removeImage.addEventListener('click', clearImagePreview);
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, e => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+    dropZone.addEventListener('dragover', () => dropZone.classList.add('drag-over'));
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+      dropZone.classList.remove('drag-over');
+      const files = e.dataTransfer.files;
+      if (files.length && files[0].type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          window.imageDataFromDrop = ev.target.result;
+          showImagePreview(window.imageDataFromDrop);
+        };
+        reader.readAsDataURL(files[0]);
+      }
+    });
+    ta.addEventListener('paste', (e) => {
+      const items = (e.clipboardData || window.clipboardData).items;
+      for (let item of items) {
+        if (item.type.indexOf('image') === 0) {
+          e.preventDefault();
+          const blob = item.getAsFile();
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            window.imageDataFromPaste = ev.target.result;
+            showImagePreview(window.imageDataFromPaste);
+          };
+          reader.readAsDataURL(blob);
+          break;
+        }
+      }
+    });
+
+    // Marquee clicks
+    document.querySelectorAll('.chat-marquee li').forEach(li => {
+      li.addEventListener('click', () => {
+        ta.value = li.textContent;
+        autoresize();
+        ta.focus();
+      });
+    });
+  </script>
+</body>
+</html>
