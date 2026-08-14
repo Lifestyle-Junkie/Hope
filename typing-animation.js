@@ -17,8 +17,8 @@ let backendMemory = {
   topic: null
 };
 
-// Configurable backend URL (set window.BACKEND_URL for prod)
-const BACKEND_URL = window.BACKEND_URL || 'http://localhost:5002';
+// Updated to use Railway backend
+const BACKEND_URL = window.BACKEND_URL || 'https://hope-production-7e9d.up.railway.app';
 
 function setConciseMode(on) {
   CONCISE_MODE = !!on;
@@ -28,7 +28,7 @@ function setConciseMode(on) {
 function simulateTypingEffect(text, element, speed = 18, done) {
   element.innerHTML = "";
   let i = 0;
-  const BATCH_SIZE = 3; // Batch chars for better perf on long texts
+  const BATCH_SIZE = 3;
   function step() {
     if (i <= text.length) {
       const end = Math.min(i + BATCH_SIZE, text.length);
@@ -47,8 +47,7 @@ function mdToHTML(s) {
   let html = s
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>'); // Basic link support
-  // Clean up any remaining Markdown edge cases
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   html = html.replace(/\n\n/g, '<br><br>');
   return html;
 }
@@ -57,11 +56,10 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
   // User bubble
   const userBubble = document.createElement("div");
   userBubble.className = "chat-bubble user";
-  userBubble.setAttribute("role", "user"); // Accessibility
+  userBubble.setAttribute("role", "user");
   userBubble.textContent = userText || "[image]";
   let validImageData = imageData;
   if (imageData) {
-    // Basic validation: Ensure it's a data URL or blob, <5MB, common formats
     if (typeof imageData === 'string' && (imageData.startsWith('data:image/') || imageData.startsWith('blob:'))) {
       const img = new Image();
       img.onload = () => {
@@ -69,12 +67,12 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
           const imgEl = document.createElement("img");
           imgEl.src = imageData;
           imgEl.alt = "User image";
-          imgEl.style.maxWidth = "200px"; // Prevent overflow
+          imgEl.style.maxWidth = "200px";
           userBubble.appendChild(imgEl);
         }
       };
       img.onerror = () => console.warn("[Client] Invalid image data");
-      img.src = imageData; // Trigger load
+      img.src = imageData;
     } else {
       console.warn("[Client] Skipping invalid image");
       validImageData = null;
@@ -83,16 +81,15 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
   chatThread.appendChild(userBubble);
   userBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-  // AI placeholder with accessibility
+  // AI placeholder
   const aiBubble = document.createElement("div");
   aiBubble.className = "chat-bubble";
   aiBubble.setAttribute("aria-live", "polite");
-  aiBubble.setAttribute("role", "log"); // For screen readers
+  aiBubble.setAttribute("role", "log");
   aiBubble.innerHTML = "<span class='dot'>.</span><span class='dot'>.</span><span class='dot'>.</span>";
   chatThread.appendChild(aiBubble);
   aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-  // Build payload (backend keeps true memory; we only send message + concise + optional image)
   const payload = {
     message: userText,
     concise: CONCISE_MODE
@@ -117,8 +114,8 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
     return;
   }
 
-  let reply = data.reply || data.liveweb_analyzed || "No response available.";  // Fallback chain
-  if (reply.includes(userText)) {  // Fix echo: Strip user prompt if accidentally included
+  let reply = data.reply || data.liveweb_analyzed || "No response available.";
+  if (reply.includes(userText)) {
     reply = reply.replace(userText, '').trim() || data.liveweb_analyzed || "Sorry, I couldn't process that.";
   }
 
@@ -127,29 +124,26 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
   if (memory.last_person) backendMemory.last_person = memory.last_person;
   if (memory.topic) backendMemory.topic = memory.topic;
 
-  // Optional context badge
   if (contextUsed) {
     const ctxBadge = document.createElement("div");
-    ctxBadge.className = "chat-bubble context-badge"; // For styling
+    ctxBadge.className = "chat-bubble context-badge";
     ctxBadge.style.opacity = "0.7";
     ctxBadge.style.fontSize = "0.75rem";
     ctxBadge.innerHTML = `<em>Context reused: ${backendMemory.last_person || backendMemory.topic || "previous topic"}</em>`;
     chatThread.insertBefore(ctxBadge, aiBubble);
   }
 
-  // Render reply with typing effect
   simulateTypingEffect(mdToHTML(reply), aiBubble, speed, () => {
     aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
   });
 
-  // (Optional) show safety notes only if reply is a fallback
   if (data.liveweb_analyzed &&
       data.liveweb_analyzed.startsWith("**Note:**") &&
       (reply === "It is not specified." || reply === "No data available.")) {
     const noteBubble = document.createElement("div");
     noteBubble.className = "chat-bubble note";
     noteBubble.style.fontSize = "0.85rem";
-    noteBubble.style.color = "#666"; // Subtle styling
+    noteBubble.style.color = "#666";
     noteBubble.innerHTML = mdToHTML(data.liveweb_analyzed);
     chatThread.appendChild(noteBubble);
     noteBubble.scrollIntoView({ behavior: "smooth", block: "end" });
