@@ -22,27 +22,34 @@ except Exception:
     print("[Tone] OpenAI import failed.")
 
 # --------------- Patterns --------------- #
-DEATH_QUERY_RE = re.compile(r"\b(how did|cause of death|when did .* die|did .* die|die|died|death|dead|deceased|killed|assassinated|shot|passed away)\b", re.IGNORECASE)
+DEATH_QUERY_RE = re.compile(
+    r"\b(how did|cause of death|when did .* die|did .* die|die|died|death|dead|deceased|killed|assassinated|shot|passed away)\b",
+    re.IGNORECASE
+)
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
-DATE_RE = re.compile(r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b")
+DATE_RE = re.compile(
+    r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b"
+)
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
-BOLD_ENTITY_CAPTURE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-ZaZ]+){0,4})\*\*")
+BOLD_ENTITY_CAPTURE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\*\*")
 CAP_SEQ_RE = re.compile(r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\b")
 
-STOP = {"how","did","does","do","the","a","an","of","to","for","in","on","at","with",
-        "when","what","who","why","is","are","was","were","will","and","or","out",
-        "come","release","date","latest","news","he","she","they","cause","death","die"}
+STOP = {
+    "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
+    "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
+    "come", "release", "date", "latest", "news", "he", "she", "they", "cause", "death", "die"
+}
 
 # --------------- Helpers --------------- #
 def _openai_available() -> bool:
-    # Check global api_key (set in backend) or env var
-    key_from_global = getattr(openai, 'api_key', None) if openai else None
+    key_from_global = getattr(openai, "api_key", None) if openai else None
     key_from_env = os.getenv("OPENAI_API_KEY")
     available = bool(openai and (key_from_global or key_from_env))
-    if not available and openai:  # Debug only once per session
+    if not available and openai:
         print("[Tone Debug] OpenAI available check: lib=Yes, global_key={}, env_key={}".format(
             "Yes" if key_from_global else "No", "Yes" if key_from_env else "No"))
     return available
+
 
 def _sanitize_md(text: str) -> str:
     if not text:
@@ -52,6 +59,7 @@ def _sanitize_md(text: str) -> str:
     text = re.sub(r"\*{3,}", "**", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
 
 def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
     if not source:
@@ -65,12 +73,17 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
             return c
     return fallback or "This subject"
 
+
 def _call_openai(system: str, user: str, max_tokens=320) -> str:
     if not _openai_available():
         return "Model unavailable."
     try:
-        resp = openai.chat.completions.create(
-            model="gpt-4o",
+        from openai import OpenAI
+        api_key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
+        client = OpenAI(api_key=api_key)
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
             temperature=0.3,
             max_tokens=max_tokens,
             messages=[
@@ -83,6 +96,7 @@ def _call_openai(system: str, user: str, max_tokens=320) -> str:
         print(f"[Tone] OpenAI call error: {e}")
         return "Model temporarily unavailable, please try again."
 
+
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
     lines = []
     if previous_fact:
@@ -90,6 +104,7 @@ def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str])
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         lines.append(f"Live snippet: {liveweb_fact}")
     return "\n".join(lines)
+
 
 def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> bool:
     if previous_fact and DEATH_QUERY_RE.search(previous_fact):
@@ -99,6 +114,7 @@ def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[
     if liveweb_fact and DATE_RE.search(liveweb_fact):
         return True
     return False
+
 
 # --------------- Public API --------------- #
 def generate_with_tone(
@@ -119,7 +135,7 @@ def generate_with_tone(
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
 
-    # Resolve entity (attempt pronoun linkage first)
+    # Resolve entity
     if PRONOUN_RE.search(prompt) and context:
         entity = context
     else:
@@ -131,7 +147,7 @@ def generate_with_tone(
             return f"No verified evidence that **{entity}** has died."
         return f"I have no confirmed information that **{entity}** has died."
 
-    # Death query with support -> constrained factual answer
+    # Death query with support
     if is_death_query and has_support:
         fact_block = _build_fact_block(previous_fact, liveweb_fact)
         user_text = (
@@ -145,15 +161,16 @@ def generate_with_tone(
         )
         return _call_openai(system, user_text, max_tokens=180)
 
-    # Direct date / year queries (non-death)
+    # Direct date / year queries
     date_match = DATE_RE.search(prompt)
     if date_match:
         return f"Reference date: **{date_match.group(0)}**."
+
     year_match = YEAR_RE.search(prompt)
     if year_match and len(prompt) < 60:
         return f"Reference year: **{year_match.group(0)}**."
 
-    # Supplemental context for general queries
+    # General queries
     supplemental = []
     if context:
         supplemental.append(f"Context entity: {context}")
@@ -161,6 +178,7 @@ def generate_with_tone(
         supplemental.append(f"Earlier fact: {previous_fact}")
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         supplemental.append(f"Live snippet: {liveweb_fact}")
+
     supplemental_block = "\n".join(supplemental)
 
     system_prompt = (
@@ -172,6 +190,7 @@ def generate_with_tone(
         system_prompt += f"\nContext:\n{supplemental_block}"
 
     return _call_openai(system_prompt, prompt, max_tokens=220)
+
 
 # --------------- Manual Test --------------- #
 if __name__ == "__main__":
