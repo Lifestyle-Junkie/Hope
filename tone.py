@@ -5,7 +5,7 @@ Response shaping + safety layer + strong conversation memory.
 from __future__ import annotations
 import os
 import re
-from typing import Optional
+from typing import Optional, List, Any
 
 try:
     import openai
@@ -74,7 +74,7 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
     return fallback or "This subject"
 
 
-def _call_openai(system: str, user: str, max_tokens=220) -> str:
+def _call_openai(system: str, user: str, max_tokens=180) -> str:
     if not _openai_available():
         return "Model unavailable."
     try:
@@ -116,7 +116,8 @@ def generate_with_tone(
     prompt: str,
     context: Optional[str] = None,
     previous_fact: Optional[str] = None,
-    liveweb_fact: Optional[str] = None
+    liveweb_fact: Optional[str] = None,
+    history: Optional[List[Any]] = None   # ← added to fix the error
 ) -> str:
     prompt = (prompt or "").strip()
     if not prompt:
@@ -162,7 +163,7 @@ def generate_with_tone(
     if year_match and len(prompt) < 60:
         return f"Reference year: **{year_match.group(0)}**."
 
-    # ---------- Main system prompt (much more concise) ----------
+    # ---------- Main system prompt ----------
     supplemental = []
     if context:
         supplemental.append(f"Context entity: {context}")
@@ -170,6 +171,9 @@ def generate_with_tone(
         supplemental.append(f"Previous conversation context:\n{previous_fact}")
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         supplemental.append(f"Live snippet: {liveweb_fact}")
+    if history:
+        # Optional: include short history summary if provided
+        supplemental.append(f"Recent history length: {len(history)}")
 
     supplemental_block = "\n".join(supplemental)
 
