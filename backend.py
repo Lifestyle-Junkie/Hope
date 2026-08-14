@@ -64,7 +64,7 @@ else:
 
 # ---------- ElevenLabs Config ----------
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = "N4dLkbUobIjAlAsGddNU"
+ELEVENLABS_VOICE_ID = "Gv42yFG3G6CHLsU5y8g6"
 
 # ---------- Flask App ----------
 app = Flask(__name__)
