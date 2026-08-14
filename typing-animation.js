@@ -17,8 +17,7 @@ let backendMemory = {
   topic: null
 };
 
-// Use var so it doesn't conflict with the const in Index.html
-var BACKEND_URL = window.BACKEND_URL || 'https://hope-production-7e9d.up.railway.app';
+// Do NOT declare BACKEND_URL here — Index.html already sets it
 
 function setConciseMode(on) {
   CONCISE_MODE = !!on;
@@ -98,7 +97,7 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
 
   let data;
   try {
-    const res = await fetch(`${BACKEND_URL}/ask`, {
+    const res = await fetch(`${window.BACKEND_URL}/ask`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
