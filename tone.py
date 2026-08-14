@@ -8,13 +8,14 @@ Goals:
 - Graceful fallback if OpenAI key/library missing.
 - Personality: Hope knows its name and recognizes its creator (Nick).
 - Adaptive tone: neutral by default, matches user's energy only when they are casual.
+- Supports conversation history (last 20 messages).
 """
 
 from __future__ import annotations
 import os
 import re
 import traceback
-from typing import Optional
+from typing import Optional, List, Dict
 
 # Attempt OpenAI import
 try:
@@ -72,7 +73,7 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
             return c
     return fallback or "This subject"
 
-def _call_openai(system: str, user: str, max_tokens=320) -> str:
+def _call_openai(system: str, user: str, history: Optional[List[Dict[str, str]]] = None, max_tokens=180) -> str:
     if not _openai_available():
         return "Model unavailable."
     try:
@@ -80,14 +81,25 @@ def _call_openai(system: str, user: str, max_tokens=320) -> str:
         api_key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
         print(f"[Tone Debug] Using API key length: {len(api_key) if api_key else 0}")
         client = OpenAI(api_key=api_key, timeout=30.0)
+
+        messages = [{"role": "system", "content": system}]
+
+        # Add conversation history (last 20 messages)
+        if history:
+            for msg in history[-20:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+
+        # Current user message
+        messages.append({"role": "user", "content": user})
+
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0.4,
             max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ]
+            messages=messages
         )
         return _sanitize_md(resp.choices[0].message.content)
     except Exception as e:
@@ -128,12 +140,14 @@ def generate_with_tone(
     prompt: str,
     context: Optional[str] = None,
     previous_fact: Optional[str] = None,
-    liveweb_fact: Optional[str] = None
+    liveweb_fact: Optional[str] = None,
+    history: Optional[List[Dict[str, str]]] = None
 ) -> str:
     """
-    Safe response generation with personality.
+    Safe response generation with personality + conversation history.
     - Death queries: never invent; rely strictly on provided facts.
     - Non-death: neutral by default, adaptive only when user is casual.
+    - Uses last 20 messages for better context.
     """
     prompt = (prompt or "").strip()
     if not prompt:
@@ -168,7 +182,7 @@ def generate_with_tone(
             "Provide a concise, strictly factual reply. "
             "Do NOT speculate. Use **bold** for names / key terms only. No emojis."
         )
-        return _call_openai(system, user_text, max_tokens=180)
+        return _call_openai(system, user_text, history=history, max_tokens=140)
 
     # Direct date / year queries
     date_match = DATE_RE.search(prompt)
@@ -198,7 +212,7 @@ def generate_with_tone(
             "When the user asks what your name is or who you are, you must say your name is Hope. "
             "The user is currently speaking casually. Match their energy — "
             "you can be more relaxed and use light slang, but don't overdo it. "
-            "Stay helpful and clear. Keep answers relatively short. "
+            "Stay helpful and clear. Keep answers short. "
             "Use **bold** sparingly for important names or terms."
         )
     else:
@@ -210,13 +224,13 @@ def generate_with_tone(
             "When the user asks what your name is or who you are, you must say your name is Hope. "
             "Default tone: neutral, friendly, and clear. "
             "Do not start replies with 'Yo' or heavy slang unless the user is already speaking that way. "
-            "Keep answers concise. Use **bold** sparingly for proper nouns and key terms."
+            "Keep answers short and concise. Use **bold** sparingly for proper nouns and key terms."
         )
 
     if supplemental_block:
         system_prompt += f"\n\nContext:\n{supplemental_block}"
 
-    return _call_openai(system_prompt, prompt, max_tokens=240)
+    return _call_openai(system_prompt, prompt, history=history, max_tokens=160)
 
 # --------------- Manual Test --------------- #
 if __name__ == "__main__":
