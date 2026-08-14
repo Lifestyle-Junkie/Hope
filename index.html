@@ -366,7 +366,6 @@
       box-shadow: 0 0 22px #00ffd5 !important;
       background-color: rgba(0, 255, 213, 0.18) !important;
     }
-    /* Wake word status indicator */
     #wake-status {
       position: fixed;
       bottom: 100px;
@@ -468,36 +467,32 @@
 
   <script src="typing-animation.js"></script>
   <script>
-    const BACKEND_URL = window.BACKEND_URL || 'http://localhost:5002';
+    // ← Correct Railway backend
+    const BACKEND_URL = window.BACKEND_URL || 'https://hope-production-7e9d.up.railway.app';
 
-    // ---------- Audio Unlock (fixes NotAllowedError) ----------
+    // ---------- Audio Unlock ----------
     let audioUnlocked = false;
 
     function unlockAudio() {
       if (audioUnlocked) return;
-      // Play a tiny silent sound to unlock audio context
       const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
       silent.volume = 0.01;
       silent.play().then(() => {
         audioUnlocked = true;
-        console.log("Audio unlocked by user interaction");
+        console.log("Audio unlocked");
         setStatus('Listening for “Hope”…');
-        startWakeWordMode(); // only start listening after unlock
+        startWakeWordMode();
       }).catch(() => {
-        // still mark as unlocked so we don't keep trying
         audioUnlocked = true;
         startWakeWordMode();
       });
     }
 
-    // Unlock on first click or touch
     document.body.addEventListener('click', unlockAudio, { once: true });
     document.body.addEventListener('touchstart', unlockAudio, { once: true });
 
     window.addEventListener('DOMContentLoaded', () => {
       document.body.classList.add('ready');
-      // Do NOT start wake word automatically anymore
-      // It will start after the first click
     });
 
     const ta = document.getElementById('chat-input');
@@ -511,12 +506,10 @@
     const micLabel = document.querySelector('label[for="mic"]');
     const wakeStatus = document.getElementById('wake-status');
 
-    // ---------- State ----------
-    let mode = 'wake';          // 'wake' | 'command'
+    let mode = 'wake';
     let recognition = null;
     let isProcessing = false;
 
-    // ---------- Helpers ----------
     function setStatus(text, active = false) {
       wakeStatus.textContent = text;
       wakeStatus.classList.toggle('active', active);
@@ -536,15 +529,12 @@
     }
     ['input', 'change'].forEach(ev => ta.addEventListener(ev, autoresize));
 
-    // ---------- Speech Recognition ----------
     function createRecognition() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
-        console.warn("Speech Recognition not supported");
         setStatus("Speech not supported in this browser");
         return null;
       }
-
       const recog = new SpeechRecognition();
       recog.continuous = false;
       recog.interimResults = false;
@@ -571,7 +561,6 @@
           console.log("[Wake] Wake word detected!");
           startCommandMode();
         } else {
-          // Keep listening for wake word
           setTimeout(() => {
             if (mode === 'wake') startWakeWordMode();
           }, 300);
@@ -594,7 +583,6 @@
       try {
         recognition.start();
       } catch (e) {
-        console.warn("Could not start wake recognition:", e);
         setTimeout(() => startWakeWordMode(), 1000);
       }
     }
@@ -630,7 +618,6 @@
 
       recognition.onend = () => {
         micLabel.classList.remove('listening-active');
-        // If we didn't get a result, go back to wake mode
         if (mode === 'command') {
           setTimeout(() => startWakeWordMode(), 500);
         }
@@ -639,26 +626,22 @@
       try {
         recognition.start();
       } catch (e) {
-        console.warn("Could not start command recognition:", e);
         startWakeWordMode();
       }
     }
 
-    // ---------- Voice Command Handler ----------
     async function handleVoiceCommand(text) {
       if (isProcessing) return;
       isProcessing = true;
 
       setStatus('Thinking…');
 
-      // Show user bubble
       const userBubble = document.createElement("div");
       userBubble.className = "chat-bubble user";
       userBubble.textContent = text;
       chatThread.appendChild(userBubble);
       userBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-      // AI placeholder
       const aiBubble = document.createElement("div");
       aiBubble.className = "chat-bubble";
       aiBubble.innerHTML = "<span class='dot'>.</span><span class='dot'>.</span><span class='dot'>.</span>";
@@ -682,11 +665,10 @@
         console.error(e);
       }
 
-      // Show text reply
       aiBubble.innerHTML = mdToHTML(reply);
       aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-      // Speak the reply using backend /speak
+      // Speak the reply
       try {
         setStatus('Speaking…', true);
         const speakRes = await fetch(`${BACKEND_URL}/speak`, {
@@ -712,10 +694,9 @@
             startWakeWordMode();
           };
 
-          // This should now work because we unlocked audio on first click
           await audio.play();
         } else {
-          console.error("Speak failed:", await speakRes.text());
+          console.error("Speak failed");
           isProcessing = false;
           startWakeWordMode();
         }
@@ -726,7 +707,7 @@
       }
     }
 
-    // ---------- Manual text send (still works) ----------
+    // Manual text send
     submitBtn.addEventListener('click', async () => {
       const text = ta.value.trim();
       if (!text) return;
@@ -734,11 +715,9 @@
       ta.value = '';
       autoresize();
 
-      // Use normal text flow (no voice)
       if (window.simulateChatResponse) {
         await window.simulateChatResponse(text, chatThread, 35);
       } else {
-        // Fallback
         const userBubble = document.createElement("div");
         userBubble.className = "chat-bubble user";
         userBubble.textContent = text;
@@ -770,7 +749,6 @@
       }
     });
 
-    // Manual mic toggle still works if user wants it
     micCheckbox.addEventListener('change', () => {
       if (micCheckbox.checked) {
         startCommandMode();
@@ -779,7 +757,6 @@
       }
     });
 
-    // Image paste / drag-drop (kept from previous version)
     function showImagePreview(base64Data) {
       previewImage.src = base64Data;
       imagePreview.classList.add('active');
@@ -829,7 +806,6 @@
       }
     });
 
-    // Marquee clicks
     document.querySelectorAll('.chat-marquee li').forEach(li => {
       li.addEventListener('click', () => {
         ta.value = li.textContent;
