@@ -7,7 +7,7 @@ Goals:
 - Minimal bolding of proper nouns.
 - Graceful fallback if OpenAI key/library missing.
 - Personality: Hope knows its name and recognizes its creator (Nick).
-- Adaptive tone: matches user's energy (casual/slang when appropriate).
+- Adaptive tone: neutral by default, matches user's energy only when they are casual.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def _call_openai(system: str, user: str, max_tokens=320) -> str:
         client = OpenAI(api_key=api_key, timeout=30.0)
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0.45,
+            temperature=0.4,
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
@@ -133,7 +133,7 @@ def generate_with_tone(
     """
     Safe response generation with personality.
     - Death queries: never invent; rely strictly on provided facts.
-    - Non-death: adaptive tone + creator awareness.
+    - Non-death: neutral by default, adaptive only when user is casual.
     """
     prompt = (prompt or "").strip()
     if not prompt:
@@ -196,9 +196,9 @@ def generate_with_tone(
             "When the user asks who created you, who made you, or who your creator is, "
             "you must answer that Nick created you. "
             "When the user asks what your name is or who you are, you must say your name is Hope. "
-            "The user is speaking casually / with slang. Match their energy — "
-            "be more relaxed, use some slang and natural conversational language, "
-            "but still stay helpful and clear. Keep answers relatively short. "
+            "The user is currently speaking casually. Match their energy — "
+            "you can be more relaxed and use light slang, but don't overdo it. "
+            "Stay helpful and clear. Keep answers relatively short. "
             "Use **bold** sparingly for important names or terms."
         )
     else:
@@ -208,8 +208,9 @@ def generate_with_tone(
             "When the user asks who created you, who made you, or who your creator is, "
             "you must answer that Nick created you. "
             "When the user asks what your name is or who you are, you must say your name is Hope. "
-            "Be friendly, clear, and helpful. Keep answers concise. "
-            "Use **bold** sparingly for proper nouns and key terms."
+            "Default tone: neutral, friendly, and clear. "
+            "Do not start replies with 'Yo' or heavy slang unless the user is already speaking that way. "
+            "Keep answers concise. Use **bold** sparingly for proper nouns and key terms."
         )
 
     if supplemental_block:
