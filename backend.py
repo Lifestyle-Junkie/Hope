@@ -52,8 +52,7 @@ for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py"]:
         print(f"✅ {fn} found")
 
 # ---------- OpenAI Key ----------
-# Uses environment variable first, falls back to the new key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
 
@@ -64,7 +63,7 @@ else:
     print("🔐 OpenAI enabled.")
 
 # ---------- ElevenLabs Config ----------
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "sk_35a6ce0cabc68945dc35de9f317580c2d72201481dee1916")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = "N4dLkbUobIjAlAsGddNU"
 
 # ---------- Flask App ----------
