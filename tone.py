@@ -12,6 +12,7 @@ Goals:
 from __future__ import annotations
 import os
 import re
+import traceback
 from typing import Optional
 
 # Attempt OpenAI import
@@ -80,7 +81,10 @@ def _call_openai(system: str, user: str, max_tokens=320) -> str:
     try:
         from openai import OpenAI
         api_key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
-        client = OpenAI(api_key=api_key)
+
+        print(f"[Tone Debug] Using API key length: {len(api_key) if api_key else 0}")
+
+        client = OpenAI(api_key=api_key, timeout=30.0)
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -93,7 +97,8 @@ def _call_openai(system: str, user: str, max_tokens=320) -> str:
         )
         return _sanitize_md(resp.choices[0].message.content)
     except Exception as e:
-        print(f"[Tone] OpenAI call error: {e}")
+        print(f"[Tone] OpenAI call error: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
         return "Model temporarily unavailable, please try again."
 
 
