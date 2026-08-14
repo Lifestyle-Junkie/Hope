@@ -467,8 +467,8 @@
 
   <script src="typing-animation.js"></script>
   <script>
-    // ← Correct Railway backend
-    const BACKEND_URL = window.BACKEND_URL || 'https://hope-production-7e9d.up.railway.app';
+    // Fixed: use var to avoid redeclaration conflict
+    var BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
 
     // ---------- Audio Unlock ----------
     let audioUnlocked = false;
