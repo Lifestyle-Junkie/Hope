@@ -1,7 +1,7 @@
 """
 backend.py
 Hope v2 API server
-- Stronger session memory + follow-up detection
+- Stronger session memory + last 20 messages conversation history
 - ElevenLabs text-to-speech (/speak)
 """
 
@@ -12,7 +12,7 @@ import time
 import threading
 import traceback
 import importlib.metadata
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
@@ -64,7 +64,7 @@ else:
 
 # ---------- ElevenLabs Config ----------
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = "weA4Q36twV5kwSaTEL0Q"
+ELEVENLABS_VOICE_ID = "eVItLK1UvXctxuaRV2Oq"
 
 # ---------- Flask App ----------
 app = Flask(__name__)
@@ -72,6 +72,7 @@ CORS(app)
 
 # ---------- Session Memory ----------
 SESSION_TTL_SECONDS = 1800  # 30 minutes
+MAX_HISTORY = 20            # Keep last 20 messages
 _session_lock = threading.Lock()
 _sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -124,13 +125,23 @@ def _get_session(sid: str) -> Optional[Dict[str, Any]]:
     with _session_lock:
         return _sessions.get(sid)
 
-def _update_session(sid: str, *, last_person: Optional[str], last_fact: Optional[str], last_topic: str):
+def _update_session(
+    sid: str,
+    *,
+    last_person: Optional[str],
+    last_fact: Optional[str],
+    last_topic: str,
+    history: List[Dict[str, str]]
+):
     with _session_lock:
         prev = _sessions.get(sid, {})
+        # Keep only the last MAX_HISTORY messages
+        trimmed_history = history[-MAX_HISTORY:] if history else []
         _sessions[sid] = {
             "last_person": last_person or prev.get("last_person") or "",
             "last_fact": last_fact or prev.get("last_fact") or "",
             "last_topic": last_topic or prev.get("last_topic") or "",
+            "history": trimmed_history,
             "ts": _now()
         }
 
@@ -169,17 +180,11 @@ def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Op
 def _concise_trim(text: str) -> str:
     if not text:
         return text
-    m = re.search(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]* \d{1,2}, \d{4}\b", text, re.IGNORECASE)
-    if m:
-        sentence_parts = re.split(r"(?<=[.!?])\s+", text)
-        for s in sentence_parts:
-            if m.group(0) in s:
-                return s.strip()
-        return m.group(0)
+    # Prefer first sentence for shorter replies
     first = re.split(r"(?<=[.!?])\s+", text)[0].strip()
-    if len(first) < 12 and "." not in text:
-        return text[:120]
-    return first
+    if len(first) > 10:
+        return first
+    return text[:160]
 
 # ---------- Core Route ----------
 @app.route("/ask", methods=["POST", "OPTIONS"])
@@ -193,7 +198,7 @@ def ask():
         return error_response("Invalid JSON", 400)
 
     user_prompt = (data.get("message") or "").strip()
-    concise = bool(data.get("concise"))
+    concise = bool(data.get("concise", True))  # default to shorter replies
     explicit_context = data.get("context") or None
     previous_fact_client = data.get("previous_fact") or None
     image_data = data.get("image") or None
@@ -213,10 +218,13 @@ def ask():
 
     # ----- Session memory -----
     session_id = request.remote_addr or "anon"
-    session_data = _get_session(session_id)
-    last_person = (session_data or {}).get("last_person") or ""
-    last_fact_mem = (session_data or {}).get("last_fact") or ""
-    last_topic = (session_data or {}).get("last_topic") or ""
+    session_data = _get_session(session_id) or {}
+
+    last_person = session_data.get("last_person") or ""
+    last_fact_mem = session_data.get("last_fact") or ""
+    last_topic = session_data.get("last_topic") or ""
+    history: List[Dict[str, str]] = session_data.get("history") or []
+
     new_topic = _topic_of(user_prompt)
     topic_overlap = _same_topic(last_topic, new_topic)
 
@@ -238,7 +246,7 @@ def ask():
     chosen_context_person = explicit_context if explicit_context else (last_person if reuse_context else None)
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
 
-    print(f"[Session] Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | Topic overlap: {topic_overlap}")
+    print(f"[Session] Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | History: {len(history)}")
 
     # ----- Live Web Search -----
     liveweb_raw = None
@@ -272,7 +280,8 @@ def ask():
                 effective_prompt,
                 context=chosen_context_person,
                 previous_fact=chained_fact,
-                liveweb_fact=liveweb_analyzed
+                liveweb_fact=liveweb_analyzed,
+                history=history  # pass conversation history
             )
         except Exception as e:
             print(f"[Tone] Error: {e}")
@@ -284,6 +293,7 @@ def ask():
         else:
             reply = "No data available."
 
+    # Force shorter replies
     if concise:
         reply = _concise_trim(reply)
 
@@ -297,17 +307,24 @@ def ask():
 
     store_fact = None
     if reply and not _is_unverified_death_line(reply):
-        store_fact = reply[:550]
+        store_fact = reply[:400]
     elif liveweb_analyzed and not _is_unverified_death_line(liveweb_analyzed):
-        store_fact = liveweb_analyzed[:400]
+        store_fact = liveweb_analyzed[:300]
     elif chained_fact and not _is_unverified_death_line(chained_fact):
-        store_fact = chained_fact[:400]
+        store_fact = chained_fact[:300]
+
+    # Append to conversation history
+    new_history = history + [
+        {"role": "user", "content": user_prompt},
+        {"role": "assistant", "content": reply}
+    ]
 
     _update_session(
         session_id,
         last_person=new_entity,
         last_fact=store_fact,
-        last_topic=new_topic
+        last_topic=new_topic,
+        history=new_history
     )
 
     return jsonify({
@@ -319,7 +336,8 @@ def ask():
         "memory": {
             "last_person": new_entity,
             "topic_overlap": topic_overlap,
-            "topic": new_topic
+            "topic": new_topic,
+            "history_length": len(new_history)
         }
     })
 
