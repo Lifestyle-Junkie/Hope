@@ -53,7 +53,7 @@ for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py"]:
 
 # ---------- OpenAI Key ----------
 # Uses environment variable first, falls back to the new key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
 
