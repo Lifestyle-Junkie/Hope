@@ -17,8 +17,8 @@ let backendMemory = {
   topic: null
 };
 
-// Updated to use Railway backend
-const BACKEND_URL = window.BACKEND_URL || 'https://hope-production-7e9d.up.railway.app';
+// Use var so it doesn't conflict with the const in Index.html
+var BACKEND_URL = window.BACKEND_URL || 'https://hope-production-7e9d.up.railway.app';
 
 function setConciseMode(on) {
   CONCISE_MODE = !!on;
