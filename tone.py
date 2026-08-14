@@ -117,7 +117,7 @@ def generate_with_tone(
     context: Optional[str] = None,
     previous_fact: Optional[str] = None,
     liveweb_fact: Optional[str] = None,
-    history: Optional[List[Any]] = None   # ← added to fix the error
+    history: Optional[List[Any]] = None
 ) -> str:
     prompt = (prompt or "").strip()
     if not prompt:
@@ -172,22 +172,25 @@ def generate_with_tone(
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         supplemental.append(f"Live snippet: {liveweb_fact}")
     if history:
-        # Optional: include short history summary if provided
         supplemental.append(f"Recent history length: {len(history)}")
 
     supplemental_block = "\n".join(supplemental)
 
     system_prompt = (
         "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
-        "CRITICAL RULES:\n"
-        "- Keep answers SHORT and natural, especially when speaking.\n"
-        "- For math or share calculations: just give the number of shares and a very short sentence. Do NOT show formulas or step-by-step unless the user asks.\n"
-        "- Example of good math answer: \"You'd get about 1,136 shares.\"\n"
-        "- Example of bad math answer: long explanations with formulas.\n"
-        "- Sound conversational, not like a textbook.\n"
-        "- Use previous conversation context when it exists.\n"
-        "- Never invent numbers that contradict previous context.\n"
-        "- Emojis are allowed but don't overuse them.\n"
+        "CRITICAL RULES (follow strictly):\n"
+        "1. Keep answers SHORT and natural — this is spoken out loud.\n"
+        "2. For any math or investment question:\n"
+        "   - Use the exact numbers from the previous conversation context if they exist.\n"
+        "   - Do the calculation and give the final dollar amount or share count.\n"
+        "   - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
+        "3. Good example:\n"
+        "   User previously established 1,136 shares at $22.\n"
+        "   User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
+        "4. Bad example: \"The value of your investment would increase.\"\n"
+        "5. Never invent new share counts if one was already calculated.\n"
+        "6. Sound like a helpful person, not a textbook.\n"
+        "7. Emojis are allowed but use them sparingly.\n"
     )
 
     if supplemental_block:
