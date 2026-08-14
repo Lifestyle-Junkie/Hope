@@ -52,7 +52,7 @@ for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py"]:
         print(f"✅ {fn} found")
 
 # ---------- OpenAI Key ----------
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
 
