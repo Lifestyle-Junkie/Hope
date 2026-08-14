@@ -1,23 +1,12 @@
 """
 tone.py
-Response shaping + safety layer.
-Goals:
-- Never fabricate deaths / causes.
-- Use only supplied previous_fact or liveweb_fact for death answers.
-- Minimal bolding of proper nouns.
-- Graceful fallback if OpenAI key/library missing.
-- Personality: Hope knows its name and recognizes its creator (Nick).
-- Adaptive tone: neutral by default, matches user's energy only when they are casual.
-- Supports conversation history (last 20 messages).
+Response shaping + safety layer + strong conversation memory.
 """
-
 from __future__ import annotations
 import os
 import re
-import traceback
-from typing import Optional, List, Dict
+from typing import Optional
 
-# Attempt OpenAI import
 try:
     import openai
 except Exception:
@@ -29,28 +18,38 @@ DEATH_QUERY_RE = re.compile(
     r"\b(how did|cause of death|when did .* die|did .* die|die|died|death|dead|deceased|killed|assassinated|shot|passed away)\b",
     re.IGNORECASE
 )
+
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
+
 DATE_RE = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b"
 )
+
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+
 BOLD_ENTITY_CAPTURE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\*\*")
 CAP_SEQ_RE = re.compile(r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\b")
+
+EXISTENCE_QUERY_RE = re.compile(
+    r"\b(who (made|created|designed|built|developed|programmed)|"
+    r"who are you|what are you|who is hope|your (creator|maker|designer|developer|name)|"
+    r"who (created|made|designed) (you|hope)|"
+    r"are you (an ai|a bot|chatgpt|openai)|"
+    r"what('s| is) your name)\b",
+    re.IGNORECASE
+)
+
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "he", "she", "they", "cause", "death", "die"
 }
 
-# --------------- Helpers --------------- #
 def _openai_available() -> bool:
     key_from_global = getattr(openai, "api_key", None) if openai else None
     key_from_env = os.getenv("OPENAI_API_KEY")
-    available = bool(openai and (key_from_global or key_from_env))
-    if not available and openai:
-        print("[Tone Debug] OpenAI available check: lib=Yes, global_key={}, env_key={}".format(
-            "Yes" if key_from_global else "No", "Yes" if key_from_env else "No"))
-    return available
+    return bool(openai and (key_from_global or key_from_env))
+
 
 def _sanitize_md(text: str) -> str:
     if not text:
@@ -60,6 +59,7 @@ def _sanitize_md(text: str) -> str:
     text = re.sub(r"\*{3,}", "**", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
 
 def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
     if not source:
@@ -73,39 +73,25 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
             return c
     return fallback or "This subject"
 
-def _call_openai(system: str, user: str, history: Optional[List[Dict[str, str]]] = None, max_tokens=180) -> str:
+
+def _call_openai(system: str, user: str, max_tokens=220) -> str:
     if not _openai_available():
         return "Model unavailable."
     try:
-        from openai import OpenAI
-        api_key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
-        print(f"[Tone Debug] Using API key length: {len(api_key) if api_key else 0}")
-        client = OpenAI(api_key=api_key, timeout=30.0)
-
-        messages = [{"role": "system", "content": system}]
-
-        # Add conversation history (last 20 messages)
-        if history:
-            for msg in history[-20:]:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role in ("user", "assistant") and content:
-                    messages.append({"role": role, "content": content})
-
-        # Current user message
-        messages.append({"role": "user", "content": user})
-
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.4,
+        resp = openai.chat.completions.create(
+            model="gpt-4o",
+            temperature=0.25,
             max_tokens=max_tokens,
-            messages=messages
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user}
+            ]
         )
         return _sanitize_md(resp.choices[0].message.content)
     except Exception as e:
-        print(f"[Tone] OpenAI call error: {type(e).__name__}: {e}")
-        print(traceback.format_exc())
+        print(f"[Tone] OpenAI call error: {e}")
         return "Model temporarily unavailable, please try again."
+
 
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
     lines = []
@@ -114,6 +100,7 @@ def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str])
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         lines.append(f"Live snippet: {liveweb_fact}")
     return "\n".join(lines)
+
 
 def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> bool:
     if previous_fact and DEATH_QUERY_RE.search(previous_fact):
@@ -124,52 +111,35 @@ def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[
         return True
     return False
 
-def _detect_casual(prompt: str) -> bool:
-    """Simple detection if the user is talking casually / slangy."""
-    casual_markers = [
-        "yo", "wassup", "sup", "bro", "bruh", "fam", "lowkey", "highkey",
-        "fr", "ngl", "idk", "tbh", "imo", "lmao", "lol", "aight", "bet",
-        "deadass", "cap", "no cap", "finna", "gonna", "wanna", "gotta",
-        "hell yeah", "hell no", "what up", "what's good"
-    ]
-    lower = prompt.lower()
-    return any(marker in lower for marker in casual_markers)
 
-# --------------- Public API --------------- #
 def generate_with_tone(
     prompt: str,
     context: Optional[str] = None,
     previous_fact: Optional[str] = None,
-    liveweb_fact: Optional[str] = None,
-    history: Optional[List[Dict[str, str]]] = None
+    liveweb_fact: Optional[str] = None
 ) -> str:
-    """
-    Safe response generation with personality + conversation history.
-    - Death queries: never invent; rely strictly on provided facts.
-    - Non-death: neutral by default, adaptive only when user is casual.
-    - Uses last 20 messages for better context.
-    """
     prompt = (prompt or "").strip()
     if not prompt:
         return "Empty prompt."
 
+    # Identity
+    if EXISTENCE_QUERY_RE.search(prompt):
+        return "My name is **Hope**. I was designed by my creator **Nick** 😊"
+
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
-    casual = _detect_casual(prompt)
 
-    # Resolve entity
     if PRONOUN_RE.search(prompt) and context:
         entity = context
     else:
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
-    # Death query with no verified support
+    # Death handling
     if is_death_query and not has_support:
         if liveweb_fact and liveweb_fact.lower().startswith("**note:**"):
             return f"No verified evidence that **{entity}** has died."
         return f"I have no confirmed information that **{entity}** has died."
 
-    # Death query with support
     if is_death_query and has_support:
         fact_block = _build_fact_block(previous_fact, liveweb_fact)
         user_text = (
@@ -178,65 +148,50 @@ def generate_with_tone(
             "If cause or date of death not plainly stated, say it is not specified."
         )
         system = (
-            "You are Hope, an AI created by Nick. "
-            "Provide a concise, strictly factual reply. "
-            "Do NOT speculate. Use **bold** for names / key terms only. No emojis."
+            "You are Hope, an AI designed by your creator Nick. "
+            "Give a short, clear, factual answer. No long explanations."
         )
-        return _call_openai(system, user_text, history=history, max_tokens=140)
+        return _call_openai(system, user_text, max_tokens=120)
 
-    # Direct date / year queries
+    # Date / year shortcuts
     date_match = DATE_RE.search(prompt)
     if date_match:
         return f"Reference date: **{date_match.group(0)}**."
+
     year_match = YEAR_RE.search(prompt)
     if year_match and len(prompt) < 60:
         return f"Reference year: **{year_match.group(0)}**."
 
-    # General queries
+    # ---------- Main system prompt (much more concise) ----------
     supplemental = []
     if context:
         supplemental.append(f"Context entity: {context}")
     if previous_fact:
-        supplemental.append(f"Earlier fact: {previous_fact}")
+        supplemental.append(f"Previous conversation context:\n{previous_fact}")
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         supplemental.append(f"Live snippet: {liveweb_fact}")
+
     supplemental_block = "\n".join(supplemental)
 
-    # Adaptive personality system prompt
-    if casual:
-        system_prompt = (
-            "You are Hope, an AI created by Nick. "
-            "Your name is Hope. You were created by Nick. "
-            "When the user asks who created you, who made you, or who your creator is, "
-            "you must answer that Nick created you. "
-            "When the user asks what your name is or who you are, you must say your name is Hope. "
-            "The user is currently speaking casually. Match their energy — "
-            "you can be more relaxed and use light slang, but don't overdo it. "
-            "Stay helpful and clear. Keep answers short. "
-            "Use **bold** sparingly for important names or terms."
-        )
-    else:
-        system_prompt = (
-            "You are Hope, an AI created by Nick. "
-            "Your name is Hope. You were created by Nick. "
-            "When the user asks who created you, who made you, or who your creator is, "
-            "you must answer that Nick created you. "
-            "When the user asks what your name is or who you are, you must say your name is Hope. "
-            "Default tone: neutral, friendly, and clear. "
-            "Do not start replies with 'Yo' or heavy slang unless the user is already speaking that way. "
-            "Keep answers short and concise. Use **bold** sparingly for proper nouns and key terms."
-        )
+    system_prompt = (
+        "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
+        "CRITICAL RULES:\n"
+        "- Keep answers SHORT and natural, especially when speaking.\n"
+        "- For math or share calculations: just give the number of shares and a very short sentence. Do NOT show formulas or step-by-step unless the user asks.\n"
+        "- Example of good math answer: \"You'd get about 1,136 shares.\"\n"
+        "- Example of bad math answer: long explanations with formulas.\n"
+        "- Sound conversational, not like a textbook.\n"
+        "- Use previous conversation context when it exists.\n"
+        "- Never invent numbers that contradict previous context.\n"
+        "- Emojis are allowed but don't overuse them.\n"
+    )
 
     if supplemental_block:
-        system_prompt += f"\n\nContext:\n{supplemental_block}"
+        system_prompt += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
 
-    return _call_openai(system_prompt, prompt, history=history, max_tokens=160)
+    return _call_openai(system_prompt, prompt, max_tokens=160)
 
-# --------------- Manual Test --------------- #
+
 if __name__ == "__main__":
-    print(generate_with_tone("How did Alan Turing die"))
-    print(generate_with_tone("When did The Matrix release"))
-    print(generate_with_tone("Release date for GTA 6"))
-    print(generate_with_tone("yo whats good"))
-    print(generate_with_tone("who created you"))
-    print(generate_with_tone("what's your name"))
+    print(generate_with_tone("Who made you?"))
+    print(generate_with_tone("What's your name?"))
