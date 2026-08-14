@@ -52,7 +52,8 @@ for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py"]:
         print(f"✅ {fn} found")
 
 # ---------- OpenAI Key ----------
-OPENAI_API_KEY = "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"
+# Uses environment variable first, falls back to the new key
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
 
@@ -63,7 +64,7 @@ else:
     print("🔐 OpenAI enabled.")
 
 # ---------- ElevenLabs Config ----------
-ELEVENLABS_API_KEY = "sk_35a6ce0cabc68945dc35de9f317580c2d72201481dee1916"
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "sk_35a6ce0cabc68945dc35de9f317580c2d72201481dee1916")
 ELEVENLABS_VOICE_ID = "N4dLkbUobIjAlAsGddNU"
 
 # ---------- Flask App ----------
@@ -410,15 +411,15 @@ def health():
 # ---------- Main Entrypoint ----------
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
-    port = int(os.getenv("HOPE_PORT", "5002"))
-    debug = True
+    port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
+    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
 
     print("🚀 Starting Hope v2 Backend...")
     print(f"📡 Listening: http://{host}:{port}")
     print("🔐 OpenAI enabled:" if OPENAI_AVAILABLE else "🛑 OpenAI disabled (no key).")
     print("🎤 ElevenLabs voice enabled.")
     try:
-        app.run(host=host, port=port, debug=debug, use_reloader=True)
+        app.run(host=host, port=port, debug=debug)
     except KeyboardInterrupt:
         print("\nShutting down.")
     except Exception as e:
