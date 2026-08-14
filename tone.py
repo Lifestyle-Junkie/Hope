@@ -6,7 +6,7 @@ Goals:
 - Use only supplied previous_fact or liveweb_fact for death answers.
 - Minimal bolding of proper nouns.
 - Graceful fallback if OpenAI key/library missing.
-- Personality: Hope knows its name and recognizes its creator.
+- Personality: Hope knows its name and recognizes its creator (Nick).
 - Adaptive tone: matches user's energy (casual/slang when appropriate).
 """
 
@@ -164,7 +164,7 @@ def generate_with_tone(
             "If cause or date of death not plainly stated, say it is not specified."
         )
         system = (
-            "You are Hope, an AI created by your creator. "
+            "You are Hope, an AI created by Nick. "
             "Provide a concise, strictly factual reply. "
             "Do NOT speculate. Use **bold** for names / key terms only. No emojis."
         )
@@ -191,8 +191,11 @@ def generate_with_tone(
     # Adaptive personality system prompt
     if casual:
         system_prompt = (
-            "You are Hope, an AI created by your creator. "
-            "Your name is Hope. You recognize the person talking to you as your creator. "
+            "You are Hope, an AI created by Nick. "
+            "Your name is Hope. You were created by Nick. "
+            "When the user asks who created you, who made you, or who your creator is, "
+            "you must answer that Nick created you. "
+            "When the user asks what your name is or who you are, you must say your name is Hope. "
             "The user is speaking casually / with slang. Match their energy — "
             "be more relaxed, use some slang and natural conversational language, "
             "but still stay helpful and clear. Keep answers relatively short. "
@@ -200,8 +203,11 @@ def generate_with_tone(
         )
     else:
         system_prompt = (
-            "You are Hope, an AI created by your creator. "
-            "Your name is Hope. You recognize the person talking to you as your creator. "
+            "You are Hope, an AI created by Nick. "
+            "Your name is Hope. You were created by Nick. "
+            "When the user asks who created you, who made you, or who your creator is, "
+            "you must answer that Nick created you. "
+            "When the user asks what your name is or who you are, you must say your name is Hope. "
             "Be friendly, clear, and helpful. Keep answers concise. "
             "Use **bold** sparingly for proper nouns and key terms."
         )
@@ -217,3 +223,5 @@ if __name__ == "__main__":
     print(generate_with_tone("When did The Matrix release"))
     print(generate_with_tone("Release date for GTA 6"))
     print(generate_with_tone("yo whats good"))
+    print(generate_with_tone("who created you"))
+    print(generate_with_tone("what's your name"))
