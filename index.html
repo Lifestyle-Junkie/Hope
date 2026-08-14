@@ -467,7 +467,6 @@
 
   <script src="typing-animation.js"></script>
   <script>
-    // Fixed: use var to avoid redeclaration conflict
     var BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
 
     // ---------- Audio Unlock ----------
@@ -509,6 +508,7 @@
     let mode = 'wake';
     let recognition = null;
     let isProcessing = false;
+    let restartTimer = null;
 
     function setStatus(text, active = false) {
       wakeStatus.textContent = text;
@@ -542,12 +542,25 @@
       return recog;
     }
 
+    function clearRestartTimer() {
+      if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+      }
+    }
+
     function startWakeWordMode() {
+      if (isProcessing) return;
+
       mode = 'wake';
       setStatus('Listening for “Hope”…');
+      micLabel.classList.remove('listening-active');
+
+      clearRestartTimer();
 
       if (recognition) {
-        try { recognition.stop(); } catch(e) {}
+        try { recognition.abort(); } catch(e) {}
+        recognition = null;
       }
 
       recognition = createRecognition();
@@ -557,43 +570,49 @@
         const transcript = event.results[0][0].transcript.toLowerCase().trim();
         console.log("[Wake] Heard:", transcript);
 
-        if (transcript.includes('hope') || transcript.includes('hey hope')) {
+        if (transcript.includes('hope') || transcript.includes('hey hope') || transcript.includes('hey ho')) {
           console.log("[Wake] Wake word detected!");
           startCommandMode();
         } else {
-          setTimeout(() => {
-            if (mode === 'wake') startWakeWordMode();
-          }, 300);
+          restartTimer = setTimeout(() => {
+            if (mode === 'wake' && !isProcessing) startWakeWordMode();
+          }, 700);
         }
       };
 
       recognition.onerror = (event) => {
         console.log("[Wake] Error:", event.error);
-        if (mode === 'wake' && event.error !== 'aborted') {
-          setTimeout(() => startWakeWordMode(), 600);
+        if (mode === 'wake' && event.error !== 'aborted' && !isProcessing) {
+          restartTimer = setTimeout(() => startWakeWordMode(), 1000);
         }
       };
 
       recognition.onend = () => {
-        if (mode === 'wake') {
-          setTimeout(() => startWakeWordMode(), 400);
+        if (mode === 'wake' && !isProcessing) {
+          restartTimer = setTimeout(() => startWakeWordMode(), 800);
         }
       };
 
       try {
         recognition.start();
       } catch (e) {
-        setTimeout(() => startWakeWordMode(), 1000);
+        console.warn("Could not start wake recognition:", e);
+        restartTimer = setTimeout(() => startWakeWordMode(), 1200);
       }
     }
 
     function startCommandMode() {
+      if (isProcessing) return;
+
       mode = 'command';
       setStatus('Listening… speak now', true);
       micLabel.classList.add('listening-active');
 
+      clearRestartTimer();
+
       if (recognition) {
-        try { recognition.stop(); } catch(e) {}
+        try { recognition.abort(); } catch(e) {}
+        recognition = null;
       }
 
       recognition = createRecognition();
@@ -607,6 +626,8 @@
           ta.value = transcript;
           autoresize();
           await handleVoiceCommand(transcript);
+        } else {
+          startWakeWordMode();
         }
       };
 
@@ -618,14 +639,15 @@
 
       recognition.onend = () => {
         micLabel.classList.remove('listening-active');
-        if (mode === 'command') {
-          setTimeout(() => startWakeWordMode(), 500);
+        if (mode === 'command' && !isProcessing) {
+          startWakeWordMode();
         }
       };
 
       try {
         recognition.start();
       } catch (e) {
+        console.warn("Could not start command recognition:", e);
         startWakeWordMode();
       }
     }
@@ -633,6 +655,7 @@
     async function handleVoiceCommand(text) {
       if (isProcessing) return;
       isProcessing = true;
+      clearRestartTimer();
 
       setStatus('Thinking…');
 
