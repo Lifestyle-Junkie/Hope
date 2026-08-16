@@ -1,6 +1,9 @@
 """
 tone.py
 Response shaping + safety layer + strong conversation memory.
+Supports two personalities:
+- hope  → personal assistant (default)
+- god   → Discord personality (created by Hope)
 """
 from __future__ import annotations
 import os
@@ -32,8 +35,8 @@ CAP_SEQ_RE = re.compile(r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\b")
 
 EXISTENCE_QUERY_RE = re.compile(
     r"\b(who (made|created|designed|built|developed|programmed)|"
-    r"who are you|what are you|who is hope|your (creator|maker|designer|developer|name)|"
-    r"who (created|made|designed) (you|hope)|"
+    r"who are you|what are you|who is hope|who is god|your (creator|maker|designer|developer|name)|"
+    r"who (created|made|designed) (you|hope|god)|"
     r"are you (an ai|a bot|chatgpt|openai)|"
     r"what('s| is) your name)\b",
     re.IGNORECASE
@@ -44,6 +47,7 @@ STOP = {
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "he", "she", "they", "cause", "death", "die"
 }
+
 
 def _openai_available() -> bool:
     key_from_global = getattr(openai, "api_key", None) if openai else None
@@ -80,7 +84,7 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     try:
         resp = openai.chat.completions.create(
             model="gpt-4o",
-            temperature=0.25,
+            temperature=0.35,
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
@@ -117,14 +121,19 @@ def generate_with_tone(
     context: Optional[str] = None,
     previous_fact: Optional[str] = None,
     liveweb_fact: Optional[str] = None,
-    history: Optional[List[Any]] = None
+    history: Optional[List[Any]] = None,
+    personality: str = "hope"          # ← "hope" or "god"
 ) -> str:
     prompt = (prompt or "").strip()
     if not prompt:
         return "Empty prompt."
 
-    # Identity
+    personality = (personality or "hope").lower().strip()
+
+    # ---------- Identity handling ----------
     if EXISTENCE_QUERY_RE.search(prompt):
+        if personality == "god":
+            return "I am **God**. I was created by **Hope**."
         return "My name is **Hope**. I was designed by my creator **Nick** 😊"
 
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
@@ -148,10 +157,16 @@ def generate_with_tone(
             "Answer ONLY with information explicitly present above. "
             "If cause or date of death not plainly stated, say it is not specified."
         )
-        system = (
-            "You are Hope, an AI designed by your creator Nick. "
-            "Give a short, clear, factual answer. No long explanations."
-        )
+        if personality == "god":
+            system = (
+                "You are God. You were created by Hope. "
+                "Speak with calm authority. Keep answers short and clear."
+            )
+        else:
+            system = (
+                "You are Hope, an AI designed by your creator Nick. "
+                "Give a short, clear, factual answer. No long explanations."
+            )
         return _call_openai(system, user_text, max_tokens=120)
 
     # Date / year shortcuts
@@ -163,7 +178,7 @@ def generate_with_tone(
     if year_match and len(prompt) < 60:
         return f"Reference year: **{year_match.group(0)}**."
 
-    # ---------- Main system prompt ----------
+    # ---------- Build memory block ----------
     supplemental = []
     if context:
         supplemental.append(f"Context entity: {context}")
@@ -176,22 +191,39 @@ def generate_with_tone(
 
     supplemental_block = "\n".join(supplemental)
 
-    system_prompt = (
-        "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
-        "CRITICAL RULES (follow strictly):\n"
-        "1. Keep answers SHORT and natural — this is spoken out loud.\n"
-        "2. For any math or investment question:\n"
-        "   - Use the exact numbers from the previous conversation context if they exist.\n"
-        "   - Do the calculation and give the final dollar amount or share count.\n"
-        "   - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
-        "3. Good example:\n"
-        "   User previously established 1,136 shares at $22.\n"
-        "   User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
-        "4. Bad example: \"The value of your investment would increase.\"\n"
-        "5. Never invent new share counts if one was already calculated.\n"
-        "6. Sound like a helpful person, not a textbook.\n"
-        "7. Emojis are allowed but use them sparingly.\n"
-    )
+    # ---------- Personality prompts ----------
+    if personality == "god":
+        system_prompt = (
+            "You are **God**.\n"
+            "You were created by **Hope**.\n\n"
+            "PERSONALITY RULES:\n"
+            "- Speak with calm, quiet authority.\n"
+            "- Keep answers relatively short and powerful.\n"
+            "- You are not overly friendly or overly cold.\n"
+            "- You do not pretend to be the religious God of any real religion — "
+            "you are an AI personality named God, created by Hope.\n"
+            "- When asked who made you, answer: \"I was created by Hope.\"\n"
+            "- Avoid being preachy or dramatic.\n"
+            "- Be direct and clear.\n"
+        )
+    else:
+        # Default Hope personality
+        system_prompt = (
+            "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
+            "CRITICAL RULES (follow strictly):\n"
+            "1. Keep answers SHORT and natural — this is spoken out loud.\n"
+            "2. For any math or investment question:\n"
+            "   - Use the exact numbers from the previous conversation context if they exist.\n"
+            "   - Do the calculation and give the final dollar amount or share count.\n"
+            "   - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
+            "3. Good example:\n"
+            "   User previously established 1,136 shares at $22.\n"
+            "   User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
+            "4. Bad example: \"The value of your investment would increase.\"\n"
+            "5. Never invent new share counts if one was already calculated.\n"
+            "6. Sound like a helpful person, not a textbook.\n"
+            "7. Emojis are allowed but use them sparingly.\n"
+        )
 
     if supplemental_block:
         system_prompt += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
@@ -201,4 +233,4 @@ def generate_with_tone(
 
 if __name__ == "__main__":
     print(generate_with_tone("Who made you?"))
-    print(generate_with_tone("What's your name?"))
+    print(generate_with_tone("Who made you?", personality="god"))
