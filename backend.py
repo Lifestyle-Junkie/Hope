@@ -3,8 +3,8 @@ backend.py
 Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - ElevenLabs text-to-speech (/speak)
+- Discord bot (runs in background thread)
 """
-
 from __future__ import annotations
 import os
 import re
@@ -13,7 +13,6 @@ import threading
 import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List
-
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -47,7 +46,7 @@ image_mod = safe_import("image")
 liveweb = safe_import("liveweb") or safe_import("Liveweb")
 
 print("📂 Working directory:", os.getcwd())
-for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py"]:
+for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "discord_bot.py"]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
 
@@ -72,7 +71,7 @@ CORS(app)
 
 # ---------- Session Memory ----------
 SESSION_TTL_SECONDS = 1800  # 30 minutes
-MAX_HISTORY = 20            # Keep last 20 messages
+MAX_HISTORY = 20
 _session_lock = threading.Lock()
 _sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -135,7 +134,6 @@ def _update_session(
 ):
     with _session_lock:
         prev = _sessions.get(sid, {})
-        # Keep only the last MAX_HISTORY messages
         trimmed_history = history[-MAX_HISTORY:] if history else []
         _sessions[sid] = {
             "last_person": last_person or prev.get("last_person") or "",
@@ -180,7 +178,6 @@ def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Op
 def _concise_trim(text: str) -> str:
     if not text:
         return text
-    # Prefer first sentence for shorter replies
     first = re.split(r"(?<=[.!?])\s+", text)[0].strip()
     if len(first) > 10:
         return first
@@ -198,7 +195,7 @@ def ask():
         return error_response("Invalid JSON", 400)
 
     user_prompt = (data.get("message") or "").strip()
-    concise = bool(data.get("concise", True))  # default to shorter replies
+    concise = bool(data.get("concise", True))
     explicit_context = data.get("context") or None
     previous_fact_client = data.get("previous_fact") or None
     image_data = data.get("image") or None
@@ -219,7 +216,6 @@ def ask():
     # ----- Session memory -----
     session_id = request.remote_addr or "anon"
     session_data = _get_session(session_id) or {}
-
     last_person = session_data.get("last_person") or ""
     last_fact_mem = session_data.get("last_fact") or ""
     last_topic = session_data.get("last_topic") or ""
@@ -281,7 +277,7 @@ def ask():
                 context=chosen_context_person,
                 previous_fact=chained_fact,
                 liveweb_fact=liveweb_analyzed,
-                history=history  # pass conversation history
+                history=history
             )
         except Exception as e:
             print(f"[Tone] Error: {e}")
@@ -293,7 +289,6 @@ def ask():
         else:
             reply = "No data available."
 
-    # Force shorter replies
     if concise:
         reply = _concise_trim(reply)
 
@@ -313,7 +308,6 @@ def ask():
     elif chained_fact and not _is_unverified_death_line(chained_fact):
         store_fact = chained_fact[:300]
 
-    # Append to conversation history
     new_history = history + [
         {"role": "user", "content": user_prompt},
         {"role": "assistant", "content": reply}
@@ -356,7 +350,6 @@ def speak():
     if not text:
         return error_response("No text provided", 400)
 
-    # Clean markdown for better speech
     clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     clean_text = re.sub(r"`[^`]+`", "", clean_text)
     clean_text = clean_text.strip()
@@ -429,14 +422,27 @@ def health():
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
-    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    debug = False  # keep False when running Discord in the same process
 
-    print("🚀 Starting Hope v2 Backend...")
+    print("🚀 Starting Hope v2 Backend + Discord...")
     print(f"📡 Listening: http://{host}:{port}")
     print("🔐 OpenAI enabled:" if OPENAI_AVAILABLE else "🛑 OpenAI disabled (no key).")
     print("🎤 ElevenLabs voice enabled.")
+
+    # Start Discord bot in background thread
+    def run_discord():
+        try:
+            from discord_bot import start_discord_bot
+            start_discord_bot()
+        except Exception as e:
+            print(f"[Discord] Failed to start: {e}")
+
+    discord_thread = threading.Thread(target=run_discord, daemon=True)
+    discord_thread.start()
+    print("🤖 Discord bot thread started")
+
     try:
-        app.run(host=host, port=port, debug=debug)
+        app.run(host=host, port=port, debug=debug, use_reloader=False)
     except KeyboardInterrupt:
         print("\nShutting down.")
     except Exception as e:
