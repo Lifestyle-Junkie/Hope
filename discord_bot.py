@@ -4,6 +4,7 @@ God Discord bot + Music system
 - Chat personality: God (created by Hope)
 - Music: Spotify metadata (optional) + SoundCloud playback first
 - Fixed queue/pause/skip behavior
+- Re-fetch fresh stream URL before each play (helps full-song playback)
 """
 
 import os
@@ -51,7 +52,7 @@ YTDL_OPTS = {
 }
 
 FFMPEG_OPTS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin",
     "options": "-vn"
 }
 
@@ -176,12 +177,29 @@ async def play_next(guild: discord.Guild):
     state["current"] = item
     state["paused"] = False
 
+    # Re-resolve a fresh stream URL before playing
+    try:
+        search_name = item.get("title") or ""
+        fresh = await resolve_audio(search_name)
+        if fresh and fresh.get("url"):
+            item["url"] = fresh["url"]
+            item["title"] = fresh.get("title") or item.get("title")
+            item["source"] = fresh.get("source") or item.get("source")
+    except Exception as e:
+        print(f"[Music] refresh failed: {e}")
+
+    def _after_play(error):
+        if error:
+            print(f"[Music] after error: {error}")
+        fut = asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"[Music] after callback failed: {e}")
+
     try:
         source = discord.FFmpegPCMAudio(item["url"], **FFMPEG_OPTS)
-        voice.play(
-            source,
-            after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
-        )
+        voice.play(source, after=_after_play)
         print(f"[Music] Now playing ({item.get('source', 'unknown')}): {item['title']}")
     except Exception as e:
         print(f"[Music] Play error: {e}")
