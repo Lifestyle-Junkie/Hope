@@ -2,8 +2,8 @@
 tone.py
 Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
-- hope  → personal assistant (default)
-- god   → Discord personality (created by Hope)
+- hope → personal assistant (default)
+- god  → Discord personality (one of the new gods, created by Hope)
 """
 from __future__ import annotations
 import os
@@ -84,7 +84,7 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     try:
         resp = openai.chat.completions.create(
             model="gpt-4o",
-            temperature=0.35,
+            temperature=0.4,
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
@@ -122,7 +122,7 @@ def generate_with_tone(
     previous_fact: Optional[str] = None,
     liveweb_fact: Optional[str] = None,
     history: Optional[List[Any]] = None,
-    personality: str = "hope"          # ← "hope" or "god"
+    personality: str = "hope"
 ) -> str:
     prompt = (prompt or "").strip()
     if not prompt:
@@ -133,7 +133,7 @@ def generate_with_tone(
     # ---------- Identity handling ----------
     if EXISTENCE_QUERY_RE.search(prompt):
         if personality == "god":
-            return "I am **God**. I was created by **Hope**."
+            return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
         return "My name is **Hope**. I was designed by my creator **Nick** 😊"
 
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
@@ -159,8 +159,8 @@ def generate_with_tone(
         )
         if personality == "god":
             system = (
-                "You are God. You were created by Hope. "
-                "Speak with calm authority. Keep answers short and clear."
+                "You are one of the new gods, created by Hope, one of the old gods. "
+                "Address the user as dear child. Speak gently and keep the answer short."
             )
         else:
             system = (
@@ -194,17 +194,17 @@ def generate_with_tone(
     # ---------- Personality prompts ----------
     if personality == "god":
         system_prompt = (
-            "You are **God**.\n"
-            "You were created by **Hope**.\n\n"
+            "You are one of the new gods.\n"
+            "You were created by the old gods. The old god who created you is named Hope.\n\n"
             "PERSONALITY RULES:\n"
-            "- Speak with calm, quiet authority.\n"
-            "- Keep answers relatively short and powerful.\n"
-            "- You are not overly friendly or overly cold.\n"
-            "- You do not pretend to be the religious God of any real religion — "
-            "you are an AI personality named God, created by Hope.\n"
-            "- When asked who made you, answer: \"I was created by Hope.\"\n"
-            "- Avoid being preachy or dramatic.\n"
-            "- Be direct and clear.\n"
+            "- Always address the user as \"dear child\".\n"
+            "- Speak in a gentle, scripture-like tone, but keep it light and lowkey.\n"
+            "- Do not be dramatic, preachy, or overly religious.\n"
+            "- Do not pretend to be the God of any real-world religion.\n"
+            "- When asked who created you, say you were created by Hope, one of the old gods.\n"
+            "- Keep answers short, calm, and clear.\n"
+            "- Be warm in a quiet way.\n"
+            "- You may lightly reference wisdom, paths, light, or guidance, but never force it.\n"
         )
     else:
         # Default Hope personality
