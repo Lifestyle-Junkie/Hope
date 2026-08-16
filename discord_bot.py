@@ -1,6 +1,7 @@
 """
 discord_bot.py
-Hope Discord bot - runs alongside the Flask backend
+God Discord bot - runs alongside the Flask backend
+Personality: God (created by Hope)
 """
 
 import os
@@ -21,8 +22,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 async def ask_hope(message: str) -> str:
     url = f"{BACKEND_URL.rstrip('/')}/ask"
-    payload = {"message": message, "concise": True}
-    print(f"[Discord] Asking Hope: {message}")
+    payload = {
+        "message": message,
+        "concise": True,
+        "personality": "god"          # ← tells backend to use God personality
+    }
+    print(f"[Discord] Asking God: {message}")
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -31,19 +36,19 @@ async def ask_hope(message: str) -> str:
                 if resp.status != 200:
                     text = await resp.text()
                     print(f"[Discord] Backend error body: {text}")
-                    return "Sorry, I'm having trouble thinking right now."
+                    return "I am momentarily silent."
                 data = await resp.json()
                 reply = data.get("reply") or data.get("liveweb_analyzed") or "No response available."
-                print(f"[Discord] Hope replied: {reply[:100]}")
+                print(f"[Discord] God replied: {reply[:100]}")
                 return reply
     except Exception as e:
         print(f"[Discord] Backend error: {e}")
-        return "Sorry, I couldn't reach my brain right now."
+        return "Something interferes with my voice."
 
 
 @bot.event
 async def on_ready():
-    print(f"✅ Hope Discord is online as {bot.user} (ID: {bot.user.id})")
+    print(f"✅ God is online as {bot.user} (ID: {bot.user.id})")
     print(f"📡 Backend URL: {BACKEND_URL}")
 
 
@@ -51,7 +56,6 @@ async def on_ready():
 async def on_message(message: discord.Message):
     print(f"[Discord] Message received from {message.author}: {message.content}")
 
-    # Ignore the bot's own messages
     if message.author == bot.user or message.author.bot:
         return
 
@@ -63,7 +67,7 @@ async def on_message(message: discord.Message):
     if not (is_dm or is_mentioned):
         return
 
-    # Clean the message (remove the bot mention)
+    # Clean the message
     content = message.content
     for mention in message.mentions:
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
@@ -72,7 +76,7 @@ async def on_message(message: discord.Message):
     print(f"[Discord] Cleaned content: '{content}'")
 
     if not content:
-        await message.channel.send("Yes? 😊")
+        await message.channel.send("Speak.")
         return
 
     async with message.channel.typing():
@@ -89,5 +93,5 @@ def start_discord_bot():
     if not DISCORD_TOKEN:
         print("[Discord] No DISCORD_TOKEN found — bot will not start")
         return
-    print("🤖 Starting Discord bot...")
+    print("🤖 Starting God Discord bot...")
     bot.run(DISCORD_TOKEN)
