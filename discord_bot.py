@@ -3,6 +3,7 @@ discord_bot.py
 God Discord bot + Music system
 - Chat personality: God (created by Hope)
 - Music: Spotify metadata (optional) + SoundCloud playback first
+- Fixed queue/pause/skip behavior
 """
 
 import os
@@ -256,6 +257,7 @@ async def leave(ctx: commands.Context):
         state["voice"] = None
         state["queue"].clear()
         state["current"] = None
+        state["paused"] = False
         await ctx.send("I have left the voice channel, dear child.")
     else:
         await ctx.send("I am not in a voice channel.")
@@ -284,8 +286,16 @@ async def play(ctx: commands.Context, *, query: str = None):
         return await msg.edit(content="I could not find that song, dear child.")
 
     state["queue"].append(track)
+    voice = state["voice"]
 
-    if not state["voice"].is_playing() and not state["paused"]:
+    # If nothing is actively playing, start now (even if previously paused)
+    if not voice.is_playing():
+        state["paused"] = False
+        if voice.is_paused():
+            try:
+                voice.stop()
+            except Exception:
+                pass
         await msg.edit(content=f"Now playing: **{track['title']}**")
         await play_next(ctx.guild)
     else:
@@ -316,11 +326,18 @@ async def skip(ctx: commands.Context):
     state = get_state(ctx.guild.id)
     voice = state["voice"]
 
-    if not voice or not voice.is_playing():
-        return await ctx.send("Nothing is playing, dear child.")
+    if not voice or not voice.is_connected():
+        return await ctx.send("I am not in a voice channel, dear child.")
 
-    voice.stop()
-    await ctx.send("Skipped.")
+    if voice.is_playing() or voice.is_paused() or state["queue"] or state["current"]:
+        state["paused"] = False
+        if voice.is_playing() or voice.is_paused():
+            voice.stop()  # triggers play_next
+        else:
+            await play_next(ctx.guild)
+        await ctx.send("Skipped.")
+    else:
+        await ctx.send("Nothing is playing, dear child.")
 
 
 @bot.command(name="pause")
