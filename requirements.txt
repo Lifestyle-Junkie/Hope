@@ -5,3 +5,5 @@ requests
 discord.py
 aiohttp
 gunicorn
+yt-dlp
+PyNaCl
