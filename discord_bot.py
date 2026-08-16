@@ -2,7 +2,7 @@
 discord_bot.py
 God Discord bot + Music system
 - Chat personality: God (created by Hope)
-- Music: Spotify search + YouTube playback
+- Music: Spotify metadata (optional) + SoundCloud playback first
 """
 
 import os
@@ -39,7 +39,6 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ---------- Music state ----------
-# guild_id -> {"queue": [], "voice": VoiceClient, "current": dict|None, "paused": bool}
 music_state = {}
 
 YTDL_OPTS = {
@@ -95,13 +94,14 @@ def get_state(guild_id: int) -> dict:
 async def resolve_audio(query: str) -> dict | None:
     """
     Resolve a search query into something playable.
-    Uses Spotify for nice metadata, then YouTube for audio.
+    Prefer SoundCloud first.
     """
-    title = query
-    artist = ""
+    if not YTDL_AVAILABLE:
+        return None
+
     display = query
 
-    # Try Spotify first for clean metadata
+    # Optional Spotify metadata only
     if SPOTIFY_AVAILABLE:
         try:
             results = await search_track(query, limit=1)
@@ -114,25 +114,48 @@ async def resolve_audio(query: str) -> dict | None:
         except Exception as e:
             print(f"[Music] Spotify search failed: {e}")
 
-    if not YTDL_AVAILABLE:
-        return None
-
     def _extract():
-        with yt_dlp.YoutubeDL(YTDL_OPTS) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if "entries" in info:
-                info = info["entries"][0]
-            return {
-                "title": display or info.get("title") or query,
-                "url": info["url"],
-                "webpage_url": info.get("webpage_url"),
-                "duration": info.get("duration")
-            }
+        # 1) SoundCloud first
+        sc_opts = {
+            **YTDL_OPTS,
+            "default_search": "scsearch1",
+        }
+        try:
+            with yt_dlp.YoutubeDL(sc_opts) as ydl:
+                info = ydl.extract_info(query, download=False)
+                if "entries" in info:
+                    info = info["entries"][0]
+                return {
+                    "title": display or info.get("title") or query,
+                    "url": info["url"],
+                    "webpage_url": info.get("webpage_url"),
+                    "duration": info.get("duration"),
+                    "source": "soundcloud"
+                }
+        except Exception as e:
+            print(f"[Music] SoundCloud failed: {e}")
+
+        # 2) Generic fallback
+        try:
+            with yt_dlp.YoutubeDL(YTDL_OPTS) as ydl:
+                info = ydl.extract_info(query, download=False)
+                if "entries" in info:
+                    info = info["entries"][0]
+                return {
+                    "title": display or info.get("title") or query,
+                    "url": info["url"],
+                    "webpage_url": info.get("webpage_url"),
+                    "duration": info.get("duration"),
+                    "source": "generic"
+                }
+        except Exception as e:
+            print(f"[Music] Generic extract failed: {e}")
+            return None
 
     try:
         return await asyncio.to_thread(_extract)
     except Exception as e:
-        print(f"[Music] yt_dlp error: {e}")
+        print(f"[Music] resolve_audio error: {e}")
         return None
 
 
@@ -154,8 +177,11 @@ async def play_next(guild: discord.Guild):
 
     try:
         source = discord.FFmpegPCMAudio(item["url"], **FFMPEG_OPTS)
-        voice.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop))
-        print(f"[Music] Now playing: {item['title']}")
+        voice.play(
+            source,
+            after=lambda e: asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
+        )
+        print(f"[Music] Now playing ({item.get('source', 'unknown')}): {item['title']}")
     except Exception as e:
         print(f"[Music] Play error: {e}")
         await play_next(guild)
@@ -174,10 +200,8 @@ async def on_message(message: discord.Message):
     if message.author == bot.user or message.author.bot:
         return
 
-    # Let commands process first
     await bot.process_commands(message)
 
-    # Ignore if it was a command
     if message.content.startswith("!"):
         return
 
@@ -250,11 +274,10 @@ async def play(ctx: commands.Context, *, query: str = None):
 
     state = get_state(ctx.guild.id)
 
-    # Auto-join if needed
     if not state["voice"] or not state["voice"].is_connected():
         state["voice"] = await ctx.author.voice.channel.connect()
 
-    msg = await ctx.send(f"Searching for **{query}**...")
+    msg = await ctx.send(f"Searching SoundCloud for **{query}**...")
 
     track = await resolve_audio(query)
     if not track:
@@ -296,7 +319,7 @@ async def skip(ctx: commands.Context):
     if not voice or not voice.is_playing():
         return await ctx.send("Nothing is playing, dear child.")
 
-    voice.stop()  # triggers play_next via after callback
+    voice.stop()
     await ctx.send("Skipped.")
 
 
@@ -355,5 +378,5 @@ def start_discord_bot():
     if not DISCORD_TOKEN:
         print("[Discord] No DISCORD_TOKEN found — bot will not start")
         return
-    print("🤖 Starting God Discord bot + Music...")
+    print("🤖 Starting God Discord bot + Music (SoundCloud first)...")
     bot.run(DISCORD_TOKEN)
