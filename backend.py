@@ -3,7 +3,7 @@ backend.py
 Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - ElevenLabs text-to-speech (/speak)
-- Discord bot (runs in background thread)
+- Discord bot (runs in background thread - works with gunicorn)
 """
 from __future__ import annotations
 import os
@@ -205,7 +205,6 @@ def ask():
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
 
-    # Image processing
     vision_description = None
     if image_data and image_mod and hasattr(image_mod, "process_image_upload"):
         try:
@@ -213,7 +212,6 @@ def ask():
         except Exception as e:
             print(f"[Image] Error: {e}")
 
-    # ----- Session memory -----
     session_id = request.remote_addr or "anon"
     session_data = _get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
@@ -244,7 +242,6 @@ def ask():
 
     print(f"[Session] Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | History: {len(history)}")
 
-    # ----- Live Web Search -----
     liveweb_raw = None
     liveweb_analyzed = None
     if liveweb and hasattr(liveweb, "needs_live_data") and liveweb.needs_live_data(user_prompt):
@@ -268,7 +265,6 @@ def ask():
     if vision_description:
         effective_prompt += f"\n\nImage context: {vision_description}"
 
-    # ----- Tone / Model Generation -----
     reply = None
     if tone and hasattr(tone, "generate_with_tone") and OPENAI_AVAILABLE:
         try:
@@ -292,7 +288,6 @@ def ask():
     if concise:
         reply = _concise_trim(reply)
 
-    # ----- Update memory -----
     new_entity = (
         last_person if _is_unverified_death_line(liveweb_analyzed or "") else
         _extract_entity_from_text(reply) or
@@ -418,28 +413,40 @@ def send_email_route():
 def health():
     return jsonify({"status": "ok"})
 
-# ---------- Main Entrypoint ----------
+# ---------- Discord bot startup (works with gunicorn) ----------
+_discord_started = False
+
+def _start_discord_background():
+    global _discord_started
+    if _discord_started:
+        return
+    _discord_started = True
+
+    def run_discord():
+        try:
+            from discord_bot import start_discord_bot
+            print("🤖 Starting Discord bot...")
+            start_discord_bot()
+        except Exception as e:
+            print(f"[Discord] Failed to start: {e}")
+
+    t = threading.Thread(target=run_discord, daemon=True)
+    t.start()
+    print("🤖 Discord bot thread started (gunicorn mode)")
+
+# Start Discord as soon as this module is imported
+_start_discord_background()
+
+# ---------- Main Entrypoint (local testing) ----------
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
-    debug = False  # keep False when running Discord in the same process
+    debug = False
 
     print("🚀 Starting Hope v2 Backend + Discord...")
     print(f"📡 Listening: http://{host}:{port}")
     print("🔐 OpenAI enabled:" if OPENAI_AVAILABLE else "🛑 OpenAI disabled (no key).")
     print("🎤 ElevenLabs voice enabled.")
-
-    # Start Discord bot in background thread
-    def run_discord():
-        try:
-            from discord_bot import start_discord_bot
-            start_discord_bot()
-        except Exception as e:
-            print(f"[Discord] Failed to start: {e}")
-
-    discord_thread = threading.Thread(target=run_discord, daemon=True)
-    discord_thread.start()
-    print("🤖 Discord bot thread started")
 
     try:
         app.run(host=host, port=port, debug=debug, use_reloader=False)
