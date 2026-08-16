@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -469,7 +469,8 @@
 
   <script src="typing-animation.js"></script>
   <script>
-    var BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
+    // Fixed: use window.BACKEND_URL to avoid "already declared" error
+    window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
 
     // ---------- Audio Unlock ----------
     let audioUnlocked = false;
@@ -696,7 +697,7 @@
 
       let reply = "No response available.";
       try {
-        const res = await fetch(`${BACKEND_URL}/ask`, {
+        const res = await fetch(`${window.BACKEND_URL}/ask`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: text })
@@ -715,7 +716,7 @@
       // Speak
       try {
         setStatus('Speaking…', true);
-        const speakRes = await fetch(`${BACKEND_URL}/speak`, {
+        const speakRes = await fetch(`${window.BACKEND_URL}/speak`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: reply })
@@ -768,7 +769,7 @@
         chatThread.appendChild(aiBubble);
 
         try {
-          const res = await fetch(`${BACKEND_URL}/ask`, {
+          const res = await fetch(`${window.BACKEND_URL}/ask`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ message: text })
