@@ -4,6 +4,7 @@ Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
+- Supports personality: "hope" (default) or "god" (Discord)
 """
 from __future__ import annotations
 import os
@@ -199,8 +200,9 @@ def ask():
     explicit_context = data.get("context") or None
     previous_fact_client = data.get("previous_fact") or None
     image_data = data.get("image") or None
+    personality = (data.get("personality") or "hope").lower().strip()
 
-    print(f"[Ask] Incoming: {user_prompt!r} concise={concise}")
+    print(f"[Ask] Incoming: {user_prompt!r} concise={concise} personality={personality}")
 
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
@@ -273,7 +275,8 @@ def ask():
                 context=chosen_context_person,
                 previous_fact=chained_fact,
                 liveweb_fact=liveweb_analyzed,
-                history=history
+                history=history,
+                personality=personality          # ← God or Hope
             )
         except Exception as e:
             print(f"[Tone] Error: {e}")
