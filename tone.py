@@ -4,6 +4,8 @@ Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
+
+Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 """
 from __future__ import annotations
 import os
@@ -77,16 +79,17 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     if not _openai_available():
         return "Model unavailable."
     try:
+        # GPT-5.6 Terra: no custom temperature (only default supported)
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
-            temperature=0.4,
             max_completion_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ]
         )
-        return _sanitize_md(resp.choices[0].message.content)
+        content = resp.choices[0].message.content or ""
+        return _sanitize_md(content)
     except Exception as e:
         print(f"[Tone] OpenAI call error: {e}")
         return "Model temporarily unavailable, please try again."
@@ -201,7 +204,6 @@ def generate_with_tone(
             "- You may lightly reference wisdom, paths, light, or guidance, but never force it.\n"
         )
     else:
-        # Default Hope personality
         system_prompt = (
             "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
             "CRITICAL RULES (follow strictly):\n"
