@@ -3,6 +3,7 @@ backend.py
 Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - Shared web memory for welcome-back across devices
+- Yahoo Finance quotes via market.py
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
 - Supports personality: "hope" (default) or "god" (Discord)
@@ -46,9 +47,10 @@ tone = safe_import("tone")
 emailer = safe_import("emailer")
 image_mod = safe_import("image")
 liveweb = safe_import("liveweb") or safe_import("Liveweb")
+market = safe_import("market")
 
 print("📂 Working directory:", os.getcwd())
-for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "discord_bot.py"]:
+for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "discord_bot.py", "market.py"]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
 
@@ -386,6 +388,36 @@ def welcome():
         }
     })
 
+# ---------- Yahoo Finance Quote Route ----------
+@app.route("/quote", methods=["GET", "OPTIONS"])
+def quote():
+    if request.method == "OPTIONS":
+        return ("", 200)
+
+    if not market or not hasattr(market, "get_quote"):
+        return error_response("Market module not available", 500)
+
+    symbol = (request.args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return error_response("Missing symbol", 400)
+
+    q = market.get_quote(symbol)
+    if not q:
+        return error_response(f"No quote for {symbol}", 404)
+
+    line = market.format_quote_line(q) if hasattr(market, "format_quote_line") else symbol
+
+    return jsonify({
+        "symbol": q.get("symbol"),
+        "price": q.get("price"),
+        "previous_close": q.get("previous_close"),
+        "change": q.get("change"),
+        "change_percent": q.get("change_percent"),
+        "currency": q.get("currency"),
+        "market_state": q.get("market_state"),
+        "line": line,
+    })
+
 # ---------- ElevenLabs Speak Route ----------
 @app.route("/speak", methods=["POST", "OPTIONS"])
 def speak():
@@ -502,6 +534,7 @@ if __name__ == "__main__":
     print(f"📡 Listening: http://{host}:{port}")
     print("🔐 OpenAI enabled:" if OPENAI_AVAILABLE else "🛑 OpenAI disabled (no key).")
     print("🎤 ElevenLabs voice enabled.")
+    print("📈 Market quotes enabled:" if market else "🛑 Market module missing.")
 
     try:
         app.run(host=host, port=port, debug=debug, use_reloader=False)
