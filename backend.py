@@ -4,6 +4,7 @@ Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - Shared web memory for welcome-back across devices
 - Yahoo Finance quotes via market.py (used in /ask + /quote)
+- Safer stock detection (won't treat Hi / who made you as tickers)
 - Remembers last ticker for follow-ups like "check it again"
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
@@ -16,7 +17,7 @@ import time
 import threading
 import traceback
 import importlib.metadata
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -97,15 +98,23 @@ NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
 
-STOCK_PRICE_RE = re.compile(
-    r"\b(stock|share|shares|price|quote|trading at|worth|at rn|right now|current price|"
-    r"how much is|what is|what's|whats|check again|check it again|update|refresh)\b",
+# Strong stock keywords only (not generic "what is")
+STOCK_KEYWORD_RE = re.compile(
+    r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
+    r"current price|at rn|right now price)\b",
     re.IGNORECASE
 )
 
 STOCK_FOLLOWUP_RE = re.compile(
-    r"\b(check( it)? again|check again|again|update( it)?|refresh|now|current|"
-    r"right now|at rn|price now|how about now)\b",
+    r"\b(check( it)? again|check again|update( it)?|refresh|price now|how about now|"
+    r"what(?:'s| is)? (?:it|that|the price) now)\b",
+    re.IGNORECASE
+)
+
+# Identity / normal chat should never hit market path
+IDENTITY_RE = re.compile(
+    r"\b(who made you|who created you|who designed you|who are you|what are you|"
+    r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
     re.IGNORECASE
 )
 
@@ -136,7 +145,11 @@ IGNORE_TICKERS = {
     "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
     "CHECK", "AGAIN", "WHEN", "WAS", "IT", "THIS", "THAT", "UPDATE",
     "ME", "MY", "ON", "OF", "TO", "A", "AN", "RIGHT", "ABOUT", "WITH",
-    "FROM", "JUST", "LIKE", "CAN", "YOU", "GET", "GIVE", "SHOW", "TELL"
+    "FROM", "JUST", "LIKE", "CAN", "YOU", "GET", "GIVE", "SHOW", "TELL",
+    "WHO", "HI", "HEY", "HELLO", "MADE", "CREATE", "CREATED", "DESIGN",
+    "DESIGNED", "NAME", "HOPE", "GOD", "YES", "NO", "OK", "OKAY", "PLS",
+    "PLEASE", "THANKS", "THANK", "WHY", "WHERE", "WHICH", "YOUR", "YOU",
+    "ARE", "AM", "BE", "DO", "DID", "DOES", "HAVE", "HAS", "HAD"
 }
 
 STOPWORDS = {
@@ -249,34 +262,65 @@ def _concise_trim(text: str) -> str:
     return text[:160]
 
 
-def _extract_ticker(prompt: str) -> Optional[str]:
-    text = (prompt or "").strip()
-    lower = text.lower()
-
+def _extract_company_ticker(prompt: str) -> Optional[str]:
+    lower = (prompt or "").lower()
     for name, ticker in COMPANY_TO_TICKER.items():
         if re.search(rf"\b{re.escape(name)}\b", lower):
             return ticker
+    return None
 
-    upper_hits = TICKER_RE.findall(text.upper())
-    for tok in upper_hits:
-        if tok not in IGNORE_TICKERS and 1 <= len(tok) <= 5:
-            return tok
+
+def _extract_explicit_ticker(prompt: str) -> Optional[str]:
+    """Only accept uppercase-looking tickers that aren't common words."""
+    text = (prompt or "").strip()
+    # Prefer tokens that appear as all-caps in original text
+    candidates = re.findall(r"\b[A-Z]{1,5}\b", text)
+    if not candidates:
+        # fallback: uppercase whole prompt tokens
+        candidates = TICKER_RE.findall(text.upper())
+
+    for tok in candidates:
+        up = tok.upper()
+        if up not in IGNORE_TICKERS and 1 <= len(up) <= 5:
+            return up
     return None
 
 
 def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bool:
     if not prompt:
         return False
-    if STOCK_PRICE_RE.search(prompt):
+
+    # Never intercept identity / normal "who are you" style questions
+    if IDENTITY_RE.search(prompt):
+        return False
+
+    company = _extract_company_ticker(prompt)
+    explicit = _extract_explicit_ticker(prompt)
+    has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
+    is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
+
+    # Company name + any stock-ish language, or company alone in short prompt
+    if company and (has_stock_kw or len(prompt.split()) <= 8):
         return True
-    if STOCK_FOLLOWUP_RE.search(prompt) and has_last_ticker:
+
+    # Explicit ticker + stock keyword
+    if explicit and has_stock_kw:
         return True
-    if _extract_ticker(prompt) and len(prompt.split()) <= 6:
+
+    # Short pure ticker ask: "SHOP?" / "AAPL price"
+    if explicit and len(prompt.split()) <= 3 and has_stock_kw:
         return True
+    if explicit and re.fullmatch(r"[A-Za-z]{1,5}\??", prompt.strip()):
+        return True
+
+    # Follow-up after known ticker
+    if has_last_ticker and is_followup:
+        return True
+
     return False
 
 
-def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[tuple]:
+def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[Tuple[str, str]]:
     """
     Returns (reply_text, ticker) or None
     """
@@ -287,20 +331,17 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
     if not _looks_like_stock_question(prompt, has_last_ticker=has_last):
         return None
 
-    ticker = _extract_ticker(prompt)
+    # Prefer company map, then explicit ticker, then last ticker on follow-up
+    ticker = _extract_company_ticker(prompt) or _extract_explicit_ticker(prompt)
 
-    # Follow-up with no ticker -> reuse last ticker
     if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
         ticker = last_ticker
 
-    # Short stock-ish follow-up with no ticker
-    if not ticker and has_last and _looks_like_stock_question(prompt, has_last_ticker=True):
-        # Avoid historical questions being treated as current quote
-        if re.search(r"\b(when was|what day|which day|history|historical)\b", prompt or "", re.IGNORECASE):
-            return None
-        ticker = last_ticker
-
     if not ticker:
+        return None
+
+    # Historical questions should not use current-quote path
+    if re.search(r"\b(when was|what day|which day|history|historical|last time it)\b", prompt or "", re.IGNORECASE):
         return None
 
     print(f"[Market] Detected stock question for ticker={ticker}")
