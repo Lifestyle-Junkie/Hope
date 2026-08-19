@@ -3,7 +3,7 @@ backend.py
 Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - Shared web memory for welcome-back across devices
-- Yahoo Finance quotes via market.py
+- Yahoo Finance quotes via market.py (used in /ask + /quote)
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
 - Supports personality: "hope" (default) or "god" (Discord)
@@ -74,9 +74,9 @@ app = Flask(__name__)
 CORS(app)
 
 # ---------- Session Memory ----------
-SESSION_TTL_SECONDS = 7 * 24 * 3600  # keep memory longer for welcome-back
+SESSION_TTL_SECONDS = 7 * 24 * 3600
 MAX_HISTORY = 20
-WEB_MEMORY_KEY = "hope-web-owner"  # shared across your phone/pc/laptop
+WEB_MEMORY_KEY = "hope-web-owner"
 _session_lock = threading.Lock()
 _sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -96,10 +96,39 @@ NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
 
+STOCK_PRICE_RE = re.compile(
+    r"\b(stock|share|shares|price|quote|trading at|worth|at rn|right now|current price|how much is|what is|what's|whats)\b",
+    re.IGNORECASE
+)
+
+# Common company-name → ticker map
+COMPANY_TO_TICKER = {
+    "shopify": "SHOP",
+    "apple": "AAPL",
+    "comcast": "CMCSA",
+    "tesla": "TSLA",
+    "nvidia": "NVDA",
+    "microsoft": "MSFT",
+    "amazon": "AMZN",
+    "google": "GOOGL",
+    "alphabet": "GOOGL",
+    "meta": "META",
+    "facebook": "META",
+    "netflix": "NFLX",
+    "disney": "DIS",
+    "amd": "AMD",
+    "intel": "INTC",
+    "coinbase": "COIN",
+    "robinhood": "HOOD",
+}
+
+TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
+
 STOPWORDS = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
-    "come", "release", "date", "latest", "news", "did", "die", "he", "she", "they", "note"
+    "come", "release", "date", "latest", "news", "did", "die", "he", "she", "they", "note",
+    "stock", "share", "shares", "price", "quote", "rn", "now", "current"
 }
 
 def _now() -> float:
@@ -191,6 +220,77 @@ def _concise_trim(text: str) -> str:
         return first
     return text[:160]
 
+def _extract_ticker(prompt: str) -> Optional[str]:
+    text = (prompt or "").strip()
+    lower = text.lower()
+
+    # Company names first
+    for name, ticker in COMPANY_TO_TICKER.items():
+        if re.search(rf"\b{re.escape(name)}\b", lower):
+            return ticker
+
+    # Explicit tickers like SHOP / AAPL
+    # Prefer uppercase tokens in original text
+    upper_hits = TICKER_RE.findall(text.upper())
+    ignore = {
+        "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
+        "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT"
+    }
+    for tok in upper_hits:
+        if tok not in ignore and 1 <= len(tok) <= 5:
+            return tok
+
+    return None
+
+def _looks_like_stock_question(prompt: str) -> bool:
+    if not prompt:
+        return False
+    if STOCK_PRICE_RE.search(prompt):
+        return True
+    # short prompts like "SHOP?" or "SHOP price"
+    if _extract_ticker(prompt) and len(prompt.split()) <= 6:
+        return True
+    return False
+
+def _quote_reply_for_prompt(prompt: str) -> Optional[str]:
+    if not market or not hasattr(market, "get_quote"):
+        return None
+    if not _looks_like_stock_question(prompt):
+        return None
+
+    ticker = _extract_ticker(prompt)
+    if not ticker:
+        return None
+
+    print(f"[Market] Detected stock question for ticker={ticker}")
+    q = market.get_quote(ticker)
+    if not q:
+        return f"I couldn't fetch a live quote for **{ticker}** right now."
+
+    if hasattr(market, "format_quote_line"):
+        line = market.format_quote_line(q)
+    else:
+        price = q.get("price")
+        prev = q.get("previous_close")
+        line = f"{ticker}: ${price} (prev close ${prev})"
+
+    # Natural short spoken-friendly reply
+    price = q.get("price")
+    prev = q.get("previous_close")
+    chg = q.get("change_percent")
+
+    if price is None:
+        return f"I couldn't get a current price for **{ticker}**."
+
+    if prev is not None and chg is not None:
+        direction = "up" if chg >= 0 else "down"
+        return (
+            f"**{ticker}** is around **${price:,.2f}** right now. "
+            f"Previous close was **${prev:,.2f}** ({direction} {abs(chg):.2f}%)."
+        )
+
+    return f"**{ticker}** is around **${price:,.2f}** right now."
+
 # ---------- Core Route ----------
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
@@ -221,8 +321,6 @@ def ask():
         except Exception as e:
             print(f"[Image] Error: {e}")
 
-    # Shared web memory for Hope site across devices.
-    # Discord keeps separate memory.
     if personality == "god":
         session_id = f"discord-{(request.remote_addr or 'anon')}"
     else:
@@ -256,6 +354,36 @@ def ask():
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
 
     print(f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | History: {len(history)}")
+
+    # ---- Live stock quote path (before OpenAI) ----
+    market_reply = _quote_reply_for_prompt(user_prompt)
+    if market_reply:
+        reply = market_reply
+        store_fact = reply[:400]
+        new_history = history + [
+            {"role": "user", "content": user_prompt},
+            {"role": "assistant", "content": reply}
+        ]
+        _update_session(
+            session_id,
+            last_person=chosen_context_person,
+            last_fact=store_fact,
+            last_topic=new_topic or "stocks",
+            history=new_history
+        )
+        return jsonify({
+            "reply": reply,
+            "context_used": bool(chosen_context_person or chosen_previous_fact),
+            "liveweb_raw": None,
+            "liveweb_analyzed": None,
+            "vision_note": vision_description if vision_description else None,
+            "memory": {
+                "last_person": chosen_context_person,
+                "topic_overlap": topic_overlap,
+                "topic": new_topic or "stocks",
+                "history_length": len(new_history)
+            }
+        })
 
     liveweb_raw = None
     liveweb_analyzed = None
