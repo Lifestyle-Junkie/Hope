@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -390,7 +390,7 @@
 </head>
 <body>
   <div class="app-title">Hope v2</div>
-  <div id="wake-status">Click anywhere to start listening…</div>
+  <div id="wake-status">Click anywhere to start…</div>
 
   <main>
     <div id="chat-thread"></div>
@@ -469,31 +469,15 @@
 
   <script src="typing-animation.js"></script>
   <script>
-    // Fixed: use window.BACKEND_URL to avoid "already declared" error
     window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
 
-    // ---------- Audio Unlock ----------
     let audioUnlocked = false;
-    function unlockAudio() {
-      if (audioUnlocked) return;
-      const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
-      silent.volume = 0.01;
-      silent.play().then(() => {
-        audioUnlocked = true;
-        console.log("Audio unlocked");
-        setStatus('Listening for “Hope”…');
-        startWakeWordMode();
-      }).catch(() => {
-        audioUnlocked = true;
-        startWakeWordMode();
-      });
-    }
-    document.body.addEventListener('click', unlockAudio, { once: true });
-    document.body.addEventListener('touchstart', unlockAudio, { once: true });
-
-    window.addEventListener('DOMContentLoaded', () => {
-      document.body.classList.add('ready');
-    });
+    let welcomePlayed = false;
+    let isProcessing = false;
+    let mode = 'wake';
+    let recognition = null;
+    let restartAttempts = 0;
+    const MAX_RESTART_ATTEMPTS = 10;
 
     const ta = document.getElementById('chat-input');
     const submitBtn = document.getElementById('submitBtn');
@@ -505,12 +489,6 @@
     const micCheckbox = document.getElementById('mic');
     const micLabel = document.querySelector('label[for="mic"]');
     const wakeStatus = document.getElementById('wake-status');
-
-    let mode = 'wake';
-    let recognition = null;
-    let isProcessing = false;
-    let restartAttempts = 0;
-    const MAX_RESTART_ATTEMPTS = 10;
 
     function setStatus(text, active = false) {
       wakeStatus.textContent = text;
@@ -531,6 +509,89 @@
     }
     ['input', 'change'].forEach(ev => ta.addEventListener(ev, autoresize));
 
+    function addHopeBubble(text) {
+      const aiBubble = document.createElement("div");
+      aiBubble.className = "chat-bubble";
+      aiBubble.innerHTML = mdToHTML(text);
+      chatThread.appendChild(aiBubble);
+      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+      return aiBubble;
+    }
+
+    async function speakText(text) {
+      const speakRes = await fetch(`${window.BACKEND_URL}/speak`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      if (!speakRes.ok) throw new Error("Speak failed");
+      const audioBlob = await speakRes.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      await new Promise((resolve, reject) => {
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          resolve();
+        };
+        audio.onerror = reject;
+        audio.play().catch(reject);
+      });
+    }
+
+    async function playWelcome() {
+      if (welcomePlayed) return;
+      welcomePlayed = true;
+      isProcessing = true;
+      setStatus('Welcome…', true);
+
+      let reply = "Welcome back. Want today's briefing, or just ask me something?";
+      try {
+        const res = await fetch(`${window.BACKEND_URL}/welcome`, {
+          method: "GET"
+        });
+        if (res.ok) {
+          const data = await res.json();
+          reply = data.reply || reply;
+        }
+      } catch (e) {
+        console.error("Welcome error:", e);
+      }
+
+      addHopeBubble(reply);
+
+      try {
+        setStatus('Speaking…', true);
+        await speakText(reply);
+      } catch (e) {
+        console.error("Welcome speak error:", e);
+      }
+
+      isProcessing = false;
+      setStatus('Listening for “Hope”…');
+      startWakeWordMode();
+    }
+
+    function unlockAudio() {
+      if (audioUnlocked) return;
+      const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+      silent.volume = 0.01;
+      silent.play().then(async () => {
+        audioUnlocked = true;
+        console.log("Audio unlocked");
+        await playWelcome();
+      }).catch(async () => {
+        audioUnlocked = true;
+        await playWelcome();
+      });
+    }
+
+    document.body.addEventListener('click', unlockAudio, { once: true });
+    document.body.addEventListener('touchstart', unlockAudio, { once: true });
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.body.classList.add('ready');
+    });
+
     function createRecognition() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
@@ -547,7 +608,6 @@
 
     function safeRestartWake() {
       if (mode !== 'wake' || isProcessing) return;
-
       restartAttempts++;
       if (restartAttempts > MAX_RESTART_ATTEMPTS) {
         console.log("[Wake] Cooling down...");
@@ -565,7 +625,7 @@
       if (isProcessing) return;
       mode = 'wake';
       setStatus('Listening for “Hope”…');
-      micLabel.classList.remove('listening-active');
+      if (micLabel) micLabel.classList.remove('listening-active');
 
       if (recognition) {
         try {
@@ -583,7 +643,6 @@
       recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript.toLowerCase().trim();
         console.log("[Wake] Heard:", transcript);
-
         if (
           transcript.includes('hope') ||
           transcript.includes('hey hope') ||
@@ -628,7 +687,7 @@
       if (isProcessing) return;
       mode = 'command';
       setStatus('Listening… speak now', true);
-      micLabel.classList.add('listening-active');
+      if (micLabel) micLabel.classList.add('listening-active');
       restartAttempts = 0;
 
       if (recognition) {
@@ -647,7 +706,6 @@
       recognition.onresult = async (event) => {
         const transcript = event.results[0][0].transcript.trim();
         console.log("[Command] Heard:", transcript);
-
         if (transcript) {
           ta.value = transcript;
           autoresize();
@@ -659,12 +717,12 @@
 
       recognition.onerror = (event) => {
         console.log("[Command] Error:", event.error);
-        micLabel.classList.remove('listening-active');
+        if (micLabel) micLabel.classList.remove('listening-active');
         setTimeout(() => startWakeWordMode(), 600);
       };
 
       recognition.onend = () => {
-        micLabel.classList.remove('listening-active');
+        if (micLabel) micLabel.classList.remove('listening-active');
         if (mode === 'command' && !isProcessing) {
           setTimeout(() => startWakeWordMode(), 650);
         }
@@ -713,42 +771,17 @@
       aiBubble.innerHTML = mdToHTML(reply);
       aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-      // Speak
       try {
         setStatus('Speaking…', true);
-        const speakRes = await fetch(`${window.BACKEND_URL}/speak`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: reply })
-        });
-
-        if (speakRes.ok) {
-          const audioBlob = await speakRes.blob();
-          const audioUrl = URL.createObjectURL(audioBlob);
-          const audio = new Audio(audioUrl);
-
-          audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            isProcessing = false;
-            startWakeWordMode();
-          };
-          audio.onerror = () => {
-            isProcessing = false;
-            startWakeWordMode();
-          };
-          await audio.play();
-        } else {
-          isProcessing = false;
-          startWakeWordMode();
-        }
+        await speakText(reply);
       } catch (err) {
         console.error("TTS error:", err);
-        isProcessing = false;
-        startWakeWordMode();
       }
+
+      isProcessing = false;
+      startWakeWordMode();
     }
 
-    // Manual text send
     submitBtn.addEventListener('click', async () => {
       const text = ta.value.trim();
       if (!text) return;
@@ -797,7 +830,6 @@
       }
     });
 
-    // Image helpers
     function showImagePreview(base64Data) {
       previewImage.src = base64Data;
       imagePreview.classList.add('active');
