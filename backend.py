@@ -4,7 +4,7 @@ Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - Shared web memory for welcome-back across devices
 - Yahoo Finance quotes via market.py (used in /ask + /quote)
-- Safer stock detection (won't treat Hi / who made you as tickers)
+- Safer stock detection (won't treat Hi / who made you / u as tickers)
 - Remembers last ticker for follow-ups like "check it again"
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
@@ -18,6 +18,7 @@ import threading
 import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List, Tuple
+
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -138,7 +139,7 @@ COMPANY_TO_TICKER = {
     "robinhood": "HOOD",
 }
 
-TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
+TICKER_RE = re.compile(r"\b[A-Z]{2,5}\b")
 
 IGNORE_TICKERS = {
     "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
@@ -148,8 +149,10 @@ IGNORE_TICKERS = {
     "FROM", "JUST", "LIKE", "CAN", "YOU", "GET", "GIVE", "SHOW", "TELL",
     "WHO", "HI", "HEY", "HELLO", "MADE", "CREATE", "CREATED", "DESIGN",
     "DESIGNED", "NAME", "HOPE", "GOD", "YES", "NO", "OK", "OKAY", "PLS",
-    "PLEASE", "THANKS", "THANK", "WHY", "WHERE", "WHICH", "YOUR", "YOU",
-    "ARE", "AM", "BE", "DO", "DID", "DOES", "HAVE", "HAS", "HAD"
+    "PLEASE", "THANKS", "THANK", "WHY", "WHERE", "WHICH", "YOUR",
+    "ARE", "AM", "BE", "DO", "DID", "DOES", "HAVE", "HAS", "HAD",
+    "U", "I", "GO", "OR", "IF", "SO", "WE", "US", "BY", "AS", "UP",
+    "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA"
 }
 
 STOPWORDS = {
@@ -234,7 +237,11 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
 def _is_unverified_death_line(text: str) -> bool:
     if not text:
         return False
-    return "**Note:**" in text and ("unverified" in text.lower() or "no reliable" in text.lower() or "unconfirmed" in text.lower())
+    return "**Note:**" in text and (
+        "unverified" in text.lower()
+        or "no reliable" in text.lower()
+        or "unconfirmed" in text.lower()
+    )
 
 
 def error_response(msg: str, status=500):
@@ -271,17 +278,15 @@ def _extract_company_ticker(prompt: str) -> Optional[str]:
 
 
 def _extract_explicit_ticker(prompt: str) -> Optional[str]:
-    """Only accept uppercase-looking tickers that aren't common words."""
+    """Only accept tickers that aren't common words. Min length 2 (blocks u -> U)."""
     text = (prompt or "").strip()
-    # Prefer tokens that appear as all-caps in original text
-    candidates = re.findall(r"\b[A-Z]{1,5}\b", text)
+    candidates = re.findall(r"\b[A-Z]{2,5}\b", text)
     if not candidates:
-        # fallback: uppercase whole prompt tokens
-        candidates = TICKER_RE.findall(text.upper())
+        candidates = re.findall(r"\b[A-Z]{2,5}\b", text.upper())
 
     for tok in candidates:
         up = tok.upper()
-        if up not in IGNORE_TICKERS and 1 <= len(up) <= 5:
+        if up not in IGNORE_TICKERS and 2 <= len(up) <= 5:
             return up
     return None
 
@@ -299,7 +304,7 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
     has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
     is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
 
-    # Company name + any stock-ish language, or company alone in short prompt
+    # Company name + stock language, or company alone in short prompt
     if company and (has_stock_kw or len(prompt.split()) <= 8):
         return True
 
@@ -307,10 +312,8 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
     if explicit and has_stock_kw:
         return True
 
-    # Short pure ticker ask: "SHOP?" / "AAPL price"
-    if explicit and len(prompt.split()) <= 3 and has_stock_kw:
-        return True
-    if explicit and re.fullmatch(r"[A-Za-z]{1,5}\??", prompt.strip()):
+    # Short pure ticker ask: "SHOP?" / "AAPL"
+    if explicit and re.fullmatch(r"[A-Za-z]{2,5}\??", prompt.strip()):
         return True
 
     # Follow-up after known ticker
@@ -331,7 +334,6 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
     if not _looks_like_stock_question(prompt, has_last_ticker=has_last):
         return None
 
-    # Prefer company map, then explicit ticker, then last ticker on follow-up
     ticker = _extract_company_ticker(prompt) or _extract_explicit_ticker(prompt)
 
     if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
@@ -341,7 +343,11 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
         return None
 
     # Historical questions should not use current-quote path
-    if re.search(r"\b(when was|what day|which day|history|historical|last time it)\b", prompt or "", re.IGNORECASE):
+    if re.search(
+        r"\b(when was|what day|which day|history|historical|last time it)\b",
+        prompt or "",
+        re.IGNORECASE
+    ):
         return None
 
     print(f"[Market] Detected stock question for ticker={ticker}")
@@ -421,7 +427,7 @@ def ask():
 
     reuse_context = False
     if (pronoun_detected or vague_followup_detected or number_followup
-        or topic_overlap or is_short_message):
+            or topic_overlap or is_short_message):
         reuse_context = True
     if explicit_context:
         reuse_context = True
@@ -728,6 +734,7 @@ def health():
 # ---------- Discord bot startup (works with gunicorn) ----------
 _discord_started = False
 
+
 def _start_discord_background():
     global _discord_started
     if _discord_started:
@@ -745,6 +752,7 @@ def _start_discord_background():
     t = threading.Thread(target=run_discord, daemon=True)
     t.start()
     print("🤖 Discord bot thread started (gunicorn mode)")
+
 
 _start_discord_background()
 
