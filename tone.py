@@ -3,7 +3,7 @@ tone.py
 Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
 - hope → personal assistant (default)
-- god  → Discord personality (one of the new gods, created by Hope)
+- god → Discord personality (one of the new gods, created by Hope)
 """
 from __future__ import annotations
 import os
@@ -21,18 +21,13 @@ DEATH_QUERY_RE = re.compile(
     r"\b(how did|cause of death|when did .* die|did .* die|die|died|death|dead|deceased|killed|assassinated|shot|passed away)\b",
     re.IGNORECASE
 )
-
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
-
 DATE_RE = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b"
 )
-
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
-
 BOLD_ENTITY_CAPTURE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\*\*")
 CAP_SEQ_RE = re.compile(r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\b")
-
 EXISTENCE_QUERY_RE = re.compile(
     r"\b(who (made|created|designed|built|developed|programmed)|"
     r"who are you|what are you|who is hope|who is god|your (creator|maker|designer|developer|name)|"
@@ -83,9 +78,9 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
         return "Model unavailable."
     try:
         resp = openai.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5.6-terra",
             temperature=0.4,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
@@ -188,7 +183,6 @@ def generate_with_tone(
         supplemental.append(f"Live snippet: {liveweb_fact}")
     if history:
         supplemental.append(f"Recent history length: {len(history)}")
-
     supplemental_block = "\n".join(supplemental)
 
     # ---------- Personality prompts ----------
@@ -213,12 +207,12 @@ def generate_with_tone(
             "CRITICAL RULES (follow strictly):\n"
             "1. Keep answers SHORT and natural — this is spoken out loud.\n"
             "2. For any math or investment question:\n"
-            "   - Use the exact numbers from the previous conversation context if they exist.\n"
-            "   - Do the calculation and give the final dollar amount or share count.\n"
-            "   - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
+            " - Use the exact numbers from the previous conversation context if they exist.\n"
+            " - Do the calculation and give the final dollar amount or share count.\n"
+            " - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
             "3. Good example:\n"
-            "   User previously established 1,136 shares at $22.\n"
-            "   User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
+            " User previously established 1,136 shares at $22.\n"
+            " User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
             "4. Bad example: \"The value of your investment would increase.\"\n"
             "5. Never invent new share counts if one was already calculated.\n"
             "6. Sound like a helpful person, not a textbook.\n"
