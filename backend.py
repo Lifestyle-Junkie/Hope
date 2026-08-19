@@ -2,6 +2,7 @@
 backend.py
 Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
+- Shared web memory for welcome-back across devices
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
 - Supports personality: "hope" (default) or "god" (Discord)
@@ -71,8 +72,9 @@ app = Flask(__name__)
 CORS(app)
 
 # ---------- Session Memory ----------
-SESSION_TTL_SECONDS = 1800  # 30 minutes
+SESSION_TTL_SECONDS = 7 * 24 * 3600  # keep memory longer for welcome-back
 MAX_HISTORY = 20
+WEB_MEMORY_KEY = "hope-web-owner"  # shared across your phone/pc/laptop
 _session_lock = threading.Lock()
 _sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -104,7 +106,10 @@ def _now() -> float:
 def _prune_sessions():
     now = _now()
     with _session_lock:
-        stale = [k for k, v in _sessions.items() if now - v["ts"] > SESSION_TTL_SECONDS]
+        stale = [
+            k for k, v in _sessions.items()
+            if k != WEB_MEMORY_KEY and now - v["ts"] > SESSION_TTL_SECONDS
+        ]
         for k in stale:
             _sessions.pop(k, None)
 
@@ -214,7 +219,13 @@ def ask():
         except Exception as e:
             print(f"[Image] Error: {e}")
 
-    session_id = request.remote_addr or "anon"
+    # Shared web memory for Hope site across devices.
+    # Discord keeps separate memory.
+    if personality == "god":
+        session_id = f"discord-{(request.remote_addr or 'anon')}"
+    else:
+        session_id = WEB_MEMORY_KEY
+
     session_data = _get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
     last_fact_mem = session_data.get("last_fact") or ""
@@ -242,7 +253,7 @@ def ask():
     chosen_context_person = explicit_context if explicit_context else (last_person if reuse_context else None)
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
 
-    print(f"[Session] Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | History: {len(history)}")
+    print(f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | History: {len(history)}")
 
     liveweb_raw = None
     liveweb_analyzed = None
@@ -276,7 +287,7 @@ def ask():
                 previous_fact=chained_fact,
                 liveweb_fact=liveweb_analyzed,
                 history=history,
-                personality=personality          # ← God or Hope
+                personality=personality
             )
         except Exception as e:
             print(f"[Tone] Error: {e}")
@@ -330,6 +341,48 @@ def ask():
             "topic_overlap": topic_overlap,
             "topic": new_topic,
             "history_length": len(new_history)
+        }
+    })
+
+# ---------- Welcome Route ----------
+@app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
+def welcome():
+    if request.method == "OPTIONS":
+        return ("", 200)
+
+    session_data = _get_session(WEB_MEMORY_KEY) or {}
+    last_topic = (session_data.get("last_topic") or "").strip()
+    last_fact = (session_data.get("last_fact") or "").strip()
+    history = session_data.get("history") or []
+
+    if not history and not last_topic and not last_fact:
+        reply = (
+            "Welcome back. I'm ready when you are. "
+            "Want today's briefing, or do you just want to ask me something?"
+        )
+    elif last_fact:
+        short = re.sub(r"\s+", " ", last_fact)[:110].strip()
+        reply = (
+            f"Welcome back. Last time we left off around this: {short}. "
+            "Want me to catch you up, or give you today's briefing?"
+        )
+    elif last_topic:
+        reply = (
+            f"Welcome back. Last time we were on {last_topic}. "
+            "Want a quick catch-up, or should I give you today's briefing?"
+        )
+    else:
+        reply = (
+            "Welcome back. Want a quick catch-up on our last conversation, "
+            "or should I give you today's briefing?"
+        )
+
+    print(f"[Welcome] topic={last_topic!r} history={len(history)}")
+    return jsonify({
+        "reply": reply,
+        "memory": {
+            "last_topic": last_topic,
+            "has_history": bool(history),
         }
     })
 
@@ -437,7 +490,6 @@ def _start_discord_background():
     t.start()
     print("🤖 Discord bot thread started (gunicorn mode)")
 
-# Start Discord as soon as this module is imported
 _start_discord_background()
 
 # ---------- Main Entrypoint (local testing) ----------
