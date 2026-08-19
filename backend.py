@@ -4,6 +4,7 @@ Hope v2 API server
 - Stronger session memory + last 20 messages conversation history
 - Shared web memory for welcome-back across devices
 - Yahoo Finance quotes via market.py (used in /ask + /quote)
+- Remembers last ticker for follow-ups like "check it again"
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
 - Supports personality: "hope" (default) or "god" (Discord)
@@ -97,11 +98,17 @@ CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
 
 STOCK_PRICE_RE = re.compile(
-    r"\b(stock|share|shares|price|quote|trading at|worth|at rn|right now|current price|how much is|what is|what's|whats)\b",
+    r"\b(stock|share|shares|price|quote|trading at|worth|at rn|right now|current price|"
+    r"how much is|what is|what's|whats|check again|check it again|update|refresh)\b",
     re.IGNORECASE
 )
 
-# Common company-name → ticker map
+STOCK_FOLLOWUP_RE = re.compile(
+    r"\b(check( it)? again|check again|again|update( it)?|refresh|now|current|"
+    r"right now|at rn|price now|how about now)\b",
+    re.IGNORECASE
+)
+
 COMPANY_TO_TICKER = {
     "shopify": "SHOP",
     "apple": "AAPL",
@@ -124,15 +131,25 @@ COMPANY_TO_TICKER = {
 
 TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
 
+IGNORE_TICKERS = {
+    "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
+    "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
+    "CHECK", "AGAIN", "WHEN", "WAS", "IT", "THIS", "THAT", "UPDATE",
+    "ME", "MY", "ON", "OF", "TO", "A", "AN", "RIGHT", "ABOUT", "WITH",
+    "FROM", "JUST", "LIKE", "CAN", "YOU", "GET", "GIVE", "SHOW", "TELL"
+}
+
 STOPWORDS = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "did", "die", "he", "she", "they", "note",
-    "stock", "share", "shares", "price", "quote", "rn", "now", "current"
+    "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again"
 }
+
 
 def _now() -> float:
     return time.time()
+
 
 def _prune_sessions():
     now = _now()
@@ -144,10 +161,12 @@ def _prune_sessions():
         for k in stale:
             _sessions.pop(k, None)
 
+
 def _topic_of(text: str) -> str:
     tokens = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", text)]
     filtered = [t for t in tokens if t not in STOPWORDS]
     return " ".join(filtered[:5])
+
 
 def _same_topic(old: str, new: str) -> bool:
     if not old or not new:
@@ -156,29 +175,34 @@ def _same_topic(old: str, new: str) -> bool:
     b = set(new.split())
     return len(a & b) >= 1
 
+
 def _get_session(sid: str) -> Optional[Dict[str, Any]]:
     _prune_sessions()
     with _session_lock:
         return _sessions.get(sid)
 
+
 def _update_session(
     sid: str,
     *,
-    last_person: Optional[str],
-    last_fact: Optional[str],
-    last_topic: str,
-    history: List[Dict[str, str]]
+    last_person: Optional[str] = None,
+    last_fact: Optional[str] = None,
+    last_topic: str = "",
+    history: Optional[List[Dict[str, str]]] = None,
+    last_ticker: Optional[str] = None,
 ):
     with _session_lock:
         prev = _sessions.get(sid, {})
-        trimmed_history = history[-MAX_HISTORY:] if history else []
+        trimmed_history = (history or prev.get("history") or [])[-MAX_HISTORY:]
         _sessions[sid] = {
-            "last_person": last_person or prev.get("last_person") or "",
-            "last_fact": last_fact or prev.get("last_fact") or "",
+            "last_person": last_person if last_person is not None else prev.get("last_person") or "",
+            "last_fact": last_fact if last_fact is not None else prev.get("last_fact") or "",
             "last_topic": last_topic or prev.get("last_topic") or "",
+            "last_ticker": (last_ticker or prev.get("last_ticker") or "").upper(),
             "history": trimmed_history,
             "ts": _now()
         }
+
 
 def _extract_entity_from_text(text: str) -> Optional[str]:
     if not text:
@@ -193,13 +217,16 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
             return c
     return None
 
+
 def _is_unverified_death_line(text: str) -> bool:
     if not text:
         return False
     return "**Note:**" in text and ("unverified" in text.lower() or "no reliable" in text.lower() or "unconfirmed" in text.lower())
 
+
 def error_response(msg: str, status=500):
     return jsonify({"error": msg}), status
+
 
 def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Optional[str]:
     if previous_fact and liveweb_fact:
@@ -212,6 +239,7 @@ def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Op
         return f"{previous_fact} | {liveweb_fact}"
     return previous_fact or liveweb_fact
 
+
 def _concise_trim(text: str) -> str:
     if not text:
         return text
@@ -220,76 +248,84 @@ def _concise_trim(text: str) -> str:
         return first
     return text[:160]
 
+
 def _extract_ticker(prompt: str) -> Optional[str]:
     text = (prompt or "").strip()
     lower = text.lower()
 
-    # Company names first
     for name, ticker in COMPANY_TO_TICKER.items():
         if re.search(rf"\b{re.escape(name)}\b", lower):
             return ticker
 
-    # Explicit tickers like SHOP / AAPL
-    # Prefer uppercase tokens in original text
     upper_hits = TICKER_RE.findall(text.upper())
-    ignore = {
-        "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
-        "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT"
-    }
     for tok in upper_hits:
-        if tok not in ignore and 1 <= len(tok) <= 5:
+        if tok not in IGNORE_TICKERS and 1 <= len(tok) <= 5:
             return tok
-
     return None
 
-def _looks_like_stock_question(prompt: str) -> bool:
+
+def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bool:
     if not prompt:
         return False
     if STOCK_PRICE_RE.search(prompt):
         return True
-    # short prompts like "SHOP?" or "SHOP price"
+    if STOCK_FOLLOWUP_RE.search(prompt) and has_last_ticker:
+        return True
     if _extract_ticker(prompt) and len(prompt.split()) <= 6:
         return True
     return False
 
-def _quote_reply_for_prompt(prompt: str) -> Optional[str]:
+
+def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[tuple]:
+    """
+    Returns (reply_text, ticker) or None
+    """
     if not market or not hasattr(market, "get_quote"):
         return None
-    if not _looks_like_stock_question(prompt):
+
+    has_last = bool(last_ticker)
+    if not _looks_like_stock_question(prompt, has_last_ticker=has_last):
         return None
 
     ticker = _extract_ticker(prompt)
+
+    # Follow-up with no ticker -> reuse last ticker
+    if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
+        ticker = last_ticker
+
+    # Short stock-ish follow-up with no ticker
+    if not ticker and has_last and _looks_like_stock_question(prompt, has_last_ticker=True):
+        # Avoid historical questions being treated as current quote
+        if re.search(r"\b(when was|what day|which day|history|historical)\b", prompt or "", re.IGNORECASE):
+            return None
+        ticker = last_ticker
+
     if not ticker:
         return None
 
     print(f"[Market] Detected stock question for ticker={ticker}")
     q = market.get_quote(ticker)
     if not q:
-        return f"I couldn't fetch a live quote for **{ticker}** right now."
+        return (f"I couldn't fetch a live quote for **{ticker}** right now.", ticker)
 
-    if hasattr(market, "format_quote_line"):
-        line = market.format_quote_line(q)
-    else:
-        price = q.get("price")
-        prev = q.get("previous_close")
-        line = f"{ticker}: ${price} (prev close ${prev})"
-
-    # Natural short spoken-friendly reply
     price = q.get("price")
     prev = q.get("previous_close")
     chg = q.get("change_percent")
 
     if price is None:
-        return f"I couldn't get a current price for **{ticker}**."
+        return (f"I couldn't get a current price for **{ticker}**.", ticker)
 
     if prev is not None and chg is not None:
         direction = "up" if chg >= 0 else "down"
-        return (
+        reply = (
             f"**{ticker}** is around **${price:,.2f}** right now. "
             f"Previous close was **${prev:,.2f}** ({direction} {abs(chg):.2f}%)."
         )
+    else:
+        reply = f"**{ticker}** is around **${price:,.2f}** right now."
 
-    return f"**{ticker}** is around **${price:,.2f}** right now."
+    return (reply, ticker)
+
 
 # ---------- Core Route ----------
 @app.route("/ask", methods=["POST", "OPTIONS"])
@@ -330,6 +366,7 @@ def ask():
     last_person = session_data.get("last_person") or ""
     last_fact_mem = session_data.get("last_fact") or ""
     last_topic = session_data.get("last_topic") or ""
+    last_ticker = session_data.get("last_ticker") or ""
     history: List[Dict[str, str]] = session_data.get("history") or []
 
     new_topic = _topic_of(user_prompt)
@@ -353,12 +390,15 @@ def ask():
     chosen_context_person = explicit_context if explicit_context else (last_person if reuse_context else None)
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
 
-    print(f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | Words: {word_count} | History: {len(history)}")
+    print(
+        f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | "
+        f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker}"
+    )
 
     # ---- Live stock quote path (before OpenAI) ----
-    market_reply = _quote_reply_for_prompt(user_prompt)
-    if market_reply:
-        reply = market_reply
+    market_result = _quote_reply_for_prompt(user_prompt, last_ticker=last_ticker or None)
+    if market_result:
+        reply, used_ticker = market_result
         store_fact = reply[:400]
         new_history = history + [
             {"role": "user", "content": user_prompt},
@@ -369,11 +409,12 @@ def ask():
             last_person=chosen_context_person,
             last_fact=store_fact,
             last_topic=new_topic or "stocks",
-            history=new_history
+            history=new_history,
+            last_ticker=used_ticker,
         )
         return jsonify({
             "reply": reply,
-            "context_used": bool(chosen_context_person or chosen_previous_fact),
+            "context_used": bool(chosen_context_person or chosen_previous_fact or used_ticker),
             "liveweb_raw": None,
             "liveweb_analyzed": None,
             "vision_note": vision_description if vision_description else None,
@@ -381,6 +422,7 @@ def ask():
                 "last_person": chosen_context_person,
                 "topic_overlap": topic_overlap,
                 "topic": new_topic or "stocks",
+                "last_ticker": used_ticker,
                 "history_length": len(new_history)
             }
         })
@@ -391,7 +433,12 @@ def ask():
         search_query = user_prompt
         if "die" in user_prompt.lower() or "death" in user_prompt.lower() or "killer" in user_prompt.lower():
             if chosen_context_person and (pronoun_detected or vague_followup_detected):
-                search_query = search_query.replace("he", chosen_context_person).replace("she", chosen_context_person).replace("they", chosen_context_person)
+                search_query = (
+                    search_query
+                    .replace("he", chosen_context_person)
+                    .replace("she", chosen_context_person)
+                    .replace("they", chosen_context_person)
+                )
             search_query += " death date"
         print(f"[LiveWeb] Performing live search for: {search_query}")
         try:
@@ -457,7 +504,8 @@ def ask():
         last_person=new_entity,
         last_fact=store_fact,
         last_topic=new_topic,
-        history=new_history
+        history=new_history,
+        last_ticker=last_ticker or None,
     )
 
     return jsonify({
@@ -470,9 +518,11 @@ def ask():
             "last_person": new_entity,
             "topic_overlap": topic_overlap,
             "topic": new_topic,
+            "last_ticker": last_ticker or None,
             "history_length": len(new_history)
         }
     })
+
 
 # ---------- Welcome Route ----------
 @app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
@@ -516,6 +566,7 @@ def welcome():
         }
     })
 
+
 # ---------- Yahoo Finance Quote Route ----------
 @app.route("/quote", methods=["GET", "OPTIONS"])
 def quote():
@@ -545,6 +596,7 @@ def quote():
         "market_state": q.get("market_state"),
         "line": line,
     })
+
 
 # ---------- ElevenLabs Speak Route ----------
 @app.route("/speak", methods=["POST", "OPTIONS"])
@@ -596,6 +648,7 @@ def speak():
         print(f"[Speak] Error: {e}")
         return error_response(f"TTS failed: {str(e)}", 500)
 
+
 # ---------- Email Route ----------
 @app.route("/send-email", methods=["POST"])
 def send_email_route():
@@ -624,10 +677,12 @@ def send_email_route():
             return error_response("Internal email error", 500)
     return error_response("send_email function not found", 500)
 
+
 # ---------- Health ----------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
 
 # ---------- Discord bot startup (works with gunicorn) ----------
 _discord_started = False
@@ -651,6 +706,7 @@ def _start_discord_background():
     print("🤖 Discord bot thread started (gunicorn mode)")
 
 _start_discord_background()
+
 
 # ---------- Main Entrypoint (local testing) ----------
 if __name__ == "__main__":
