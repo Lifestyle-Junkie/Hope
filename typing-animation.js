@@ -10,7 +10,8 @@ Frontend chat helper with:
 - Auto-link bare URLs, markdown links, and plain domains (clickable)
 - FIXED: typing loop completes so links become clickable
 - FIXED: strip HTML anchors before linkifying
-- FIXED: bare-URL pass skips href="..." (stops mangled " target=_blank" junk / 404s)
+- FIXED: bare-URL pass skips href="..."
+- FIXED: aggressive cleanup of mangled target=_blank debris
 */
 
 let CONCISE_MODE = false;
@@ -75,10 +76,11 @@ function stripToPlain(s) {
   if (!s) return "";
   let text = String(s);
 
-  // Fix already-mangled memory junk:
-  // https://yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo
+  // 1) Mangled debris (most common):
+  // https://www.yahoo.com" target="_blank" rel="noopener noreferrer">yahoo.com
+  // → yahoo.com[](https://www.yahoo.com)
   text = text.replace(
-    /(https?:\/\/[^\s"'<>]+)"\s*target=["']?_blank["']?\s*rel=["'][^"']*["']\s*>([^\n<]+)/gi,
+    /(https?:\/\/[^\s"'<>]+)"\s*target=["']?_blank["']?\s*rel=["'][^"']*["']\s*>([^\s<]+)/gi,
     (_, url, label) => {
       const cleanUrl = url.replace(/["']/g, "").trim();
       const cleanLabel = String(label).replace(/<[^>]+>/g, "").trim();
@@ -89,7 +91,14 @@ function stripToPlain(s) {
     }
   );
 
-  // Real HTML anchors → Label (url)
+  // 2) If only the junk tail remains, strip it
+  // " target="_blank" rel="noopener noreferrer">
+  text = text.replace(
+    /"\s*target=["']?_blank["']?\s*rel=["'][^"']*["']\s*>/gi,
+    " "
+  );
+
+  // 3) Real HTML anchors → Label (url)
   text = text.replace(
     /<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_, href, label) => {
@@ -112,6 +121,7 @@ function stripToPlain(s) {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -144,7 +154,7 @@ function mdToHTML(s) {
   // Inline code
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
 
-  // Markdown links [label](https://...)  → real <a>
+  // Markdown links [label](https://...) → real <a>
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
