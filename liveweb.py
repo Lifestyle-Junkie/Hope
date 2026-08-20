@@ -4,6 +4,8 @@ Live search + guarded factual extraction.
 Key points:
 - Death / injury claims require >=1 distinct reliable domains or are flagged unverified.
 - Website / "official site" queries return a clickable markdown link when possible.
+- Vague follow-ups like "send me the link" do NOT trigger a new live search
+  (backend/tone should reuse previous context instead).
 - Never fabricate; returns **Note:** lines when evidence insufficient.
 - Provides (raw_text, analyzed_text). analyzed_text is short + bolded entities.
 - Caching layer to reduce repeated external calls.
@@ -45,19 +47,31 @@ except ImportError:
 
 # ---------------- Patterns ----------------
 DEATH_PATTERN = re.compile(
-    r"\b(how did|cause of death|what (?:killed|happened to)|did .* die|when did .* die|die|died|death|killed|assassinated|passed away|dead|deceased|shot)\b",
+    r"\b(how did|cause of death|what (?:killed|happened to)|did .* die|when did .* die|"
+    r"die|died|death|killed|assassinated|passed away|dead|deceased|shot)\b",
     re.IGNORECASE
 )
 
+# Real website lookup questions (has a target brand / clear site intent)
 SITE_PATTERN = re.compile(
-    r"\b(official\s+)?(site|website|webpage|web\s*page|url|link|domain|homepage|home\s*page)\b"
-    r"|\b(what(?:'s| is)? the (site|website|url|link) for)\b"
-    r"|\b(where (?:can|do) i (find|go|visit))\b",
+    r"\b(what(?:'s| is)? the (official\s+)?(site|website|url|link) for)\b|"
+    r"\b(official\s+(site|website|page|homepage))\b|"
+    r"\b((site|website|url|homepage) for [a-z0-9][\w-]*)\b|"
+    r"\b(where (?:can|do) i (find|go to|visit) .{2,40})\b",
+    re.IGNORECASE
+)
+
+# Vague follow-ups that should NOT start a new search
+LINK_FOLLOWUP_ONLY_RE = re.compile(
+    r"^\s*((please|pls|can you|could you)\s+)?"
+    r"(send|give|drop|share|post)?\s*"
+    r"(me\s+)?(the\s+)?(link|url|website|site)\s*\??\s*$",
     re.IGNORECASE
 )
 
 DATE_PATTERN = re.compile(
-    r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
+    r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
     re.IGNORECASE
 )
 
@@ -68,7 +82,8 @@ LIVE_KEYWORDS = {
     "when", "date", "release", "latest", "recent", "today", "this week",
     "breaking", "update", "news", "launched", "announced", "died", "death",
     "killed", "passed", "cause of death", "assassinated", "shot",
-    "site", "website", "url", "link", "official", "homepage"
+    # website words only count when SITE_PATTERN also matches a real target
+    "website", "official site", "homepage"
 }
 
 RELIABLE_DOMAINS = {
@@ -79,21 +94,37 @@ RELIABLE_DOMAINS = {
     "nbcnews.com", "axios.com", "pbs.org"
 }
 
+SKIP_HOST_PARTS = {
+    "facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.",
+    "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest."
+}
+
+
 # ---------------- Public API ----------------
 def needs_live_data(query: str) -> bool:
     q = (query or "").strip()
     if not q:
         return False
+
+    # Never live-search pure "send me the link" style follow-ups
+    if LINK_FOLLOWUP_ONLY_RE.match(q):
+        return False
+
     low = q.lower()
 
     if DEATH_PATTERN.search(low):
         return True
-    if SITE_PATTERN.search(low):
+
+    # Only true site lookups (with a target), not bare "link"
+    if SITE_PATTERN.search(q):
         return True
+
     if any(k in low for k in LIVE_KEYWORDS):
         return True
+
     if q.endswith("?") and re.search(r"\b[A-Z][a-z]+\b", q):
         return True
+
     return False
 
 
@@ -127,7 +158,7 @@ def perform_live_search(query: str, max_results: int = 8) -> Tuple[Optional[str]
         return None, None
 
     corrected_query = query
-    entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query)
+    entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
     if entity_match:
         corrected_name = correct_name_spelling(entity_match.group(0))
         corrected_query = query.replace(entity_match.group(0), corrected_name)
@@ -159,11 +190,9 @@ def perform_live_search(query: str, max_results: int = 8) -> Tuple[Optional[str]
 def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
     out: List[dict] = []
     try:
-        # New ddgs API usually works without context manager
         ddg = DDGS()
         rows = ddg.text(query, max_results=max_results)
 
-        # Some versions return generator/list
         for r in rows or []:
             if not isinstance(r, dict):
                 continue
@@ -175,7 +204,6 @@ def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
             out.append({"title": title, "body": body, "href": href})
             print(f"[LiveWeb Debug] Snippet: {title[:50]} - {body[:80]}... (URL: {href})")
     except TypeError:
-        # Older context-manager style fallback
         try:
             with DDGS() as ddg:
                 for r in ddg.text(query, max_results=max_results):
@@ -233,11 +261,11 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     if not results:
         return None
 
-    # Extract likely brand token from query
     q = re.sub(r"[^a-z0-9\s]", " ", (query or "").lower())
     stop = {
         "what", "is", "the", "site", "website", "url", "link", "for", "official",
-        "page", "homepage", "of", "a", "an", "to", "go", "find", "where", "can", "i"
+        "page", "homepage", "of", "a", "an", "to", "go", "find", "where", "can", "i",
+        "send", "me", "give", "drop", "share"
     }
     tokens = [t for t in q.split() if t and t not in stop]
     brand = tokens[0] if tokens else ""
@@ -247,10 +275,15 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
         href = _normalize_url(r.get("href") or "")
         if not href:
             continue
+
         host = _pretty_domain(href)
         score = 0
         title = (r.get("title") or "").lower()
         body = (r.get("body") or "").lower()
+
+        # Hard-penalize social / blog platforms
+        if any(x in host for x in SKIP_HOST_PARTS):
+            score -= 40
 
         if brand and brand in host:
             score += 50
@@ -258,19 +291,27 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
             score += 20
         if "official" in title or "official" in body:
             score += 10
-        # Prefer clean root-ish domains
-        if host.count(".") <= 2 and not any(x in host for x in ("facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.")):
+
+        # Prefer clean domains
+        if host.count(".") <= 2:
             score += 15
-        # Light penalty for deep paths / junk
+
         path = urlparse(href).path or ""
         if path in ("", "/"):
             score += 8
-        scored.append((score, r if "href" in r else {**r, "href": href}))
+        elif path.count("/") >= 3:
+            score -= 5
+
+        scored.append((score, {**r, "href": href}))
 
     if not scored:
         return None
+
     scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[0][1]
+    best_score, best = scored[0]
+    if best_score < 10:
+        return None
+    return best
 
 
 def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> str:
@@ -355,7 +396,7 @@ def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
 def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     q_low = (query or "").lower()
     is_death = bool(DEATH_PATTERN.search(q_low))
-    is_site = bool(SITE_PATTERN.search(q_low))
+    is_site = bool(SITE_PATTERN.search(query or ""))
 
     # -------- Website / official site answers --------
     if is_site:
@@ -377,7 +418,6 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
                 if _domain_ok(url):
                     reliable_sources.add(url)
                     print(f"[LiveWeb Debug] Reliable source found: {url}")
-
         if len(reliable_sources) < 1:
             return safe_note("Death claim unverified by reliable sources. Treat as unconfirmed.")
 
@@ -449,6 +489,8 @@ def cached_perform_live_search(query: str, max_results: int = 8) -> Tuple[Option
 if __name__ == "__main__":
     tests = [
         "what is the site for rainbet",
+        "send me the link",
+        "the link",
         "How did Alan Turing die",
         "When does GTA 6 come out",
         "Latest news on SpaceX launch",
@@ -461,4 +503,4 @@ if __name__ == "__main__":
             print("RAW:", (raw[:200] + "..." if raw and len(raw) > 200 else raw))
             print("ANALYZED:", analyzed)
         else:
-            print("No live search needed.")
+            print("No live search needed (follow-up / not live).")
