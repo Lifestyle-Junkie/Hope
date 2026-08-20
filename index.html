@@ -84,6 +84,16 @@
       font-weight: bold !important;
       color: var(--neon) !important;
     }
+    .chat-bubble a {
+      color: var(--neon) !important;
+      text-decoration: underline !important;
+      pointer-events: auto !important;
+      cursor: pointer !important;
+      word-break: break-all;
+    }
+    .chat-bubble a:hover {
+      opacity: 0.85;
+    }
     .chat-bubble.user {
       align-self: flex-end;
       color: var(--neon);
@@ -391,7 +401,6 @@
 <body>
   <div class="app-title">Hope v2</div>
   <div id="wake-status">Click anywhere to start…</div>
-
   <main>
     <div id="chat-thread"></div>
     <div class="chat-marquee" aria-hidden="true">
@@ -406,7 +415,6 @@
         <li>Write a Python script</li>
       </ul>
     </div>
-
     <div class="AI-Input-wrap">
       <div class="AI-Input">
         <input type="file" id="camera" accept="image/*" capture="environment" />
@@ -429,7 +437,6 @@
             <path d="m9.486 10.607-.748-.748A2 2 0 0 1 6 8v-.878l-1-1V8a3 3 0 0 0 4.486 2.607m-7.84-9.253 12 12 .708-.708-12-12z"/>
           </svg>
         </label>
-
         <div class="chat-container" id="dropZone">
           <label for="chat-input" class="chat-wrapper">
             <div class="button-bar">
@@ -466,7 +473,6 @@
       </div>
     </div>
   </main>
-
   <script src="typing-animation.js"></script>
   <script>
     window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
@@ -495,13 +501,47 @@
       wakeStatus.classList.toggle('active', active);
     }
 
+    // Full link-aware converter (do NOT overwrite with a weaker version)
     function mdToHTML(s) {
       if (!s) return "";
-      return s
-        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-        .replace(/`([^`]+)`/g, "<code>$1</code>")
-        .replace(/\n\n/g, '<br><br>');
+
+      let html = String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+      // Markdown links [label](https://...)
+      html = html.replace(
+        /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+      );
+
+      // Bare https:// URLs
+      html = html.replace(/https?:\/\/[^\s<]+/gi, (match) => {
+        const trailing = match.match(/[.,!?);:]+$/);
+        const clean = trailing ? match.slice(0, -trailing[0].length) : match;
+        const end = trailing ? trailing[0] : "";
+        return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
+      });
+
+      // Plain domains like rainbet.com
+      html = html.replace(
+        /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
+        (domain, _1, offset, full) => {
+          const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
+          if (before.includes("href=") || before.includes("://") || before.includes("<a ")) {
+            return domain;
+          }
+          return `<a href="https://${domain}" target="_blank" rel="noopener noreferrer">${domain}</a>`;
+        }
+      );
+
+      return html.replace(/\n\n/g, "<br><br>").replace(/\n/g, "<br>");
     }
+    window.mdToHTML = mdToHTML;
 
     function autoresize() {
       ta.style.height = 'auto';
@@ -543,7 +583,6 @@
       welcomePlayed = true;
       isProcessing = true;
       setStatus('Welcome…', true);
-
       let reply = "Welcome back. Want today's briefing, or just ask me something?";
       try {
         const res = await fetch(`${window.BACKEND_URL}/welcome`, {
@@ -556,16 +595,13 @@
       } catch (e) {
         console.error("Welcome error:", e);
       }
-
       addHopeBubble(reply);
-
       try {
         setStatus('Speaking…', true);
         await speakText(reply);
       } catch (e) {
         console.error("Welcome speak error:", e);
       }
-
       isProcessing = false;
       setStatus('Listening for “Hope”…');
       startWakeWordMode();
@@ -584,7 +620,6 @@
         await playWelcome();
       });
     }
-
     document.body.addEventListener('click', unlockAudio, { once: true });
     document.body.addEventListener('touchstart', unlockAudio, { once: true });
 
@@ -626,7 +661,6 @@
       mode = 'wake';
       setStatus('Listening for “Hope”…');
       if (micLabel) micLabel.classList.remove('listening-active');
-
       if (recognition) {
         try {
           recognition.onend = null;
@@ -636,7 +670,6 @@
         } catch (e) {}
         recognition = null;
       }
-
       recognition = createRecognition();
       if (!recognition) return;
 
@@ -834,12 +867,14 @@
       previewImage.src = base64Data;
       imagePreview.classList.add('active');
     }
+
     function clearImagePreview() {
       previewImage.src = '';
       imagePreview.classList.remove('active');
       delete window.imageDataFromPaste;
       delete window.imageDataFromDrop;
     }
+
     removeImage.addEventListener('click', clearImagePreview);
 
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
