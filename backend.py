@@ -10,6 +10,7 @@ Hope v2 API server
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
 - Supports personality: "hope" (default) or "god" (Discord)
+- FIXED: sanitize HTML / mangled anchors so links never 404
 """
 from __future__ import annotations
 import os
@@ -28,14 +29,12 @@ try:
     print(f"[Debug] Flask version: {importlib.metadata.version('flask')}")
 except Exception:
     pass
-
 try:
     import openai
     print(f"[Debug] OpenAI lib present.")
 except Exception:
     openai = None  # type: ignore
     print("[Debug] OpenAI import failed.")
-
 
 # ---------- Safe dynamic imports ----------
 def safe_import(name: str):
@@ -46,7 +45,6 @@ def safe_import(name: str):
     except Exception as e:
         print(f"[Error] Import {name} failed: {e}")
         return None
-
 
 tone = safe_import("tone")
 emailer = safe_import("emailer")
@@ -96,21 +94,18 @@ VAGUE_FOLLOWUP_RE = re.compile(
 NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares?|1k|thousand)\b", re.IGNORECASE)
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
-
-# "send me the link" / "the link" / "give me the url"
 LINK_FOLLOWUP_RE = re.compile(
     r"^\s*((please|pls|can you|could you)\s+)?"
     r"(send|give|drop|share|post)?\s*"
     r"(me\s+)?(the\s+)?(link|url|website|site)\s*\??\s*$",
     re.IGNORECASE
 )
-URL_RE = re.compile(r"https?://[^\s)\]>]+", re.IGNORECASE)
+URL_RE = re.compile(r"https?://[^\s)\]>\"']+", re.IGNORECASE)
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
 DOMAIN_RE = re.compile(
     r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
     re.IGNORECASE
 )
-
 STOCK_KEYWORD_RE = re.compile(
     r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
     r"current price|at rn|right now price)\b",
@@ -126,27 +121,13 @@ IDENTITY_RE = re.compile(
     r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
     re.IGNORECASE
 )
-
 COMPANY_TO_TICKER = {
-    "shopify": "SHOP",
-    "apple": "AAPL",
-    "comcast": "CMCSA",
-    "tesla": "TSLA",
-    "nvidia": "NVDA",
-    "microsoft": "MSFT",
-    "amazon": "AMZN",
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "meta": "META",
-    "facebook": "META",
-    "netflix": "NFLX",
-    "disney": "DIS",
-    "amd": "AMD",
-    "intel": "INTC",
-    "coinbase": "COIN",
+    "shopify": "SHOP", "apple": "AAPL", "comcast": "CMCSA", "tesla": "TSLA",
+    "nvidia": "NVDA", "microsoft": "MSFT", "amazon": "AMZN", "google": "GOOGL",
+    "alphabet": "GOOGL", "meta": "META", "facebook": "META", "netflix": "NFLX",
+    "disney": "DIS", "amd": "AMD", "intel": "INTC", "coinbase": "COIN",
     "robinhood": "HOOD",
 }
-
 IGNORE_TICKERS = {
     "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
     "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
@@ -160,7 +141,6 @@ IGNORE_TICKERS = {
     "U", "I", "GO", "OR", "IF", "SO", "WE", "US", "BY", "AS", "UP",
     "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA"
 }
-
 STOPWORDS = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
@@ -168,6 +148,51 @@ STOPWORDS = {
     "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again",
     "link", "url", "site", "website"
 }
+
+
+def sanitize_reply(text: Optional[str]) -> str:
+    """
+    Convert HTML anchors / mangled link junk into clean markdown or plain URLs.
+    Never leave target= / rel= debris in stored memory or API replies.
+    """
+    if not text:
+        return ""
+    s = str(text)
+
+    # Real HTML: <a href="URL">Label</a>  →  [Label](URL)
+    s = re.sub(
+        r'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+        lambda m: f"[{(m.group(2) or m.group(1)).strip()}]({m.group(1).strip()})",
+        s,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # Already-mangled:
+    # https://yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo
+    s = re.sub(
+        r'(https?://[^\s"\'<>]+)"\s*target=["\']?_blank["\']?\s*rel=["\'][^"\']*["\']\s*>([^\n<]+)',
+        lambda m: f"[{m.group(2).strip()}]({m.group(1).strip()})",
+        s,
+        flags=re.IGNORECASE,
+    )
+
+    # Any leftover tags
+    s = re.sub(r"<[^>]+>", "", s)
+
+    # Entities
+    s = (
+        s.replace("&nbsp;", " ")
+         .replace("&amp;", "&")
+         .replace("&lt;", "<")
+         .replace("&gt;", ">")
+         .replace("&quot;", '"')
+         .replace("&#39;", "'")
+    )
+
+    # Collapse whitespace (keep newlines lightly)
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 
 def _now() -> float:
@@ -217,21 +242,37 @@ def _update_session(
 ):
     with _session_lock:
         prev = _sessions.get(sid, {})
-        trimmed_history = (history or prev.get("history") or [])[-MAX_HISTORY:]
+        # Always sanitize stored fact + history contents
+        clean_fact = sanitize_reply(last_fact) if last_fact is not None else sanitize_reply(prev.get("last_fact") or "")
+        if last_fact is None and prev.get("last_fact"):
+            clean_fact = sanitize_reply(prev.get("last_fact") or "")
+
+        raw_history = history if history is not None else (prev.get("history") or [])
+        trimmed_history = []
+        for item in (raw_history or [])[-MAX_HISTORY:]:
+            trimmed_history.append({
+                "role": item.get("role", "user"),
+                "content": sanitize_reply(item.get("content") or ""),
+            })
+
         _sessions[sid] = {
             "last_person": last_person if last_person is not None else prev.get("last_person") or "",
-            "last_fact": last_fact if last_fact is not None else prev.get("last_fact") or "",
+            "last_fact": clean_fact if last_fact is not None else (sanitize_reply(prev.get("last_fact") or "") or prev.get("last_fact") or ""),
             "last_topic": last_topic or prev.get("last_topic") or "",
             "last_ticker": (last_ticker if last_ticker is not None else prev.get("last_ticker") or "").upper(),
             "last_url": last_url if last_url is not None else prev.get("last_url") or "",
             "history": trimmed_history,
             "ts": _now()
         }
+        # If last_fact was explicitly passed, prefer sanitized version
+        if last_fact is not None:
+            _sessions[sid]["last_fact"] = sanitize_reply(last_fact)
 
 
 def _extract_entity_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+    text = sanitize_reply(text)
     bolds = BOLD_ENTITY_RE.findall(text)
     for b in bolds:
         if b.lower() not in STOPWORDS and len(b) > 2 and b.lower() != "note":
@@ -246,12 +287,13 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
 def _extract_url_from_text(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
+    text = sanitize_reply(text)
     md = MD_LINK_RE.search(text)
     if md:
         return md.group(2).rstrip(".,);]")
     m = URL_RE.search(text)
     if m:
-        return m.group(0).rstrip(".,);]")
+        return m.group(0).rstrip(".,);]\"'")
     d = DOMAIN_RE.search(text)
     if d:
         return f"https://{d.group(0).lower()}"
@@ -278,6 +320,8 @@ def error_response(msg: str, status=500):
 
 
 def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Optional[str]:
+    previous_fact = sanitize_reply(previous_fact) if previous_fact else None
+    liveweb_fact = sanitize_reply(liveweb_fact) if liveweb_fact else None
     if previous_fact and liveweb_fact:
         if liveweb_fact.lower().startswith("**note:**"):
             return previous_fact
@@ -327,7 +371,6 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
     explicit = _extract_explicit_ticker(prompt)
     has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
     is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
-
     if company and (has_stock_kw or len(prompt.split()) <= 8):
         return True
     if explicit and has_stock_kw:
@@ -342,35 +385,29 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
 def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[Tuple[str, str]]:
     if not market or not hasattr(market, "get_quote"):
         return None
-
     has_last = bool(last_ticker)
     if not _looks_like_stock_question(prompt, has_last_ticker=has_last):
         return None
-
     ticker = _extract_company_ticker(prompt) or _extract_explicit_ticker(prompt)
     if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
         ticker = last_ticker
     if not ticker:
         return None
-
     if re.search(
         r"\b(when was|what day|which day|history|historical|last time it)\b",
         prompt or "",
         re.IGNORECASE
     ):
         return None
-
     print(f"[Market] Detected stock question for ticker={ticker}")
     q = market.get_quote(ticker)
     if not q:
         return (f"I couldn't fetch a live quote for **{ticker}** right now.", ticker)
-
     price = q.get("price")
     prev = q.get("previous_close")
     chg = q.get("change_percent")
     if price is None:
         return (f"I couldn't get a current price for **{ticker}**.", ticker)
-
     if prev is not None and chg is not None:
         direction = "up" if chg >= 0 else "down"
         reply = (
@@ -419,11 +456,16 @@ def ask():
 
     session_data = _get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
-    last_fact_mem = session_data.get("last_fact") or ""
+    last_fact_mem = sanitize_reply(session_data.get("last_fact") or "")
     last_topic = session_data.get("last_topic") or ""
     last_ticker = session_data.get("last_ticker") or ""
     last_url = session_data.get("last_url") or ""
     history: List[Dict[str, str]] = session_data.get("history") or []
+    # sanitize history contents so the model doesn't mimic HTML
+    history = [
+        {"role": h.get("role", "user"), "content": sanitize_reply(h.get("content") or "")}
+        for h in history
+    ]
 
     new_topic = _topic_of(user_prompt)
     topic_overlap = _same_topic(last_topic, new_topic)
@@ -456,6 +498,7 @@ def ask():
         url = last_url or _extract_url_from_text(chosen_previous_fact) or _extract_url_from_text(last_fact_mem)
         if url:
             reply = f"Here you go: {_format_md_link(url)}"
+            reply = sanitize_reply(reply)
             store_fact = reply[:400]
             new_history = history + [
                 {"role": "user", "content": user_prompt},
@@ -485,12 +528,12 @@ def ask():
                     "history_length": len(new_history)
                 }
             })
-        # No remembered URL — fall through to normal handling
 
     # ---- Live stock quote path (before OpenAI) ----
     market_result = _quote_reply_for_prompt(user_prompt, last_ticker=last_ticker or None)
     if market_result:
         reply, used_ticker = market_result
+        reply = sanitize_reply(reply)
         store_fact = reply[:400]
         new_history = history + [
             {"role": "user", "content": user_prompt},
@@ -537,14 +580,13 @@ def ask():
         print(f"[LiveWeb] Performing live search for: {search_query}")
         try:
             raw, analyzed = liveweb.perform_live_search(search_query)
-            liveweb_raw, liveweb_analyzed = raw, analyzed
-            if analyzed:
-                print(f"[LiveWeb] Analyzed (trunc): {analyzed[:180]}{'...' if len(analyzed) > 180 else ''}")
+            liveweb_raw, liveweb_analyzed = raw, sanitize_reply(analyzed or "")
+            if liveweb_analyzed:
+                print(f"[LiveWeb] Analyzed (trunc): {liveweb_analyzed[:180]}{'...' if len(liveweb_analyzed) > 180 else ''}")
         except Exception as e:
             print(f"[LiveWeb] Error: {e}")
 
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
-
     effective_prompt = user_prompt
     if vision_description:
         effective_prompt += f"\n\nImage context: {vision_description}"
@@ -570,8 +612,12 @@ def ask():
         else:
             reply = "No data available."
 
+    # CRITICAL: never return / store HTML or mangled anchors
+    reply = sanitize_reply(reply)
+
     if concise:
         reply = _concise_trim(reply)
+        reply = sanitize_reply(reply)
 
     new_entity = (
         last_person if _is_unverified_death_line(liveweb_analyzed or "") else
@@ -586,9 +632,8 @@ def ask():
     elif liveweb_analyzed and not _is_unverified_death_line(liveweb_analyzed):
         store_fact = liveweb_analyzed[:300]
     elif chained_fact and not _is_unverified_death_line(chained_fact):
-        store_fact = chained_fact[:300]
+        store_fact = sanitize_reply(chained_fact)[:300]
 
-    # Remember website URL when present
     found_url = (
         _extract_url_from_text(reply)
         or _extract_url_from_text(liveweb_analyzed)
@@ -601,7 +646,6 @@ def ask():
         {"role": "user", "content": user_prompt},
         {"role": "assistant", "content": reply}
     ]
-
     _update_session(
         session_id,
         last_person=new_entity,
@@ -637,7 +681,7 @@ def welcome():
 
     session_data = _get_session(WEB_MEMORY_KEY) or {}
     last_topic = (session_data.get("last_topic") or "").strip()
-    last_fact = (session_data.get("last_fact") or "").strip()
+    last_fact = sanitize_reply(session_data.get("last_fact") or "").strip()
     history = session_data.get("history") or []
 
     if not history and not last_topic and not last_fact:
@@ -662,6 +706,7 @@ def welcome():
             "or should I give you today's briefing?"
         )
 
+    reply = sanitize_reply(reply)
     print(f"[Welcome] topic={last_topic!r} history={len(history)}")
     return jsonify({
         "reply": reply,
@@ -677,18 +722,14 @@ def welcome():
 def quote():
     if request.method == "OPTIONS":
         return ("", 200)
-
     if not market or not hasattr(market, "get_quote"):
         return error_response("Market module not available", 500)
-
     symbol = (request.args.get("symbol") or "").strip().upper()
     if not symbol:
         return error_response("Missing symbol", 400)
-
     q = market.get_quote(symbol)
     if not q:
         return error_response(f"No quote for {symbol}", 404)
-
     line = market.format_quote_line(q) if hasattr(market, "format_quote_line") else symbol
     return jsonify({
         "symbol": q.get("symbol"),
@@ -707,21 +748,21 @@ def quote():
 def speak():
     if request.method == "OPTIONS":
         return ("", 200)
-
     try:
         data = request.get_json(force=True) or {}
     except Exception:
         return error_response("Invalid JSON", 400)
-
     text = (data.get("text") or "").strip()
     if not text:
         return error_response("No text provided", 400)
 
-    clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    clean_text = sanitize_reply(text)
+    clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", clean_text)
     clean_text = re.sub(r"`[^`]+`", "", clean_text)
+    clean_text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 \2", clean_text)
     clean_text = clean_text.strip()
-    print(f"[Speak] Generating voice for: {clean_text[:80]}...")
 
+    print(f"[Speak] Generating voice for: {clean_text[:80]}...")
     try:
         response = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
@@ -743,7 +784,6 @@ def speak():
         if response.status_code != 200:
             print(f"[Speak] ElevenLabs error: {response.status_code} - {response.text}")
             return error_response(f"ElevenLabs error: {response.status_code}", 500)
-
         return Response(response.content, mimetype="audio/mpeg")
     except Exception as e:
         print(f"[Speak] Error: {e}")
@@ -755,18 +795,15 @@ def speak():
 def send_email_route():
     if not emailer:
         return error_response("Emailer module not available", 500)
-
     try:
         data = request.get_json(force=True) or {}
     except Exception:
         return error_response("Invalid JSON", 400)
-
     recipient = data.get("recipient")
     subject = data.get("subject") or "(No Subject)"
     message = data.get("message") or ""
     if not recipient:
         return error_response("Missing recipient", 400)
-
     if hasattr(emailer, "send_email"):
         try:
             ok, info = emailer.send_email(recipient, subject, message)
@@ -776,19 +813,28 @@ def send_email_route():
         except Exception as e:
             print(f"[Email] Error: {e}")
             return error_response("Internal email error", 500)
-
     return error_response("send_email function not found", 500)
 
 
-# ---------- Health ----------
+# ---------- Health + memory clear (optional helper) ----------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/clear-memory", methods=["POST", "OPTIONS"])
+def clear_memory():
+    """One-shot: wipe corrupted web session memory after deploy."""
+    if request.method == "OPTIONS":
+        return ("", 200)
+    with _session_lock:
+        _sessions.pop(WEB_MEMORY_KEY, None)
+    print("[Memory] Cleared WEB_MEMORY_KEY")
+    return jsonify({"ok": True, "cleared": WEB_MEMORY_KEY})
+
+
 # ---------- Discord bot startup (works with gunicorn) ----------
 _discord_started = False
-
 
 def _start_discord_background():
     global _discord_started
@@ -811,19 +857,16 @@ def _start_discord_background():
 
 _start_discord_background()
 
-
 # ---------- Main Entrypoint (local testing) ----------
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
     debug = False
-
     print("🚀 Starting Hope v2 Backend + Discord...")
     print(f"📡 Listening: http://{host}:{port}")
     print("🔐 OpenAI enabled:" if OPENAI_AVAILABLE else "🛑 OpenAI disabled (no key).")
     print("🎤 ElevenLabs voice enabled.")
     print("📈 Market quotes enabled:" if market else "🛑 Market module missing.")
-
     try:
         app.run(host=host, port=port, debug=debug, use_reloader=False)
     except KeyboardInterrupt:
