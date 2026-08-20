@@ -7,7 +7,7 @@ Frontend chat helper with:
 - Basic memory sync from backend (backend is authoritative)
 - Configurable backend URL and improved error/image handling
 - Fix for echo bug and safety note rendering
-- Auto-link bare URLs + markdown links (clickable)
+- Auto-link bare URLs, markdown links, and plain domains (clickable)
 */
 
 let CONCISE_MODE = false;
@@ -25,6 +25,30 @@ function setConciseMode(on) {
   console.log("[Client] CONCISE_MODE =", CONCISE_MODE);
 }
 
+// Inject link styles once so anchors are visibly clickable
+(function injectLinkStyles() {
+  if (document.getElementById("hope-link-styles")) return;
+  const style = document.createElement("style");
+  style.id = "hope-link-styles";
+  style.textContent = `
+    .chat-bubble a,
+    .chat-bubble a:link,
+    .chat-bubble a:visited {
+      color: #00ffd5 !important;
+      text-decoration: underline !important;
+      pointer-events: auto !important;
+      cursor: pointer !important;
+      word-break: break-all;
+      position: relative;
+      z-index: 5;
+    }
+    .chat-bubble a:hover {
+      opacity: 0.85;
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
 function simulateTypingEffect(text, element, speed = 18, done) {
   element.innerHTML = "";
   let i = 0;
@@ -33,7 +57,7 @@ function simulateTypingEffect(text, element, speed = 18, done) {
   function step() {
     if (i <= text.length) {
       const end = Math.min(i + BATCH_SIZE, text.length);
-      // Use textContent during typing so partial HTML tags never break
+      // textContent while typing so partial tags never break
       element.textContent = text.slice(0, end);
       i = end;
       setTimeout(step, speed);
@@ -57,7 +81,7 @@ function plainForTyping(s) {
 function mdToHTML(s) {
   if (!s) return "";
 
-  // Escape HTML first so only our intentional tags are injected
+  // Escape first so only our tags are real HTML
   let html = String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -69,29 +93,56 @@ function mdToHTML(s) {
   // Inline code
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
 
-  // Markdown links: [label](url)
+  // Markdown links: [label](https://...)
   html = html.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
   );
 
-  // Auto-link bare URLs (http/https)
+  // Bare full URLs: https://rainbet.com/
+  html = html.replace(/https?:\/\/[^\s<]+/gi, (match) => {
+    // Don't double-wrap if already turned into an anchor href/text nearby
+    const trailing = match.match(/[.,!?);:]+$/);
+    const clean = trailing ? match.slice(0, -trailing[0].length) : match;
+    const end = trailing ? trailing[0] : "";
+    return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
+  });
+
+  // Plain domains: rainbet.com (skip if already inside an href/anchor)
   html = html.replace(
-    /(?<!["'=])(https?:\/\/[^\s<]+)/g,
-    (match) => {
-      // Trim common trailing punctuation from the visible/href target
-      const trailing = match.match(/[.,!?);:]+$/);
-      const clean = trailing ? match.slice(0, -trailing[0].length) : match;
-      const end = trailing ? trailing[0] : "";
-      return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
+    /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
+    (domain, _1, offset, full) => {
+      const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
+      // already part of an anchor or URL we linked
+      if (
+        before.includes("href=") ||
+        before.includes("://") ||
+        before.includes("<a ") ||
+        before.endsWith(">") // inside a tag already
+      ) {
+        return domain;
+      }
+      return `<a href="https://${domain}" target="_blank" rel="noopener noreferrer">${domain}</a>`;
     }
   );
 
   // Line breaks
   html = html.replace(/\n\n/g, "<br><br>");
   html = html.replace(/\n/g, "<br>");
-
   return html;
+}
+
+function renderReplyHTML(element, reply) {
+  element.innerHTML = mdToHTML(reply);
+
+  // Safety: if somehow still plain text with a URL, force-link it
+  const hasAnchor = element.querySelector("a");
+  if (!hasAnchor) {
+    const raw = element.textContent || "";
+    if (/https?:\/\//i.test(raw) || /\b[\w-]+\.(com|net|org|io)\b/i.test(raw)) {
+      element.innerHTML = mdToHTML(raw);
+    }
+  }
 }
 
 async function simulateChatResponse(userText, chatThread, speed = 22, imageData = null) {
@@ -165,7 +216,7 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
   let reply = data.reply || data.liveweb_analyzed || "No response available.";
 
   // Avoid echoing the user's exact message back as the whole reply
-  if (reply.includes(userText)) {
+  if (userText && reply.includes(userText)) {
     reply =
       reply.replace(userText, "").trim() ||
       data.liveweb_analyzed ||
@@ -188,10 +239,10 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
     chatThread.insertBefore(ctxBadge, aiBubble);
   }
 
-  // Type plain text, then swap in final HTML (with real clickable links)
+  // Type plain text, then swap in real clickable HTML
   const typingText = plainForTyping(reply);
   simulateTypingEffect(typingText, aiBubble, speed, () => {
-    aiBubble.innerHTML = mdToHTML(reply);
+    renderReplyHTML(aiBubble, reply);
     aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
   });
 
@@ -213,3 +264,4 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
 // Expose to window
 window.simulateChatResponse = simulateChatResponse;
 window.setConciseMode = setConciseMode;
+window.mdToHTML = mdToHTML; // useful if index.html needs it too
