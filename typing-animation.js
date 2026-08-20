@@ -9,7 +9,7 @@ Frontend chat helper with:
 - Fix for echo bug and safety note rendering
 - Auto-link bare URLs, markdown links, and plain domains (clickable)
 - FIXED: typing loop completes so links become clickable
-- FIXED: strip existing HTML before linkifying (stops mangled welcome links)
+- FIXED: properly extract HTML anchors before linkifying (stops 404 / mangled hrefs)
 */
 
 let CONCISE_MODE = false;
@@ -73,33 +73,21 @@ function simulateTypingEffect(text, element, speed = 18, done) {
   step();
 }
 
-function plainForTyping(s) {
+function stripToPlain(s) {
   if (!s) return "";
-  // Strip HTML if memory/backend ever stored anchors
-  let t = String(s)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"');
-
-  return t
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-    .replace(/\n\n/g, "\n")
-    .trim();
-}
-
-function mdToHTML(s) {
-  if (!s) return "";
-
-  // Strip any existing HTML tags so we never double-process anchors
-  // (this fixes the mangled welcome: ...https://rainbet.com" target="_blank"...)
-  let text = String(s)
+  return String(s)
+    // Convert real HTML anchors into "Label (url)" first
+    .replace(
+      /<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (_, href, label) => {
+        const cleanHref = String(href).trim().replace(/["']/g, "");
+        const cleanLabel = String(label).replace(/<[^>]+>/g, "").trim();
+        if (cleanLabel && cleanLabel !== cleanHref) {
+          return `${cleanLabel} (${cleanHref})`;
+        }
+        return cleanHref;
+      }
+    )
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
     .replace(/<[^>]+>/g, "")
@@ -108,7 +96,26 @@ function mdToHTML(s) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .trim();
+}
+
+function plainForTyping(s) {
+  if (!s) return "";
+  return stripToPlain(s)
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/\n\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mdToHTML(s) {
+  if (!s) return "";
+
+  // Always start from clean plain text (handles backend HTML anchors)
+  let text = stripToPlain(s);
 
   // Escape
   let html = text
@@ -128,15 +135,16 @@ function mdToHTML(s) {
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
   );
 
-  // Bare full URLs: https://rainbet.com/
+  // Bare full URLs — never allow quotes / junk inside href
   html = html.replace(/https?:\/\/[^\s<]+/gi, (match) => {
-    const trailing = match.match(/[.,!?);:"']+$/);
-    const clean = trailing ? match.slice(0, -trailing[0].length) : match;
+    const trailing = match.match(/[.,!?);:"'\]]+$/);
+    let clean = trailing ? match.slice(0, -trailing[0].length) : match;
+    clean = clean.replace(/["']/g, "");
     const end = trailing ? trailing[0] : "";
     return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
   });
 
-  // Plain domains: rainbet.com / youtube.com
+  // Plain domains: rainbet.com / youtube.com / yahoo.com
   html = html.replace(
     /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
     (domain, _1, offset, full) => {
