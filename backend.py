@@ -6,6 +6,7 @@ Hope v2 API server
 - Yahoo Finance quotes via market.py (used in /ask + /quote)
 - Safer stock detection (won't treat Hi / who made you / u as tickers)
 - Remembers last ticker for follow-ups like "check it again"
+- Remembers last website URL for follow-ups like "send me the link"
 - ElevenLabs text-to-speech (/speak)
 - Discord bot (runs in background thread - works with gunicorn)
 - Supports personality: "hope" (default) or "god" (Discord)
@@ -18,7 +19,6 @@ import threading
 import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List, Tuple
-
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -36,6 +36,7 @@ except Exception:
     openai = None  # type: ignore
     print("[Debug] OpenAI import failed.")
 
+
 # ---------- Safe dynamic imports ----------
 def safe_import(name: str):
     try:
@@ -45,6 +46,7 @@ def safe_import(name: str):
     except Exception as e:
         print(f"[Error] Import {name} failed: {e}")
         return None
+
 
 tone = safe_import("tone")
 emailer = safe_import("emailer")
@@ -61,7 +63,6 @@ for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "dis
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
-
 if not OPENAI_AVAILABLE:
     print("⚠️ OPENAI_API_KEY not set or openai lib missing. Tone generation disabled.")
 else:
@@ -84,7 +85,6 @@ _session_lock = threading.Lock()
 _sessions: Dict[str, Dict[str, Any]] = {}
 
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
-
 VAGUE_FOLLOWUP_RE = re.compile(
     r"\b(who was (he|she|that)|what did (he|she|they)|who was the killer|what did he represent|"
     r"how did (he|she|they) die|what about|and if|what if|if (it|that|they|he|she)|"
@@ -93,26 +93,34 @@ VAGUE_FOLLOWUP_RE = re.compile(
     r"on top of|like of|the 1k|of the|that one|same one|previous|earlier)\b",
     re.IGNORECASE
 )
-
 NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares?|1k|thousand)\b", re.IGNORECASE)
-
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
 
-# Strong stock keywords only (not generic "what is")
+# "send me the link" / "the link" / "give me the url"
+LINK_FOLLOWUP_RE = re.compile(
+    r"^\s*((please|pls|can you|could you)\s+)?"
+    r"(send|give|drop|share|post)?\s*"
+    r"(me\s+)?(the\s+)?(link|url|website|site)\s*\??\s*$",
+    re.IGNORECASE
+)
+URL_RE = re.compile(r"https?://[^\s)\]>]+", re.IGNORECASE)
+MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
+DOMAIN_RE = re.compile(
+    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
+    re.IGNORECASE
+)
+
 STOCK_KEYWORD_RE = re.compile(
     r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
     r"current price|at rn|right now price)\b",
     re.IGNORECASE
 )
-
 STOCK_FOLLOWUP_RE = re.compile(
     r"\b(check( it)? again|check again|update( it)?|refresh|price now|how about now|"
     r"what(?:'s| is)? (?:it|that|the price) now)\b",
     re.IGNORECASE
 )
-
-# Identity / normal chat should never hit market path
 IDENTITY_RE = re.compile(
     r"\b(who made you|who created you|who designed you|who are you|what are you|"
     r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
@@ -139,8 +147,6 @@ COMPANY_TO_TICKER = {
     "robinhood": "HOOD",
 }
 
-TICKER_RE = re.compile(r"\b[A-Z]{2,5}\b")
-
 IGNORE_TICKERS = {
     "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
     "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
@@ -159,7 +165,8 @@ STOPWORDS = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "did", "die", "he", "she", "they", "note",
-    "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again"
+    "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again",
+    "link", "url", "site", "website"
 }
 
 
@@ -206,6 +213,7 @@ def _update_session(
     last_topic: str = "",
     history: Optional[List[Dict[str, str]]] = None,
     last_ticker: Optional[str] = None,
+    last_url: Optional[str] = None,
 ):
     with _session_lock:
         prev = _sessions.get(sid, {})
@@ -214,7 +222,8 @@ def _update_session(
             "last_person": last_person if last_person is not None else prev.get("last_person") or "",
             "last_fact": last_fact if last_fact is not None else prev.get("last_fact") or "",
             "last_topic": last_topic or prev.get("last_topic") or "",
-            "last_ticker": (last_ticker or prev.get("last_ticker") or "").upper(),
+            "last_ticker": (last_ticker if last_ticker is not None else prev.get("last_ticker") or "").upper(),
+            "last_url": last_url if last_url is not None else prev.get("last_url") or "",
             "history": trimmed_history,
             "ts": _now()
         }
@@ -232,6 +241,26 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
         if c.lower() not in STOPWORDS and len(c) > 2:
             return c
     return None
+
+
+def _extract_url_from_text(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    md = MD_LINK_RE.search(text)
+    if md:
+        return md.group(2).rstrip(".,);]")
+    m = URL_RE.search(text)
+    if m:
+        return m.group(0).rstrip(".,);]")
+    d = DOMAIN_RE.search(text)
+    if d:
+        return f"https://{d.group(0).lower()}"
+    return None
+
+
+def _format_md_link(url: str) -> str:
+    host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
+    return f"[{host}]({url})"
 
 
 def _is_unverified_death_line(text: str) -> bool:
@@ -278,12 +307,10 @@ def _extract_company_ticker(prompt: str) -> Optional[str]:
 
 
 def _extract_explicit_ticker(prompt: str) -> Optional[str]:
-    """Only accept tickers that aren't common words. Min length 2 (blocks u -> U)."""
     text = (prompt or "").strip()
     candidates = re.findall(r"\b[A-Z]{2,5}\b", text)
     if not candidates:
         candidates = re.findall(r"\b[A-Z]{2,5}\b", text.upper())
-
     for tok in candidates:
         up = tok.upper()
         if up not in IGNORE_TICKERS and 2 <= len(up) <= 5:
@@ -294,39 +321,25 @@ def _extract_explicit_ticker(prompt: str) -> Optional[str]:
 def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bool:
     if not prompt:
         return False
-
-    # Never intercept identity / normal "who are you" style questions
     if IDENTITY_RE.search(prompt):
         return False
-
     company = _extract_company_ticker(prompt)
     explicit = _extract_explicit_ticker(prompt)
     has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
     is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
 
-    # Company name + stock language, or company alone in short prompt
     if company and (has_stock_kw or len(prompt.split()) <= 8):
         return True
-
-    # Explicit ticker + stock keyword
     if explicit and has_stock_kw:
         return True
-
-    # Short pure ticker ask: "SHOP?" / "AAPL"
     if explicit and re.fullmatch(r"[A-Za-z]{2,5}\??", prompt.strip()):
         return True
-
-    # Follow-up after known ticker
     if has_last_ticker and is_followup:
         return True
-
     return False
 
 
 def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[Tuple[str, str]]:
-    """
-    Returns (reply_text, ticker) or None
-    """
     if not market or not hasattr(market, "get_quote"):
         return None
 
@@ -335,14 +348,11 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
         return None
 
     ticker = _extract_company_ticker(prompt) or _extract_explicit_ticker(prompt)
-
     if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
         ticker = last_ticker
-
     if not ticker:
         return None
 
-    # Historical questions should not use current-quote path
     if re.search(
         r"\b(when was|what day|which day|history|historical|last time it)\b",
         prompt or "",
@@ -358,7 +368,6 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
     price = q.get("price")
     prev = q.get("previous_close")
     chg = q.get("change_percent")
-
     if price is None:
         return (f"I couldn't get a current price for **{ticker}**.", ticker)
 
@@ -370,7 +379,6 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
         )
     else:
         reply = f"**{ticker}** is around **${price:,.2f}** right now."
-
     return (reply, ticker)
 
 
@@ -414,20 +422,21 @@ def ask():
     last_fact_mem = session_data.get("last_fact") or ""
     last_topic = session_data.get("last_topic") or ""
     last_ticker = session_data.get("last_ticker") or ""
+    last_url = session_data.get("last_url") or ""
     history: List[Dict[str, str]] = session_data.get("history") or []
 
     new_topic = _topic_of(user_prompt)
     topic_overlap = _same_topic(last_topic, new_topic)
-
     pronoun_detected = PRONOUN_RE.search(user_prompt)
     vague_followup_detected = VAGUE_FOLLOWUP_RE.search(user_prompt)
     number_followup = NUMBER_FOLLOWUP_RE.search(user_prompt)
+    link_followup = bool(LINK_FOLLOWUP_RE.match(user_prompt))
     word_count = len(user_prompt.split())
     is_short_message = word_count <= 12
 
     reuse_context = False
     if (pronoun_detected or vague_followup_detected or number_followup
-            or topic_overlap or is_short_message):
+            or topic_overlap or is_short_message or link_followup):
         reuse_context = True
     if explicit_context:
         reuse_context = True
@@ -439,8 +448,44 @@ def ask():
 
     print(
         f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | "
-        f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker}"
+        f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
+
+    # ---- Link follow-up path ("send me the link") ----
+    if link_followup:
+        url = last_url or _extract_url_from_text(chosen_previous_fact) or _extract_url_from_text(last_fact_mem)
+        if url:
+            reply = f"Here you go: {_format_md_link(url)}"
+            store_fact = reply[:400]
+            new_history = history + [
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": reply}
+            ]
+            _update_session(
+                session_id,
+                last_person=chosen_context_person,
+                last_fact=store_fact,
+                last_topic=new_topic or last_topic or "website",
+                history=new_history,
+                last_ticker=last_ticker or None,
+                last_url=url,
+            )
+            return jsonify({
+                "reply": reply,
+                "context_used": True,
+                "liveweb_raw": None,
+                "liveweb_analyzed": None,
+                "vision_note": vision_description if vision_description else None,
+                "memory": {
+                    "last_person": chosen_context_person,
+                    "topic_overlap": topic_overlap,
+                    "topic": new_topic or last_topic or "website",
+                    "last_ticker": last_ticker or None,
+                    "last_url": url,
+                    "history_length": len(new_history)
+                }
+            })
+        # No remembered URL — fall through to normal handling
 
     # ---- Live stock quote path (before OpenAI) ----
     market_result = _quote_reply_for_prompt(user_prompt, last_ticker=last_ticker or None)
@@ -458,6 +503,7 @@ def ask():
             last_topic=new_topic or "stocks",
             history=new_history,
             last_ticker=used_ticker,
+            last_url=last_url or None,
         )
         return jsonify({
             "reply": reply,
@@ -470,6 +516,7 @@ def ask():
                 "topic_overlap": topic_overlap,
                 "topic": new_topic or "stocks",
                 "last_ticker": used_ticker,
+                "last_url": last_url or None,
                 "history_length": len(new_history)
             }
         })
@@ -541,6 +588,15 @@ def ask():
     elif chained_fact and not _is_unverified_death_line(chained_fact):
         store_fact = chained_fact[:300]
 
+    # Remember website URL when present
+    found_url = (
+        _extract_url_from_text(reply)
+        or _extract_url_from_text(liveweb_analyzed)
+        or _extract_url_from_text(store_fact)
+        or last_url
+        or None
+    )
+
     new_history = history + [
         {"role": "user", "content": user_prompt},
         {"role": "assistant", "content": reply}
@@ -553,11 +609,12 @@ def ask():
         last_topic=new_topic,
         history=new_history,
         last_ticker=last_ticker or None,
+        last_url=found_url,
     )
 
     return jsonify({
         "reply": reply,
-        "context_used": bool(chosen_context_person or chosen_previous_fact),
+        "context_used": bool(chosen_context_person or chosen_previous_fact or link_followup),
         "liveweb_raw": liveweb_raw,
         "liveweb_analyzed": liveweb_analyzed,
         "vision_note": vision_description if vision_description else None,
@@ -566,6 +623,7 @@ def ask():
             "topic_overlap": topic_overlap,
             "topic": new_topic,
             "last_ticker": last_ticker or None,
+            "last_url": found_url,
             "history_length": len(new_history)
         }
     })
@@ -632,7 +690,6 @@ def quote():
         return error_response(f"No quote for {symbol}", 404)
 
     line = market.format_quote_line(q) if hasattr(market, "format_quote_line") else symbol
-
     return jsonify({
         "symbol": q.get("symbol"),
         "price": q.get("price"),
@@ -663,7 +720,6 @@ def speak():
     clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
     clean_text = re.sub(r"`[^`]+`", "", clean_text)
     clean_text = clean_text.strip()
-
     print(f"[Speak] Generating voice for: {clean_text[:80]}...")
 
     try:
@@ -684,13 +740,11 @@ def speak():
             },
             timeout=30
         )
-
         if response.status_code != 200:
             print(f"[Speak] ElevenLabs error: {response.status_code} - {response.text}")
             return error_response(f"ElevenLabs error: {response.status_code}", 500)
 
         return Response(response.content, mimetype="audio/mpeg")
-
     except Exception as e:
         print(f"[Speak] Error: {e}")
         return error_response(f"TTS failed: {str(e)}", 500)
@@ -701,6 +755,7 @@ def speak():
 def send_email_route():
     if not emailer:
         return error_response("Emailer module not available", 500)
+
     try:
         data = request.get_json(force=True) or {}
     except Exception:
@@ -709,7 +764,6 @@ def send_email_route():
     recipient = data.get("recipient")
     subject = data.get("subject") or "(No Subject)"
     message = data.get("message") or ""
-
     if not recipient:
         return error_response("Missing recipient", 400)
 
@@ -722,6 +776,7 @@ def send_email_route():
         except Exception as e:
             print(f"[Email] Error: {e}")
             return error_response("Internal email error", 500)
+
     return error_response("send_email function not found", 500)
 
 
