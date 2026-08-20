@@ -8,7 +8,8 @@ Frontend chat helper with:
 - Configurable backend URL and improved error/image handling
 - Fix for echo bug and safety note rendering
 - Auto-link bare URLs, markdown links, and plain domains (clickable)
-- FIXED: typing loop now actually completes so links become clickable
+- FIXED: typing loop completes so links become clickable
+- FIXED: strip existing HTML before linkifying (stops mangled welcome links)
 */
 
 let CONCISE_MODE = false;
@@ -74,7 +75,18 @@ function simulateTypingEffect(text, element, speed = 18, done) {
 
 function plainForTyping(s) {
   if (!s) return "";
-  return String(s)
+  // Strip HTML if memory/backend ever stored anchors
+  let t = String(s)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"');
+
+  return t
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
@@ -85,8 +97,21 @@ function plainForTyping(s) {
 function mdToHTML(s) {
   if (!s) return "";
 
-  // Escape first so only our tags are real HTML
-  let html = String(s)
+  // Strip any existing HTML tags so we never double-process anchors
+  // (this fixes the mangled welcome: ...https://rainbet.com" target="_blank"...)
+  let text = String(s)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .trim();
+
+  // Escape
+  let html = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
@@ -97,7 +122,7 @@ function mdToHTML(s) {
   // Inline code
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
 
-  // Markdown links: [label](https://...)
+  // Markdown links [label](https://...)
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
@@ -105,22 +130,21 @@ function mdToHTML(s) {
 
   // Bare full URLs: https://rainbet.com/
   html = html.replace(/https?:\/\/[^\s<]+/gi, (match) => {
-    const trailing = match.match(/[.,!?);:]+$/);
+    const trailing = match.match(/[.,!?);:"']+$/);
     const clean = trailing ? match.slice(0, -trailing[0].length) : match;
     const end = trailing ? trailing[0] : "";
     return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
   });
 
-  // Plain domains: rainbet.com (skip if already inside an href/anchor)
+  // Plain domains: rainbet.com / youtube.com
   html = html.replace(
     /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
     (domain, _1, offset, full) => {
-      const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
+      const before = full.slice(Math.max(0, offset - 15), offset).toLowerCase();
       if (
         before.includes("href=") ||
         before.includes("://") ||
-        before.includes("<a ") ||
-        before.endsWith(">")
+        before.includes("<a ")
       ) {
         return domain;
       }
