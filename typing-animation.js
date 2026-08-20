@@ -8,6 +8,7 @@ Frontend chat helper with:
 - Configurable backend URL and improved error/image handling
 - Fix for echo bug and safety note rendering
 - Auto-link bare URLs, markdown links, and plain domains (clickable)
+- FIXED: typing loop now actually completes so links become clickable
 */
 
 let CONCISE_MODE = false;
@@ -53,15 +54,18 @@ function simulateTypingEffect(text, element, speed = 18, done) {
   element.innerHTML = "";
   let i = 0;
   const BATCH_SIZE = 3;
+  const full = String(text || "");
 
   function step() {
-    if (i <= text.length) {
-      const end = Math.min(i + BATCH_SIZE, text.length);
+    // FIXED: use < not <= so the loop actually ends
+    if (i < full.length) {
+      const end = Math.min(i + BATCH_SIZE, full.length);
       // textContent while typing so partial tags never break
-      element.textContent = text.slice(0, end);
+      element.textContent = full.slice(0, end);
       i = end;
       setTimeout(step, speed);
     } else {
+      // Typing finished — inject real HTML (clickable links)
       done && done();
     }
   }
@@ -101,7 +105,6 @@ function mdToHTML(s) {
 
   // Bare full URLs: https://rainbet.com/
   html = html.replace(/https?:\/\/[^\s<]+/gi, (match) => {
-    // Don't double-wrap if already turned into an anchor href/text nearby
     const trailing = match.match(/[.,!?);:]+$/);
     const clean = trailing ? match.slice(0, -trailing[0].length) : match;
     const end = trailing ? trailing[0] : "";
@@ -113,12 +116,11 @@ function mdToHTML(s) {
     /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
     (domain, _1, offset, full) => {
       const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
-      // already part of an anchor or URL we linked
       if (
         before.includes("href=") ||
         before.includes("://") ||
         before.includes("<a ") ||
-        before.endsWith(">") // inside a tag already
+        before.endsWith(">")
       ) {
         return domain;
       }
@@ -264,4 +266,4 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
 // Expose to window
 window.simulateChatResponse = simulateChatResponse;
 window.setConciseMode = setConciseMode;
-window.mdToHTML = mdToHTML; // useful if index.html needs it too
+window.mdToHTML = mdToHTML;
