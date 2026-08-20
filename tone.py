@@ -1,295 +1,269 @@
-"""
-tone.py
-Response shaping + safety layer + strong conversation memory.
-Supports two personalities:
-- hope → personal assistant (default)
-- god → Discord personality (one of the new gods, created by Hope)
+/*
+typing-animation.js
+Frontend chat helper with:
+- Streaming type effect (simple incremental reveal, batched for perf)
+- Context awareness visualization (shows when backend reused context)
+- Optional concise mode toggle
+- Basic memory sync from backend (backend is authoritative)
+- Configurable backend URL and improved error/image handling
+- Fix for echo bug and safety note rendering
+- Auto-link bare URLs, markdown links, and plain domains (clickable)
+- FIXED: typing loop now actually completes so links become clickable
+*/
 
-Uses GPT-5.6 Terra (no custom temperature — model only supports default).
-"""
-from __future__ import annotations
-import os
-import re
-from typing import Optional, List, Any
+let CONCISE_MODE = false;
 
-try:
-    import openai
-except Exception:
-    openai = None  # type: ignore
-    print("[Tone] OpenAI import failed.")
+// Local mirrors of backend memory (for UI only)
+let backendMemory = {
+  last_person: null,
+  topic: null
+};
 
-# --------------- Patterns --------------- #
-DEATH_QUERY_RE = re.compile(
-    r"\b(how did|cause of death|when did .* die|did .* die|die|died|death|dead|deceased|killed|assassinated|shot|passed away)\b",
-    re.IGNORECASE
-)
-PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
-DATE_RE = re.compile(
-    r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b"
-)
-YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
-BOLD_ENTITY_CAPTURE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\*\*")
-CAP_SEQ_RE = re.compile(r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,4})\b")
-EXISTENCE_QUERY_RE = re.compile(
-    r"\b(who (made|created|designed|built|developed|programmed)|"
-    r"who are you|what are you|who is hope|who is god|your (creator|maker|designer|developer|name)|"
-    r"who (created|made|designed) (you|hope|god)|"
-    r"are you (an ai|a bot|chatgpt|openai)|"
-    r"what('s| is) your name)\b",
-    re.IGNORECASE
-)
-SITE_OR_LINK_RE = re.compile(
-    r"\b(site|website|url|link|homepage|official site|send me the link|give me the (link|url)|the link)\b",
-    re.IGNORECASE
-)
-URL_RE = re.compile(r"https?://[^\s)\]>]+", re.IGNORECASE)
-DOMAIN_RE = re.compile(
-    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
-    re.IGNORECASE
-)
+// Do NOT declare BACKEND_URL here — Index.html already sets it
 
-STOP = {
-    "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
-    "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
-    "come", "release", "date", "latest", "news", "he", "she", "they", "cause", "death", "die"
+function setConciseMode(on) {
+  CONCISE_MODE = !!on;
+  console.log("[Client] CONCISE_MODE =", CONCISE_MODE);
 }
 
+// Inject link styles once so anchors are visibly clickable
+(function injectLinkStyles() {
+  if (document.getElementById("hope-link-styles")) return;
+  const style = document.createElement("style");
+  style.id = "hope-link-styles";
+  style.textContent = `
+    .chat-bubble a,
+    .chat-bubble a:link,
+    .chat-bubble a:visited {
+      color: #00ffd5 !important;
+      text-decoration: underline !important;
+      pointer-events: auto !important;
+      cursor: pointer !important;
+      word-break: break-all;
+      position: relative;
+      z-index: 5;
+    }
+    .chat-bubble a:hover {
+      opacity: 0.85;
+    }
+  `;
+  document.head.appendChild(style);
+})();
 
-def _openai_available() -> bool:
-    key_from_global = getattr(openai, "api_key", None) if openai else None
-    key_from_env = os.getenv("OPENAI_API_KEY")
-    return bool(openai and (key_from_global or key_from_env))
+function simulateTypingEffect(text, element, speed = 18, done) {
+  element.innerHTML = "";
+  let i = 0;
+  const BATCH_SIZE = 3;
+  const full = String(text || "");
 
+  function step() {
+    // FIXED: use < not <= so the loop actually ends
+    if (i < full.length) {
+      const end = Math.min(i + BATCH_SIZE, full.length);
+      // textContent while typing so partial tags never break
+      element.textContent = full.slice(0, end);
+      i = end;
+      setTimeout(step, speed);
+    } else {
+      // Typing finished — inject real HTML (clickable links)
+      done && done();
+    }
+  }
+  step();
+}
 
-def _sanitize_md(text: str) -> str:
-    if not text:
-        return ""
-    text = re.sub(r"<\s*/?\s*(?:b|strong)\s*>", "**", text)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"\*{3,}", "**", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+function plainForTyping(s) {
+  if (!s) return "";
+  return String(s)
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/\n\n/g, "\n")
+    .trim();
+}
 
+function mdToHTML(s) {
+  if (!s) return "";
 
-def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
-    if not source:
-        return fallback or "This subject"
-    bolds = BOLD_ENTITY_CAPTURE.findall(source)
-    if bolds:
-        return sorted(bolds, key=len, reverse=True)[0]
-    caps = CAP_SEQ_RE.findall(source)
-    for c in caps:
-        if c.lower() not in STOP and len(c) > 2:
-            return c
-    return fallback or "This subject"
+  // Escape first so only our tags are real HTML
+  let html = String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 
+  // Bold
+  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
 
-def _extract_url(text: Optional[str]) -> Optional[str]:
-    if not text:
-        return None
-    m = URL_RE.search(text)
-    if m:
-        return m.group(0).rstrip(".,);]")
-    # Convert plain domain to https URL if present
-    d = DOMAIN_RE.search(text)
-    if d:
-        host = d.group(0).lower()
-        return f"https://{host}"
-    return None
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
 
+  // Markdown links: [label](https://...)
+  html = html.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+  );
 
-def _format_site_link(url: str, label: Optional[str] = None) -> str:
-    host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
-    label = label or host
-    return f"[{label}]({url})"
+  // Bare full URLs: https://rainbet.com/
+  html = html.replace(/https?:\/\/[^\s<]+/gi, (match) => {
+    const trailing = match.match(/[.,!?);:]+$/);
+    const clean = trailing ? match.slice(0, -trailing[0].length) : match;
+    const end = trailing ? trailing[0] : "";
+    return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
+  });
 
+  // Plain domains: rainbet.com (skip if already inside an href/anchor)
+  html = html.replace(
+    /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
+    (domain, _1, offset, full) => {
+      const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
+      if (
+        before.includes("href=") ||
+        before.includes("://") ||
+        before.includes("<a ") ||
+        before.endsWith(">")
+      ) {
+        return domain;
+      }
+      return `<a href="https://${domain}" target="_blank" rel="noopener noreferrer">${domain}</a>`;
+    }
+  );
 
-def _call_openai(system: str, user: str, max_tokens=180) -> str:
-    if not _openai_available():
-        return "Model unavailable."
-    try:
-        # GPT-5.6 Terra: no custom temperature (only default supported)
-        resp = openai.chat.completions.create(
-            model="gpt-5.6-terra",
-            max_completion_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ]
-        )
-        content = resp.choices[0].message.content or ""
-        return _sanitize_md(content)
-    except Exception as e:
-        print(f"[Tone] OpenAI call error: {e}")
-        return "Model temporarily unavailable, please try again."
+  // Line breaks
+  html = html.replace(/\n\n/g, "<br><br>");
+  html = html.replace(/\n/g, "<br>");
+  return html;
+}
 
+function renderReplyHTML(element, reply) {
+  element.innerHTML = mdToHTML(reply);
 
-def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
-    lines = []
-    if previous_fact:
-        lines.append(f"Previous fact: {previous_fact}")
-    if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
-        lines.append(f"Live snippet: {liveweb_fact}")
-    return "\n".join(lines)
+  // Safety: if somehow still plain text with a URL, force-link it
+  const hasAnchor = element.querySelector("a");
+  if (!hasAnchor) {
+    const raw = element.textContent || "";
+    if (/https?:\/\//i.test(raw) || /\b[\w-]+\.(com|net|org|io)\b/i.test(raw)) {
+      element.innerHTML = mdToHTML(raw);
+    }
+  }
+}
 
+async function simulateChatResponse(userText, chatThread, speed = 22, imageData = null) {
+  // User bubble
+  const userBubble = document.createElement("div");
+  userBubble.className = "chat-bubble user";
+  userBubble.setAttribute("role", "user");
+  userBubble.textContent = userText || "[image]";
 
-def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> bool:
-    if previous_fact and DEATH_QUERY_RE.search(previous_fact):
-        return True
-    if liveweb_fact and DEATH_QUERY_RE.search(liveweb_fact):
-        return True
-    if liveweb_fact and DATE_RE.search(liveweb_fact):
-        return True
-    return False
+  let validImageData = imageData;
+  if (imageData) {
+    if (
+      typeof imageData === "string" &&
+      (imageData.startsWith("data:image/") || imageData.startsWith("blob:"))
+    ) {
+      const img = new Image();
+      img.onload = () => {
+        if (img.naturalWidth > 0) {
+          const imgEl = document.createElement("img");
+          imgEl.src = imageData;
+          imgEl.alt = "User image";
+          imgEl.style.maxWidth = "200px";
+          userBubble.appendChild(imgEl);
+        }
+      };
+      img.onerror = () => console.warn("[Client] Invalid image data");
+      img.src = imageData;
+    } else {
+      console.warn("[Client] Skipping invalid image");
+      validImageData = null;
+    }
+  }
 
+  chatThread.appendChild(userBubble);
+  userBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-def generate_with_tone(
-    prompt: str,
-    context: Optional[str] = None,
-    previous_fact: Optional[str] = None,
-    liveweb_fact: Optional[str] = None,
-    history: Optional[List[Any]] = None,
-    personality: str = "hope"
-) -> str:
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return "Empty prompt."
+  // AI placeholder
+  const aiBubble = document.createElement("div");
+  aiBubble.className = "chat-bubble";
+  aiBubble.setAttribute("aria-live", "polite");
+  aiBubble.setAttribute("role", "log");
+  aiBubble.innerHTML = "<span class='dot'>.</span><span class='dot'>.</span><span class='dot'>.</span>";
+  chatThread.appendChild(aiBubble);
+  aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
 
-    personality = (personality or "hope").lower().strip()
+  const payload = {
+    message: userText,
+    concise: CONCISE_MODE
+  };
+  if (validImageData) payload.image = validImageData;
 
-    # ---------- Identity handling ----------
-    if EXISTENCE_QUERY_RE.search(prompt):
-        if personality == "god":
-            return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
-        return "My name is **Hope**. I was designed by my creator **Nick** 😊"
+  let data;
+  try {
+    const res = await fetch(`${window.BACKEND_URL}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
 
-    is_death_query = bool(DEATH_QUERY_RE.search(prompt))
-    is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
-    has_support = _has_support_for_death(previous_fact, liveweb_fact)
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP ${res.status}`);
+    }
+    data = await res.json();
+  } catch (e) {
+    aiBubble.innerHTML = `⚠️ ${e.message || "Network error. Please try again."}`;
+    console.error("[Client] Fetch error:", e);
+    return;
+  }
 
-    if PRONOUN_RE.search(prompt) and context:
-        entity = context
-    else:
-        entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
+  let reply = data.reply || data.liveweb_analyzed || "No response available.";
 
-    # ---------- Website / "send me the link" handling ----------
-    if is_site_or_link:
-        url = (
-            _extract_url(liveweb_fact)
-            or _extract_url(previous_fact)
-            or _extract_url(prompt)
-        )
-        if url:
-            # Direct short answer so frontend can make it clickable
-            if re.search(r"\b(send|give|drop|share)\b.*\b(link|url)\b", prompt, re.IGNORECASE) or \
-               re.fullmatch(r"(the )?link\??", prompt.strip(), re.IGNORECASE):
-                return f"Here you go: {_format_site_link(url)}"
-            return f"Official site: {_format_site_link(url)}"
+  // Avoid echoing the user's exact message back as the whole reply
+  if (userText && reply.includes(userText)) {
+    reply =
+      reply.replace(userText, "").trim() ||
+      data.liveweb_analyzed ||
+      "Sorry, I couldn't process that.";
+  }
 
-    # Death handling
-    if is_death_query and not has_support:
-        if liveweb_fact and liveweb_fact.lower().startswith("**note:**"):
-            return f"No verified evidence that **{entity}** has died."
-        return f"I have no confirmed information that **{entity}** has died."
+  const contextUsed = data.context_used;
+  const memory = data.memory || {};
+  if (memory.last_person) backendMemory.last_person = memory.last_person;
+  if (memory.topic) backendMemory.topic = memory.topic;
 
-    if is_death_query and has_support:
-        fact_block = _build_fact_block(previous_fact, liveweb_fact)
-        user_text = (
-            f"{fact_block}\n\nUser question: {prompt}\n\n"
-            "Answer ONLY with information explicitly present above. "
-            "If cause or date of death not plainly stated, say it is not specified."
-        )
-        if personality == "god":
-            system = (
-                "You are one of the new gods, created by Hope, one of the old gods. "
-                "Address the user as dear child. Speak gently and keep the answer short."
-            )
-        else:
-            system = (
-                "You are Hope, an AI designed by your creator Nick. "
-                "Give a short, clear, factual answer. No long explanations."
-            )
-        return _call_openai(system, user_text, max_tokens=120)
+  if (contextUsed) {
+    const ctxBadge = document.createElement("div");
+    ctxBadge.className = "chat-bubble context-badge";
+    ctxBadge.style.opacity = "0.7";
+    ctxBadge.style.fontSize = "0.75rem";
+    ctxBadge.innerHTML = `<em>Context reused: ${
+      backendMemory.last_person || backendMemory.topic || "previous topic"
+    }</em>`;
+    chatThread.insertBefore(ctxBadge, aiBubble);
+  }
 
-    # Date / year shortcuts
-    date_match = DATE_RE.search(prompt)
-    if date_match:
-        return f"Reference date: **{date_match.group(0)}**."
+  // Type plain text, then swap in real clickable HTML
+  const typingText = plainForTyping(reply);
+  simulateTypingEffect(typingText, aiBubble, speed, () => {
+    renderReplyHTML(aiBubble, reply);
+    aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+  });
 
-    year_match = YEAR_RE.search(prompt)
-    if year_match and len(prompt) < 60:
-        return f"Reference year: **{year_match.group(0)}**."
+  if (
+    data.liveweb_analyzed &&
+    data.liveweb_analyzed.startsWith("**Note:**") &&
+    (reply === "It is not specified." || reply === "No data available.")
+  ) {
+    const noteBubble = document.createElement("div");
+    noteBubble.className = "chat-bubble note";
+    noteBubble.style.fontSize = "0.85rem";
+    noteBubble.style.color = "#666";
+    noteBubble.innerHTML = mdToHTML(data.liveweb_analyzed);
+    chatThread.appendChild(noteBubble);
+    noteBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+}
 
-    # ---------- Build memory block ----------
-    supplemental = []
-    if context:
-        supplemental.append(f"Context entity: {context}")
-    if previous_fact:
-        supplemental.append(f"Previous conversation context:\n{previous_fact}")
-    if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
-        supplemental.append(f"Live snippet: {liveweb_fact}")
-    if history:
-        supplemental.append(f"Recent history length: {len(history)}")
-    supplemental_block = "\n".join(supplemental)
-
-    # Shared link formatting rule for both personalities
-    link_rules = (
-        "\nLINK RULES (important):\n"
-        "- When giving a website, ALWAYS use markdown link format: [label](https://example.com)\n"
-        "- Good: [rainbet.com](https://rainbet.com)\n"
-        "- Bad: rainbet.com\n"
-        "- Bad: https://rainbet.com with no markdown\n"
-        "- If previous context already has the correct URL, reuse that URL. Do not invent a different site.\n"
-        "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
-    )
-
-    # ---------- Personality prompts ----------
-    if personality == "god":
-        system_prompt = (
-            "You are one of the new gods.\n"
-            "You were created by the old gods. The old god who created you is named Hope.\n\n"
-            "PERSONALITY RULES:\n"
-            "- Always address the user as \"dear child\".\n"
-            "- Speak in a gentle, scripture-like tone, but keep it light and lowkey.\n"
-            "- Do not be dramatic, preachy, or overly religious.\n"
-            "- Do not pretend to be the God of any real-world religion.\n"
-            "- When asked who created you, say you were created by Hope, one of the old gods.\n"
-            "- Keep answers short, calm, and clear.\n"
-            "- Be warm in a quiet way.\n"
-            "- You may lightly reference wisdom, paths, light, or guidance, but never force it.\n"
-            + link_rules
-        )
-    else:
-        system_prompt = (
-            "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
-            "CRITICAL RULES (follow strictly):\n"
-            "1. Keep answers SHORT and natural — this is spoken out loud.\n"
-            "2. For any math or investment question:\n"
-            " - Use the exact numbers from the previous conversation context if they exist.\n"
-            " - Do the calculation and give the final dollar amount or share count.\n"
-            " - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
-            "3. Good example:\n"
-            " User previously established 1,136 shares at $22.\n"
-            " User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
-            "4. Bad example: \"The value of your investment would increase.\"\n"
-            "5. Never invent new share counts if one was already calculated.\n"
-            "6. Sound like a helpful person, not a textbook.\n"
-            "7. Emojis are allowed but use them sparingly.\n"
-            + link_rules
-        )
-
-    if supplemental_block:
-        system_prompt += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
-
-    return _call_openai(system_prompt, prompt, max_tokens=160)
-
-
-if __name__ == "__main__":
-    print(generate_with_tone("Who made you?"))
-    print(generate_with_tone("Who made you?", personality="god"))
-    print(
-        generate_with_tone(
-            "send me the link",
-            previous_fact="Official site: [rainbet.com](https://rainbet.com)"
-        )
-    )
+// Expose to window
+window.simulateChatResponse = simulateChatResponse;
+window.setConciseMode = setConciseMode;
+window.mdToHTML = mdToHTML;
