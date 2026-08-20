@@ -38,6 +38,15 @@ EXISTENCE_QUERY_RE = re.compile(
     r"what('s| is) your name)\b",
     re.IGNORECASE
 )
+SITE_OR_LINK_RE = re.compile(
+    r"\b(site|website|url|link|homepage|official site|send me the link|give me the (link|url)|the link)\b",
+    re.IGNORECASE
+)
+URL_RE = re.compile(r"https?://[^\s)\]>]+", re.IGNORECASE)
+DOMAIN_RE = re.compile(
+    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
+    re.IGNORECASE
+)
 
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
@@ -73,6 +82,26 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
         if c.lower() not in STOP and len(c) > 2:
             return c
     return fallback or "This subject"
+
+
+def _extract_url(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    m = URL_RE.search(text)
+    if m:
+        return m.group(0).rstrip(".,);]")
+    # Convert plain domain to https URL if present
+    d = DOMAIN_RE.search(text)
+    if d:
+        host = d.group(0).lower()
+        return f"https://{host}"
+    return None
+
+
+def _format_site_link(url: str, label: Optional[str] = None) -> str:
+    host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
+    label = label or host
+    return f"[{label}]({url})"
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
@@ -135,12 +164,27 @@ def generate_with_tone(
         return "My name is **Hope**. I was designed by my creator **Nick** 😊"
 
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
+    is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
 
     if PRONOUN_RE.search(prompt) and context:
         entity = context
     else:
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
+
+    # ---------- Website / "send me the link" handling ----------
+    if is_site_or_link:
+        url = (
+            _extract_url(liveweb_fact)
+            or _extract_url(previous_fact)
+            or _extract_url(prompt)
+        )
+        if url:
+            # Direct short answer so frontend can make it clickable
+            if re.search(r"\b(send|give|drop|share)\b.*\b(link|url)\b", prompt, re.IGNORECASE) or \
+               re.fullmatch(r"(the )?link\??", prompt.strip(), re.IGNORECASE):
+                return f"Here you go: {_format_site_link(url)}"
+            return f"Official site: {_format_site_link(url)}"
 
     # Death handling
     if is_death_query and not has_support:
@@ -188,6 +232,17 @@ def generate_with_tone(
         supplemental.append(f"Recent history length: {len(history)}")
     supplemental_block = "\n".join(supplemental)
 
+    # Shared link formatting rule for both personalities
+    link_rules = (
+        "\nLINK RULES (important):\n"
+        "- When giving a website, ALWAYS use markdown link format: [label](https://example.com)\n"
+        "- Good: [rainbet.com](https://rainbet.com)\n"
+        "- Bad: rainbet.com\n"
+        "- Bad: https://rainbet.com with no markdown\n"
+        "- If previous context already has the correct URL, reuse that URL. Do not invent a different site.\n"
+        "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
+    )
+
     # ---------- Personality prompts ----------
     if personality == "god":
         system_prompt = (
@@ -202,6 +257,7 @@ def generate_with_tone(
             "- Keep answers short, calm, and clear.\n"
             "- Be warm in a quiet way.\n"
             "- You may lightly reference wisdom, paths, light, or guidance, but never force it.\n"
+            + link_rules
         )
     else:
         system_prompt = (
@@ -219,6 +275,7 @@ def generate_with_tone(
             "5. Never invent new share counts if one was already calculated.\n"
             "6. Sound like a helpful person, not a textbook.\n"
             "7. Emojis are allowed but use them sparingly.\n"
+            + link_rules
         )
 
     if supplemental_block:
@@ -230,3 +287,9 @@ def generate_with_tone(
 if __name__ == "__main__":
     print(generate_with_tone("Who made you?"))
     print(generate_with_tone("Who made you?", personality="god"))
+    print(
+        generate_with_tone(
+            "send me the link",
+            previous_fact="Official site: [rainbet.com](https://rainbet.com)"
+        )
+    )
