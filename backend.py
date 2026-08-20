@@ -5,6 +5,8 @@ Hope v2 API server
 - Shared web memory for welcome-back across devices
 - Yahoo Finance quotes via market.py (used in /ask + /quote)
 - Safer stock detection (won't treat Hi / who made you / u as tickers)
+- "What's Google" is info, not a GOOGL quote (unless price/stock keywords)
+- Explicit "link to X" path sets last_url correctly
 - Remembers last ticker for follow-ups like "check it again"
 - Remembers last website URL for follow-ups like "send me the link"
 - ElevenLabs text-to-speech (/speak)
@@ -94,10 +96,15 @@ VAGUE_FOLLOWUP_RE = re.compile(
 NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares?|1k|thousand)\b", re.IGNORECASE)
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
+
 LINK_FOLLOWUP_RE = re.compile(
     r"^\s*((please|pls|can you|could you)\s+)?"
     r"(send|give|drop|share|post)?\s*"
     r"(me\s+)?(the\s+)?(link|url|website|site)\s*\??\s*$",
+    re.IGNORECASE
+)
+LINK_TO_RE = re.compile(
+    r"\b(?:(?:official|the)\s+)?(?:link|url|website|site)\s+(?:to|for)\s+([A-Za-z0-9][\w.-]*)\b",
     re.IGNORECASE
 )
 URL_RE = re.compile(r"https?://[^\s)\]>\"']+", re.IGNORECASE)
@@ -106,9 +113,10 @@ DOMAIN_RE = re.compile(
     r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
     re.IGNORECASE
 )
+
 STOCK_KEYWORD_RE = re.compile(
     r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
-    r"current price|at rn|right now price)\b",
+    r"current price|at rn|right now price|market cap)\b",
     re.IGNORECASE
 )
 STOCK_FOLLOWUP_RE = re.compile(
@@ -121,6 +129,12 @@ IDENTITY_RE = re.compile(
     r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
     re.IGNORECASE
 )
+# "What's Google" / "What is YouTube" = info, not a stock quote
+WHAT_IS_RE = re.compile(
+    r"^\s*(what(?:'s| is| are)|who is|tell me about|explain)\b",
+    re.IGNORECASE
+)
+
 COMPANY_TO_TICKER = {
     "shopify": "SHOP", "apple": "AAPL", "comcast": "CMCSA", "tesla": "TSLA",
     "nvidia": "NVDA", "microsoft": "MSFT", "amazon": "AMZN", "google": "GOOGL",
@@ -128,6 +142,27 @@ COMPANY_TO_TICKER = {
     "disney": "DIS", "amd": "AMD", "intel": "INTC", "coinbase": "COIN",
     "robinhood": "HOOD",
 }
+
+SITE_NAME_TO_URL = {
+    "google": "https://www.google.com",
+    "youtube": "https://www.youtube.com",
+    "yahoo": "https://www.yahoo.com",
+    "rainbet": "https://rainbet.com",
+    "shopify": "https://www.shopify.com",
+    "twitter": "https://x.com",
+    "x": "https://x.com",
+    "instagram": "https://www.instagram.com",
+    "facebook": "https://www.facebook.com",
+    "reddit": "https://www.reddit.com",
+    "github": "https://github.com",
+    "openai": "https://openai.com",
+    "amazon": "https://www.amazon.com",
+    "netflix": "https://www.netflix.com",
+    "apple": "https://www.apple.com",
+    "microsoft": "https://www.microsoft.com",
+    "tesla": "https://www.tesla.com",
+}
+
 IGNORE_TICKERS = {
     "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
     "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
@@ -139,14 +174,16 @@ IGNORE_TICKERS = {
     "PLEASE", "THANKS", "THANK", "WHY", "WHERE", "WHICH", "YOUR",
     "ARE", "AM", "BE", "DO", "DID", "DOES", "HAVE", "HAS", "HAD",
     "U", "I", "GO", "OR", "IF", "SO", "WE", "US", "BY", "AS", "UP",
-    "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA"
+    "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA", "LINK", "URL",
+    "SITE", "WEBSITE", "OFFICIAL"
 }
+
 STOPWORDS = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "did", "die", "he", "she", "they", "note",
     "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again",
-    "link", "url", "site", "website"
+    "link", "url", "site", "website", "official", "send", "give", "me"
 }
 
 
@@ -158,28 +195,19 @@ def sanitize_reply(text: Optional[str]) -> str:
     if not text:
         return ""
     s = str(text)
-
-    # Real HTML: <a href="URL">Label</a>  →  [Label](URL)
     s = re.sub(
         r'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
         lambda m: f"[{(m.group(2) or m.group(1)).strip()}]({m.group(1).strip()})",
         s,
         flags=re.IGNORECASE | re.DOTALL,
     )
-
-    # Already-mangled:
-    # https://yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo
     s = re.sub(
         r'(https?://[^\s"\'<>]+)"\s*target=["\']?_blank["\']?\s*rel=["\'][^"\']*["\']\s*>([^\n<]+)',
         lambda m: f"[{m.group(2).strip()}]({m.group(1).strip()})",
         s,
         flags=re.IGNORECASE,
     )
-
-    # Any leftover tags
     s = re.sub(r"<[^>]+>", "", s)
-
-    # Entities
     s = (
         s.replace("&nbsp;", " ")
          .replace("&amp;", "&")
@@ -188,8 +216,6 @@ def sanitize_reply(text: Optional[str]) -> str:
          .replace("&quot;", '"')
          .replace("&#39;", "'")
     )
-
-    # Collapse whitespace (keep newlines lightly)
     s = re.sub(r"[ \t]+", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
@@ -242,11 +268,9 @@ def _update_session(
 ):
     with _session_lock:
         prev = _sessions.get(sid, {})
-        # Always sanitize stored fact + history contents
         clean_fact = sanitize_reply(last_fact) if last_fact is not None else sanitize_reply(prev.get("last_fact") or "")
         if last_fact is None and prev.get("last_fact"):
             clean_fact = sanitize_reply(prev.get("last_fact") or "")
-
         raw_history = history if history is not None else (prev.get("history") or [])
         trimmed_history = []
         for item in (raw_history or [])[-MAX_HISTORY:]:
@@ -254,7 +278,6 @@ def _update_session(
                 "role": item.get("role", "user"),
                 "content": sanitize_reply(item.get("content") or ""),
             })
-
         _sessions[sid] = {
             "last_person": last_person if last_person is not None else prev.get("last_person") or "",
             "last_fact": clean_fact if last_fact is not None else (sanitize_reply(prev.get("last_fact") or "") or prev.get("last_fact") or ""),
@@ -264,7 +287,6 @@ def _update_session(
             "history": trimmed_history,
             "ts": _now()
         }
-        # If last_fact was explicitly passed, prefer sanitized version
         if last_fact is not None:
             _sessions[sid]["last_fact"] = sanitize_reply(last_fact)
 
@@ -363,15 +385,21 @@ def _extract_explicit_ticker(prompt: str) -> Optional[str]:
 
 
 def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bool:
+    """Stock path only when price/stock language is present, or pure ticker, or follow-up."""
     if not prompt:
         return False
     if IDENTITY_RE.search(prompt):
         return False
+    # "What's Google" / "What is YouTube" = informational, not a quote
+    if WHAT_IS_RE.search(prompt) and not STOCK_KEYWORD_RE.search(prompt):
+        return False
+
     company = _extract_company_ticker(prompt)
     explicit = _extract_explicit_ticker(prompt)
     has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
     is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
-    if company and (has_stock_kw or len(prompt.split()) <= 8):
+
+    if company and has_stock_kw:
         return True
     if explicit and has_stock_kw:
         return True
@@ -380,6 +408,38 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
     if has_last_ticker and is_followup:
         return True
     return False
+
+
+def _link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
+    """
+    Explicit "link to X" / "official link for yahoo" → (reply, url).
+    """
+    if not prompt:
+        return None
+    name = None
+    m = LINK_TO_RE.search(prompt)
+    if m:
+        name = m.group(1).lower().strip(".,!?")
+    else:
+        # broader: anything with link/url/website + a name
+        if re.search(r"\b(link|url|website|site)\b", prompt, re.IGNORECASE):
+            m2 = re.search(
+                r"\b(?:link|url|website|site)\b.*?\b([A-Za-z][A-Za-z0-9.-]{1,30})\b",
+                prompt,
+                re.IGNORECASE,
+            )
+            if m2:
+                name = m2.group(1).lower().strip(".,!?")
+    if not name or name in STOPWORDS or name in {"official", "the", "me", "a", "an", "for", "to"}:
+        return None
+    url = SITE_NAME_TO_URL.get(name)
+    if not url:
+        if re.fullmatch(r"[a-z0-9-]+", name) and len(name) >= 3:
+            url = f"https://www.{name}.com"
+        else:
+            return None
+    reply = f"Here you go: {_format_md_link(url)}"
+    return reply, url
 
 
 def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[Tuple[str, str]]:
@@ -424,7 +484,6 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
 def ask():
     if request.method == "OPTIONS":
         return ("", 200)
-
     try:
         data = request.get_json(force=True) or {}
     except Exception:
@@ -436,7 +495,6 @@ def ask():
     previous_fact_client = data.get("previous_fact") or None
     image_data = data.get("image") or None
     personality = (data.get("personality") or "hope").lower().strip()
-
     print(f"[Ask] Incoming: {user_prompt!r} concise={concise} personality={personality}")
 
     if not user_prompt and not image_data:
@@ -461,7 +519,6 @@ def ask():
     last_ticker = session_data.get("last_ticker") or ""
     last_url = session_data.get("last_url") or ""
     history: List[Dict[str, str]] = session_data.get("history") or []
-    # sanitize history contents so the model doesn't mimic HTML
     history = [
         {"role": h.get("role", "user"), "content": sanitize_reply(h.get("content") or "")}
         for h in history
@@ -493,6 +550,40 @@ def ask():
         f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
 
+    # ---- Explicit "link to X" (before stock / generic link follow-up) ----
+    link_req = _link_request_reply(user_prompt)
+    if link_req:
+        reply, url = link_req
+        reply = sanitize_reply(reply)
+        new_history = history + [
+            {"role": "user", "content": user_prompt},
+            {"role": "assistant", "content": reply},
+        ]
+        _update_session(
+            session_id,
+            last_person=None,  # clear stale badge (e.g. Rainbet)
+            last_fact=reply[:400],
+            last_topic=new_topic or "website",
+            history=new_history,
+            last_ticker=None,  # clear ticker so stock/link don't collide
+            last_url=url,
+        )
+        return jsonify({
+            "reply": reply,
+            "context_used": False,
+            "liveweb_raw": None,
+            "liveweb_analyzed": None,
+            "vision_note": vision_description if vision_description else None,
+            "memory": {
+                "last_person": None,
+                "topic_overlap": False,
+                "topic": new_topic or "website",
+                "last_ticker": None,
+                "last_url": url,
+                "history_length": len(new_history),
+            },
+        })
+
     # ---- Link follow-up path ("send me the link") ----
     if link_followup:
         url = last_url or _extract_url_from_text(chosen_previous_fact) or _extract_url_from_text(last_fact_mem)
@@ -506,7 +597,7 @@ def ask():
             ]
             _update_session(
                 session_id,
-                last_person=chosen_context_person,
+                last_person=None,
                 last_fact=store_fact,
                 last_topic=new_topic or last_topic or "website",
                 history=new_history,
@@ -520,7 +611,7 @@ def ask():
                 "liveweb_analyzed": None,
                 "vision_note": vision_description if vision_description else None,
                 "memory": {
-                    "last_person": chosen_context_person,
+                    "last_person": None,
                     "topic_overlap": topic_overlap,
                     "topic": new_topic or last_topic or "website",
                     "last_ticker": last_ticker or None,
@@ -539,9 +630,10 @@ def ask():
             {"role": "user", "content": user_prompt},
             {"role": "assistant", "content": reply}
         ]
+        # Keep last_url as-is (stock answers shouldn't steal the website memory)
         _update_session(
             session_id,
-            last_person=chosen_context_person,
+            last_person=None,
             last_fact=store_fact,
             last_topic=new_topic or "stocks",
             history=new_history,
@@ -550,12 +642,12 @@ def ask():
         )
         return jsonify({
             "reply": reply,
-            "context_used": bool(chosen_context_person or chosen_previous_fact or used_ticker),
+            "context_used": bool(used_ticker),
             "liveweb_raw": None,
             "liveweb_analyzed": None,
             "vision_note": vision_description if vision_description else None,
             "memory": {
-                "last_person": chosen_context_person,
+                "last_person": None,
                 "topic_overlap": topic_overlap,
                 "topic": new_topic or "stocks",
                 "last_ticker": used_ticker,
@@ -612,19 +704,21 @@ def ask():
         else:
             reply = "No data available."
 
-    # CRITICAL: never return / store HTML or mangled anchors
     reply = sanitize_reply(reply)
-
     if concise:
         reply = _concise_trim(reply)
         reply = sanitize_reply(reply)
 
-    new_entity = (
-        last_person if _is_unverified_death_line(liveweb_analyzed or "") else
-        _extract_entity_from_text(reply) or
-        _extract_entity_from_text(liveweb_analyzed or "") or
-        chosen_context_person
-    )
+    # Clear stale entity badge when topic clearly changed
+    if last_topic and new_topic and not topic_overlap:
+        new_entity = _extract_entity_from_text(reply) or _extract_entity_from_text(liveweb_analyzed or "")
+    else:
+        new_entity = (
+            last_person if _is_unverified_death_line(liveweb_analyzed or "") else
+            _extract_entity_from_text(reply) or
+            _extract_entity_from_text(liveweb_analyzed or "") or
+            chosen_context_person
+        )
 
     store_fact = None
     if reply and not _is_unverified_death_line(reply):
@@ -641,6 +735,12 @@ def ask():
         or last_url
         or None
     )
+
+    # Known site names in the user prompt → prefer that URL for memory
+    for site_name, site_url in SITE_NAME_TO_URL.items():
+        if re.search(rf"\b{re.escape(site_name)}\b", user_prompt, re.IGNORECASE):
+            found_url = site_url
+            break
 
     new_history = history + [
         {"role": "user", "content": user_prompt},
@@ -678,12 +778,10 @@ def ask():
 def welcome():
     if request.method == "OPTIONS":
         return ("", 200)
-
     session_data = _get_session(WEB_MEMORY_KEY) or {}
     last_topic = (session_data.get("last_topic") or "").strip()
     last_fact = sanitize_reply(session_data.get("last_fact") or "").strip()
     history = session_data.get("history") or []
-
     if not history and not last_topic and not last_fact:
         reply = (
             "Welcome back. I'm ready when you are. "
@@ -705,7 +803,6 @@ def welcome():
             "Welcome back. Want a quick catch-up on our last conversation, "
             "or should I give you today's briefing?"
         )
-
     reply = sanitize_reply(reply)
     print(f"[Welcome] topic={last_topic!r} history={len(history)}")
     return jsonify({
@@ -755,13 +852,11 @@ def speak():
     text = (data.get("text") or "").strip()
     if not text:
         return error_response("No text provided", 400)
-
     clean_text = sanitize_reply(text)
     clean_text = re.sub(r"\*\*(.*?)\*\*", r"\1", clean_text)
     clean_text = re.sub(r"`[^`]+`", "", clean_text)
     clean_text = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1 \2", clean_text)
     clean_text = clean_text.strip()
-
     print(f"[Speak] Generating voice for: {clean_text[:80]}...")
     try:
         response = requests.post(
@@ -816,7 +911,7 @@ def send_email_route():
     return error_response("send_email function not found", 500)
 
 
-# ---------- Health + memory clear (optional helper) ----------
+# ---------- Health + memory clear ----------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -824,7 +919,7 @@ def health():
 
 @app.route("/clear-memory", methods=["POST", "OPTIONS"])
 def clear_memory():
-    """One-shot: wipe corrupted web session memory after deploy."""
+    """One-shot: wipe web session memory after deploy."""
     if request.method == "OPTIONS":
         return ("", 200)
     with _session_lock:
@@ -835,6 +930,7 @@ def clear_memory():
 
 # ---------- Discord bot startup (works with gunicorn) ----------
 _discord_started = False
+
 
 def _start_discord_background():
     global _discord_started
