@@ -1,23 +1,14 @@
 """
 backend.py
 Hope v2 API server
-- Stronger session memory + last 20 messages conversation history
-- Shared web memory for welcome-back across devices
-- Yahoo Finance quotes via market.py (used in /ask + /quote)
-- Safer stock detection (won't treat Hi / who made you / u as tickers)
-- "What's Google" is info, not a GOOGL quote (unless price/stock keywords)
-- Explicit "link to X" path sets last_url correctly
-- Remembers last ticker for follow-ups like "check it again"
-- Remembers last website URL for follow-ups like "send me the link"
-- ElevenLabs text-to-speech (/speak)
-- Discord bot (runs in background thread - works with gunicorn)
-- Supports personality: "hope" (default) or "god" (Discord)
-- FIXED: sanitize HTML / mangled anchors so links never 404
+- Session memory via memory.py
+- Sanitize via sanitize.py
+- Yahoo Finance quotes via market.py
+- Safer stock detection / link memory / ElevenLabs / Discord
 """
 from __future__ import annotations
 import os
 import re
-import time
 import threading
 import traceback
 import importlib.metadata
@@ -27,6 +18,15 @@ from flask_cors import CORS
 import requests
 
 from sanitize import sanitize_reply
+from memory import (
+    WEB_MEMORY_KEY,
+    get_session,
+    update_session,
+    topic_of,
+    same_topic,
+    clear_web_memory,
+    STOPWORDS,
+)
 
 # ---------- Version Diagnostics ----------
 try:
@@ -40,7 +40,7 @@ except Exception:
     openai = None  # type: ignore
     print("[Debug] OpenAI import failed.")
 
-# ---------- Safe dynamic imports ----------
+
 def safe_import(name: str):
     try:
         m = __import__(name)
@@ -50,6 +50,7 @@ def safe_import(name: str):
         print(f"[Error] Import {name} failed: {e}")
         return None
 
+
 tone = safe_import("tone")
 emailer = safe_import("emailer")
 image_mod = safe_import("image")
@@ -57,7 +58,10 @@ liveweb = safe_import("liveweb") or safe_import("Liveweb")
 market = safe_import("market")
 
 print("📂 Working directory:", os.getcwd())
-for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "discord_bot.py", "market.py", "sanitize.py"]:
+for fn in [
+    "tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py",
+    "discord_bot.py", "market.py", "sanitize.py", "memory.py",
+]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
 
@@ -79,13 +83,7 @@ ELEVENLABS_VOICE_ID = "weA4Q36twV5kwSaTEL0Q"
 app = Flask(__name__)
 CORS(app)
 
-# ---------- Session Memory ----------
-SESSION_TTL_SECONDS = 7 * 24 * 3600
-MAX_HISTORY = 20
-WEB_MEMORY_KEY = "hope-web-owner"
-_session_lock = threading.Lock()
-_sessions: Dict[str, Dict[str, Any]] = {}
-
+# ---------- Regex / constants still used by routes ----------
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
 VAGUE_FOLLOWUP_RE = re.compile(
     r"\b(who was (he|she|that)|what did (he|she|they)|who was the killer|what did he represent|"
@@ -176,86 +174,8 @@ IGNORE_TICKERS = {
     "ARE", "AM", "BE", "DO", "DID", "DOES", "HAVE", "HAS", "HAD",
     "U", "I", "GO", "OR", "IF", "SO", "WE", "US", "BY", "AS", "UP",
     "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA", "LINK", "URL",
-    "SITE", "WEBSITE", "OFFICIAL"
+    "SITE", "WEBSITE", "OFFICIAL",
 }
-
-STOPWORDS = {
-    "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
-    "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
-    "come", "release", "date", "latest", "news", "did", "die", "he", "she", "they", "note",
-    "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again",
-    "link", "url", "site", "website", "official", "send", "give", "me"
-}
-
-
-def _now() -> float:
-    return time.time()
-
-
-def _prune_sessions():
-    now = _now()
-    with _session_lock:
-        stale = [
-            k for k, v in _sessions.items()
-            if k != WEB_MEMORY_KEY and now - v["ts"] > SESSION_TTL_SECONDS
-        ]
-        for k in stale:
-            _sessions.pop(k, None)
-
-
-def _topic_of(text: str) -> str:
-    tokens = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", text)]
-    filtered = [t for t in tokens if t not in STOPWORDS]
-    return " ".join(filtered[:5])
-
-
-def _same_topic(old: str, new: str) -> bool:
-    if not old or not new:
-        return False
-    a = set(old.split())
-    b = set(new.split())
-    return len(a & b) >= 1
-
-
-def _get_session(sid: str) -> Optional[Dict[str, Any]]:
-    _prune_sessions()
-    with _session_lock:
-        return _sessions.get(sid)
-
-
-def _update_session(
-    sid: str,
-    *,
-    last_person: Optional[str] = None,
-    last_fact: Optional[str] = None,
-    last_topic: str = "",
-    history: Optional[List[Dict[str, str]]] = None,
-    last_ticker: Optional[str] = None,
-    last_url: Optional[str] = None,
-):
-    with _session_lock:
-        prev = _sessions.get(sid, {})
-        clean_fact = sanitize_reply(last_fact) if last_fact is not None else sanitize_reply(prev.get("last_fact") or "")
-        if last_fact is None and prev.get("last_fact"):
-            clean_fact = sanitize_reply(prev.get("last_fact") or "")
-        raw_history = history if history is not None else (prev.get("history") or [])
-        trimmed_history = []
-        for item in (raw_history or [])[-MAX_HISTORY:]:
-            trimmed_history.append({
-                "role": item.get("role", "user"),
-                "content": sanitize_reply(item.get("content") or ""),
-            })
-        _sessions[sid] = {
-            "last_person": last_person if last_person is not None else prev.get("last_person") or "",
-            "last_fact": clean_fact if last_fact is not None else (sanitize_reply(prev.get("last_fact") or "") or prev.get("last_fact") or ""),
-            "last_topic": last_topic or prev.get("last_topic") or "",
-            "last_ticker": (last_ticker if last_ticker is not None else prev.get("last_ticker") or "").upper(),
-            "last_url": last_url if last_url is not None else prev.get("last_url") or "",
-            "history": trimmed_history,
-            "ts": _now()
-        }
-        if last_fact is not None:
-            _sessions[sid]["last_fact"] = sanitize_reply(last_fact)
 
 
 def _extract_entity_from_text(text: str) -> Optional[str]:
@@ -352,7 +272,6 @@ def _extract_explicit_ticker(prompt: str) -> Optional[str]:
 
 
 def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bool:
-    """Stock path only when price/stock language is present, or pure ticker, or follow-up."""
     if not prompt:
         return False
     if IDENTITY_RE.search(prompt):
@@ -375,7 +294,6 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
 
 
 def _link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
-    """Explicit "link to X" / "official link for yahoo" → (reply, url)."""
     if not prompt:
         return None
     name = None
@@ -417,7 +335,7 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
     if re.search(
         r"\b(when was|what day|which day|history|historical|last time it)\b",
         prompt or "",
-        re.IGNORECASE
+        re.IGNORECASE,
     ):
         return None
     print(f"[Market] Detected stock question for ticker={ticker}")
@@ -473,7 +391,7 @@ def ask():
     else:
         session_id = WEB_MEMORY_KEY
 
-    session_data = _get_session(session_id) or {}
+    session_data = get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
     last_fact_mem = sanitize_reply(session_data.get("last_fact") or "")
     last_topic = session_data.get("last_topic") or ""
@@ -485,8 +403,8 @@ def ask():
         for h in history
     ]
 
-    new_topic = _topic_of(user_prompt)
-    topic_overlap = _same_topic(last_topic, new_topic)
+    new_topic = topic_of(user_prompt)
+    topic_overlap = same_topic(last_topic, new_topic)
     pronoun_detected = PRONOUN_RE.search(user_prompt)
     vague_followup_detected = VAGUE_FOLLOWUP_RE.search(user_prompt)
     number_followup = NUMBER_FOLLOWUP_RE.search(user_prompt)
@@ -511,7 +429,6 @@ def ask():
         f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
 
-    # ---- Explicit "link to X" ----
     link_req = _link_request_reply(user_prompt)
     if link_req:
         reply, url = link_req
@@ -520,7 +437,7 @@ def ask():
             {"role": "user", "content": user_prompt},
             {"role": "assistant", "content": reply},
         ]
-        _update_session(
+        update_session(
             session_id,
             last_person=None,
             last_fact=reply[:400],
@@ -545,7 +462,6 @@ def ask():
             },
         })
 
-    # ---- Link follow-up ("send me the link") ----
     if link_followup:
         url = last_url or _extract_url_from_text(chosen_previous_fact) or _extract_url_from_text(last_fact_mem)
         if url:
@@ -554,9 +470,9 @@ def ask():
             store_fact = reply[:400]
             new_history = history + [
                 {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": reply}
+                {"role": "assistant", "content": reply},
             ]
-            _update_session(
+            update_session(
                 session_id,
                 last_person=None,
                 last_fact=store_fact,
@@ -577,11 +493,10 @@ def ask():
                     "topic": new_topic or last_topic or "website",
                     "last_ticker": last_ticker or None,
                     "last_url": url,
-                    "history_length": len(new_history)
-                }
+                    "history_length": len(new_history),
+                },
             })
 
-    # ---- Live stock quote ----
     market_result = _quote_reply_for_prompt(user_prompt, last_ticker=last_ticker or None)
     if market_result:
         reply, used_ticker = market_result
@@ -589,9 +504,9 @@ def ask():
         store_fact = reply[:400]
         new_history = history + [
             {"role": "user", "content": user_prompt},
-            {"role": "assistant", "content": reply}
+            {"role": "assistant", "content": reply},
         ]
-        _update_session(
+        update_session(
             session_id,
             last_person=None,
             last_fact=store_fact,
@@ -612,8 +527,8 @@ def ask():
                 "topic": new_topic or "stocks",
                 "last_ticker": used_ticker,
                 "last_url": last_url or None,
-                "history_length": len(new_history)
-            }
+                "history_length": len(new_history),
+            },
         })
 
     liveweb_raw = None
@@ -652,17 +567,14 @@ def ask():
                 previous_fact=chained_fact,
                 liveweb_fact=liveweb_analyzed,
                 history=history,
-                personality=personality
+                personality=personality,
             )
         except Exception as e:
             print(f"[Tone] Error: {e}")
             reply = None
 
     if not reply:
-        if liveweb_analyzed:
-            reply = liveweb_analyzed
-        else:
-            reply = "No data available."
+        reply = liveweb_analyzed if liveweb_analyzed else "No data available."
 
     reply = sanitize_reply(reply)
     if concise:
@@ -694,7 +606,6 @@ def ask():
         or last_url
         or None
     )
-
     for site_name, site_url in SITE_NAME_TO_URL.items():
         if re.search(rf"\b{re.escape(site_name)}\b", user_prompt, re.IGNORECASE):
             found_url = site_url
@@ -702,9 +613,9 @@ def ask():
 
     new_history = history + [
         {"role": "user", "content": user_prompt},
-        {"role": "assistant", "content": reply}
+        {"role": "assistant", "content": reply},
     ]
-    _update_session(
+    update_session(
         session_id,
         last_person=new_entity,
         last_fact=store_fact,
@@ -726,17 +637,16 @@ def ask():
             "topic": new_topic,
             "last_ticker": last_ticker or None,
             "last_url": found_url,
-            "history_length": len(new_history)
-        }
+            "history_length": len(new_history),
+        },
     })
 
 
-# ---------- Welcome Route ----------
 @app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
 def welcome():
     if request.method == "OPTIONS":
         return ("", 200)
-    session_data = _get_session(WEB_MEMORY_KEY) or {}
+    session_data = get_session(WEB_MEMORY_KEY) or {}
     last_topic = (session_data.get("last_topic") or "").strip()
     last_fact = sanitize_reply(session_data.get("last_fact") or "").strip()
     history = session_data.get("history") or []
@@ -768,11 +678,10 @@ def welcome():
         "memory": {
             "last_topic": last_topic,
             "has_history": bool(history),
-        }
+        },
     })
 
 
-# ---------- Yahoo Finance Quote Route ----------
 @app.route("/quote", methods=["GET", "OPTIONS"])
 def quote():
     if request.method == "OPTIONS":
@@ -798,7 +707,6 @@ def quote():
     })
 
 
-# ---------- ElevenLabs Speak Route ----------
 @app.route("/speak", methods=["POST", "OPTIONS"])
 def speak():
     if request.method == "OPTIONS":
@@ -822,17 +730,14 @@ def speak():
             headers={
                 "Accept": "audio/mpeg",
                 "Content-Type": "application/json",
-                "xi-api-key": ELEVENLABS_API_KEY
+                "xi-api-key": ELEVENLABS_API_KEY,
             },
             json={
                 "text": clean_text,
                 "model_id": "eleven_turbo_v2",
-                "voice_settings": {
-                    "stability": 0.4,
-                    "similarity_boost": 0.8
-                }
+                "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
             },
-            timeout=30
+            timeout=30,
         )
         if response.status_code != 200:
             print(f"[Speak] ElevenLabs error: {response.status_code} - {response.text}")
@@ -843,7 +748,6 @@ def speak():
         return error_response(f"TTS failed: {str(e)}", 500)
 
 
-# ---------- Email Route ----------
 @app.route("/send-email", methods=["POST"])
 def send_email_route():
     if not emailer:
@@ -869,7 +773,6 @@ def send_email_route():
     return error_response("send_email function not found", 500)
 
 
-# ---------- Health + memory clear ----------
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -879,13 +782,11 @@ def health():
 def clear_memory():
     if request.method == "OPTIONS":
         return ("", 200)
-    with _session_lock:
-        _sessions.pop(WEB_MEMORY_KEY, None)
+    clear_web_memory()
     print("[Memory] Cleared WEB_MEMORY_KEY")
     return jsonify({"ok": True, "cleared": WEB_MEMORY_KEY})
 
 
-# ---------- Discord bot startup ----------
 _discord_started = False
 
 
@@ -909,7 +810,6 @@ def _start_discord_background():
 
 
 _start_discord_background()
-
 
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
