@@ -91,9 +91,7 @@
       cursor: pointer !important;
       word-break: break-all;
     }
-    .chat-bubble a:hover {
-      opacity: 0.85;
-    }
+    .chat-bubble a:hover { opacity: 0.85; }
     .chat-bubble.user {
       align-self: flex-end;
       color: var(--neon);
@@ -473,7 +471,9 @@
       </div>
     </div>
   </main>
+
   <script src="typing-animation.js"></script>
+  <script src="js/md.js"></script>
   <script>
     window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
 
@@ -500,87 +500,6 @@
       wakeStatus.textContent = text;
       wakeStatus.classList.toggle('active', active);
     }
-
-    // FIXED link converter — no trailing ", no target=_blank junk
-    function mdToHTML(s) {
-      if (!s) return "";
-
-      let text = String(s);
-
-      // Real HTML anchors → Label (url)
-      text = text.replace(
-        /<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
-        (_, href, label) => {
-          const cleanHref = String(href).trim().replace(/["']/g, "");
-          const cleanLabel = String(label).replace(/<[^>]+>/g, "").trim();
-          if (cleanLabel && cleanLabel !== cleanHref) {
-            return `${cleanLabel} (${cleanHref})`;
-          }
-          return cleanHref;
-        }
-      );
-
-      // Strip leaked attribute junk:
-      // https://www.yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo
-      text = text.replace(
-        /["']?\s*target\s*=\s*["']?_blank["']?\s*rel\s*=\s*["'][^"']*["']\s*>/gi,
-        " "
-      );
-
-      // Quotes stuck to URLs
-      text = text.replace(/(https?:\/\/[^\s]+?)["']+/g, "$1");
-
-      // Escape
-      let html = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-
-      html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-      html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-      // Markdown links
-      html = html.replace(
-        /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
-        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
-      );
-
-      // Bare URLs — skip if already inside href=
-      html = html.replace(/https?:\/\/[^\s<]+/gi, (match, offset, full) => {
-        const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
-        if (
-          before.includes('href="') ||
-          before.includes("href='") ||
-          before.includes("href=")
-        ) {
-          return match;
-        }
-        const trailing = match.match(/[.,!?);:"'\]]+$/);
-        let clean = trailing ? match.slice(0, -trailing[0].length) : match;
-        clean = clean.replace(/["']/g, "");
-        const end = trailing ? trailing[0].replace(/["']/g, "") : "";
-        return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
-      });
-
-      // Plain domains
-      html = html.replace(
-        /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
-        (domain, _1, offset, full) => {
-          const before = full.slice(Math.max(0, offset - 15), offset).toLowerCase();
-          if (
-            before.includes("href=") ||
-            before.includes("://") ||
-            before.includes("<a ")
-          ) {
-            return domain;
-          }
-          return `<a href="https://${domain}" target="_blank" rel="noopener noreferrer">${domain}</a>`;
-        }
-      );
-
-      return html.replace(/\n\n/g, "<br><br>").replace(/\n/g, "<br>");
-    }
-    window.mdToHTML = mdToHTML;
 
     function autoresize() {
       ta.style.height = 'auto';
@@ -624,9 +543,7 @@
       setStatus('Welcome…', true);
       let reply = "Welcome back. Want today's briefing, or just ask me something?";
       try {
-        const res = await fetch(`${window.BACKEND_URL}/welcome`, {
-          method: "GET"
-        });
+        const res = await fetch(`${window.BACKEND_URL}/welcome`, { method: "GET" });
         if (res.ok) {
           const data = await res.json();
           reply = data.reply || reply;
@@ -662,7 +579,6 @@
 
     document.body.addEventListener('click', unlockAudio, { once: true });
     document.body.addEventListener('touchstart', unlockAudio, { once: true });
-
     window.addEventListener('DOMContentLoaded', () => {
       document.body.classList.add('ready');
     });
@@ -762,7 +678,6 @@
       setStatus('Listening… speak now', true);
       if (micLabel) micLabel.classList.add('listening-active');
       restartAttempts = 0;
-
       if (recognition) {
         try {
           recognition.onend = null;
@@ -772,7 +687,6 @@
         } catch (e) {}
         recognition = null;
       }
-
       recognition = createRecognition();
       if (!recognition) return;
 
@@ -860,7 +774,6 @@
       if (!text) return;
       ta.value = '';
       autoresize();
-
       if (window.simulateChatResponse) {
         await window.simulateChatResponse(text, chatThread, 35);
       } else {
@@ -868,12 +781,10 @@
         userBubble.className = "chat-bubble user";
         userBubble.textContent = text;
         chatThread.appendChild(userBubble);
-
         const aiBubble = document.createElement("div");
         aiBubble.className = "chat-bubble";
         aiBubble.textContent = "…";
         chatThread.appendChild(aiBubble);
-
         try {
           const res = await fetch(`${window.BACKEND_URL}/ask`, {
             method: "POST",
@@ -923,7 +834,6 @@
         e.stopPropagation();
       });
     });
-
     dropZone.addEventListener('dragover', () => dropZone.classList.add('drag-over'));
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
     dropZone.addEventListener('drop', (e) => {
