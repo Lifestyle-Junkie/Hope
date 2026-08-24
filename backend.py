@@ -1,8 +1,7 @@
 """
 backend.py
 Hope v2 API server
-- memory.py / sanitize.py / links.py
-- Yahoo Finance quotes via market.py
+- sanitize.py / memory.py / links.py / market.py
 - ElevenLabs + Discord
 """
 from __future__ import annotations
@@ -11,7 +10,7 @@ import re
 import threading
 import traceback
 import importlib.metadata
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -34,7 +33,6 @@ from links import (
     prefer_site_url_from_prompt,
 )
 
-# ---------- Version Diagnostics ----------
 try:
     print(f"[Debug] Flask version: {importlib.metadata.version('flask')}")
 except Exception:
@@ -99,49 +97,6 @@ NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
 
-STOCK_KEYWORD_RE = re.compile(
-    r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
-    r"current price|at rn|right now price|market cap)\b",
-    re.IGNORECASE,
-)
-STOCK_FOLLOWUP_RE = re.compile(
-    r"\b(check( it)? again|check again|update( it)?|refresh|price now|how about now|"
-    r"what(?:'s| is)? (?:it|that|the price) now)\b",
-    re.IGNORECASE,
-)
-IDENTITY_RE = re.compile(
-    r"\b(who made you|who created you|who designed you|who are you|what are you|"
-    r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
-    re.IGNORECASE,
-)
-WHAT_IS_RE = re.compile(
-    r"^\s*(what(?:'s| is| are)|who is|tell me about|explain)\b",
-    re.IGNORECASE,
-)
-
-COMPANY_TO_TICKER = {
-    "shopify": "SHOP", "apple": "AAPL", "comcast": "CMCSA", "tesla": "TSLA",
-    "nvidia": "NVDA", "microsoft": "MSFT", "amazon": "AMZN", "google": "GOOGL",
-    "alphabet": "GOOGL", "meta": "META", "facebook": "META", "netflix": "NFLX",
-    "disney": "DIS", "amd": "AMD", "intel": "INTC", "coinbase": "COIN",
-    "robinhood": "HOOD",
-}
-
-IGNORE_TICKERS = {
-    "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
-    "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
-    "CHECK", "AGAIN", "WHEN", "WAS", "IT", "THIS", "THAT", "UPDATE",
-    "ME", "MY", "ON", "OF", "TO", "A", "AN", "RIGHT", "ABOUT", "WITH",
-    "FROM", "JUST", "LIKE", "CAN", "YOU", "GET", "GIVE", "SHOW", "TELL",
-    "WHO", "HI", "HEY", "HELLO", "MADE", "CREATE", "CREATED", "DESIGN",
-    "DESIGNED", "NAME", "HOPE", "GOD", "YES", "NO", "OK", "OKAY", "PLS",
-    "PLEASE", "THANKS", "THANK", "WHY", "WHERE", "WHICH", "YOUR",
-    "ARE", "AM", "BE", "DO", "DID", "DOES", "HAVE", "HAS", "HAD",
-    "U", "I", "GO", "OR", "IF", "SO", "WE", "US", "BY", "AS", "UP",
-    "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA", "LINK", "URL",
-    "SITE", "WEBSITE", "OFFICIAL",
-}
-
 
 def _extract_entity_from_text(text: str) -> Optional[str]:
     if not text:
@@ -193,85 +148,6 @@ def _concise_trim(text: str) -> str:
     if len(first) > 10:
         return first
     return text[:160]
-
-
-def _extract_company_ticker(prompt: str) -> Optional[str]:
-    lower = (prompt or "").lower()
-    for name, ticker in COMPANY_TO_TICKER.items():
-        if re.search(rf"\b{re.escape(name)}\b", lower):
-            return ticker
-    return None
-
-
-def _extract_explicit_ticker(prompt: str) -> Optional[str]:
-    text = (prompt or "").strip()
-    candidates = re.findall(r"\b[A-Z]{2,5}\b", text)
-    if not candidates:
-        candidates = re.findall(r"\b[A-Z]{2,5}\b", text.upper())
-    for tok in candidates:
-        up = tok.upper()
-        if up not in IGNORE_TICKERS and 2 <= len(up) <= 5:
-            return up
-    return None
-
-
-def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bool:
-    if not prompt:
-        return False
-    if IDENTITY_RE.search(prompt):
-        return False
-    if WHAT_IS_RE.search(prompt) and not STOCK_KEYWORD_RE.search(prompt):
-        return False
-    company = _extract_company_ticker(prompt)
-    explicit = _extract_explicit_ticker(prompt)
-    has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
-    is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
-    if company and has_stock_kw:
-        return True
-    if explicit and has_stock_kw:
-        return True
-    if explicit and re.fullmatch(r"[A-Za-z]{2,5}\??", prompt.strip()):
-        return True
-    if has_last_ticker and is_followup:
-        return True
-    return False
-
-
-def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[Tuple[str, str]]:
-    if not market or not hasattr(market, "get_quote"):
-        return None
-    has_last = bool(last_ticker)
-    if not _looks_like_stock_question(prompt, has_last_ticker=has_last):
-        return None
-    ticker = _extract_company_ticker(prompt) or _extract_explicit_ticker(prompt)
-    if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
-        ticker = last_ticker
-    if not ticker:
-        return None
-    if re.search(
-        r"\b(when was|what day|which day|history|historical|last time it)\b",
-        prompt or "",
-        re.IGNORECASE,
-    ):
-        return None
-    print(f"[Market] Detected stock question for ticker={ticker}")
-    q = market.get_quote(ticker)
-    if not q:
-        return (f"I couldn't fetch a live quote for **{ticker}** right now.", ticker)
-    price = q.get("price")
-    prev = q.get("previous_close")
-    chg = q.get("change_percent")
-    if price is None:
-        return (f"I couldn't get a current price for **{ticker}**.", ticker)
-    if prev is not None and chg is not None:
-        direction = "up" if chg >= 0 else "down"
-        reply = (
-            f"**{ticker}** is around **${price:,.2f}** right now. "
-            f"Previous close was **${prev:,.2f}** ({direction} {abs(chg):.2f}%)."
-        )
-    else:
-        reply = f"**{ticker}** is around **${price:,.2f}** right now."
-    return (reply, ticker)
 
 
 @app.route("/ask", methods=["POST", "OPTIONS"])
@@ -412,7 +288,12 @@ def ask():
                 },
             })
 
-    market_result = _quote_reply_for_prompt(user_prompt, last_ticker=last_ticker or None)
+    market_result = None
+    if market and hasattr(market, "quote_reply_for_prompt"):
+        market_result = market.quote_reply_for_prompt(
+            user_prompt,
+            last_ticker=last_ticker or None,
+        )
     if market_result:
         reply, used_ticker = market_result
         reply = sanitize_reply(reply)
