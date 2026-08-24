@@ -1,10 +1,9 @@
 """
 backend.py
 Hope v2 API server
-- Session memory via memory.py
-- Sanitize via sanitize.py
+- memory.py / sanitize.py / links.py
 - Yahoo Finance quotes via market.py
-- Safer stock detection / link memory / ElevenLabs / Discord
+- ElevenLabs + Discord
 """
 from __future__ import annotations
 import os
@@ -26,6 +25,13 @@ from memory import (
     same_topic,
     clear_web_memory,
     STOPWORDS,
+)
+from links import (
+    is_link_followup,
+    extract_url_from_text,
+    format_md_link,
+    link_request_reply,
+    prefer_site_url_from_prompt,
 )
 
 # ---------- Version Diagnostics ----------
@@ -60,12 +66,11 @@ market = safe_import("market")
 print("📂 Working directory:", os.getcwd())
 for fn in [
     "tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py",
-    "discord_bot.py", "market.py", "sanitize.py", "memory.py",
+    "discord_bot.py", "market.py", "sanitize.py", "memory.py", "links.py",
 ]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
 
-# ---------- OpenAI Key ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
@@ -75,15 +80,12 @@ else:
     openai.api_key = OPENAI_API_KEY
     print("🔐 OpenAI enabled.")
 
-# ---------- ElevenLabs Config ----------
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = "weA4Q36twV5kwSaTEL0Q"
 
-# ---------- Flask App ----------
 app = Flask(__name__)
 CORS(app)
 
-# ---------- Regex / constants still used by routes ----------
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
 VAGUE_FOLLOWUP_RE = re.compile(
     r"\b(who was (he|she|that)|what did (he|she|they)|who was the killer|what did he represent|"
@@ -91,47 +93,30 @@ VAGUE_FOLLOWUP_RE = re.compile(
     r"what would|how much would|how many would|my (money|investment|1k|thousand)|"
     r"at that price|at the price|goes to|reaches|turns to|what would my|"
     r"on top of|like of|the 1k|of the|that one|same one|previous|earlier)\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares?|1k|thousand)\b", re.IGNORECASE)
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
 
-LINK_FOLLOWUP_RE = re.compile(
-    r"^\s*((please|pls|can you|could you)\s+)?"
-    r"(send|give|drop|share|post)?\s*"
-    r"(me\s+)?(the\s+)?(link|url|website|site)\s*\??\s*$",
-    re.IGNORECASE
-)
-LINK_TO_RE = re.compile(
-    r"\b(?:(?:official|the)\s+)?(?:link|url|website|site)\s+(?:to|for)\s+([A-Za-z0-9][\w.-]*)\b",
-    re.IGNORECASE
-)
-URL_RE = re.compile(r"https?://[^\s)\]>\"']+", re.IGNORECASE)
-MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
-DOMAIN_RE = re.compile(
-    r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
-    re.IGNORECASE
-)
-
 STOCK_KEYWORD_RE = re.compile(
     r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
     r"current price|at rn|right now price|market cap)\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 STOCK_FOLLOWUP_RE = re.compile(
     r"\b(check( it)? again|check again|update( it)?|refresh|price now|how about now|"
     r"what(?:'s| is)? (?:it|that|the price) now)\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 IDENTITY_RE = re.compile(
     r"\b(who made you|who created you|who designed you|who are you|what are you|"
     r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 WHAT_IS_RE = re.compile(
     r"^\s*(what(?:'s| is| are)|who is|tell me about|explain)\b",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 COMPANY_TO_TICKER = {
@@ -140,26 +125,6 @@ COMPANY_TO_TICKER = {
     "alphabet": "GOOGL", "meta": "META", "facebook": "META", "netflix": "NFLX",
     "disney": "DIS", "amd": "AMD", "intel": "INTC", "coinbase": "COIN",
     "robinhood": "HOOD",
-}
-
-SITE_NAME_TO_URL = {
-    "google": "https://www.google.com",
-    "youtube": "https://www.youtube.com",
-    "yahoo": "https://www.yahoo.com",
-    "rainbet": "https://rainbet.com",
-    "shopify": "https://www.shopify.com",
-    "twitter": "https://x.com",
-    "x": "https://x.com",
-    "instagram": "https://www.instagram.com",
-    "facebook": "https://www.facebook.com",
-    "reddit": "https://www.reddit.com",
-    "github": "https://github.com",
-    "openai": "https://openai.com",
-    "amazon": "https://www.amazon.com",
-    "netflix": "https://www.netflix.com",
-    "apple": "https://www.apple.com",
-    "microsoft": "https://www.microsoft.com",
-    "tesla": "https://www.tesla.com",
 }
 
 IGNORE_TICKERS = {
@@ -191,27 +156,6 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
         if c.lower() not in STOPWORDS and len(c) > 2:
             return c
     return None
-
-
-def _extract_url_from_text(text: Optional[str]) -> Optional[str]:
-    if not text:
-        return None
-    text = sanitize_reply(text)
-    md = MD_LINK_RE.search(text)
-    if md:
-        return md.group(2).rstrip(".,);]")
-    m = URL_RE.search(text)
-    if m:
-        return m.group(0).rstrip(".,);]\"'")
-    d = DOMAIN_RE.search(text)
-    if d:
-        return f"https://{d.group(0).lower()}"
-    return None
-
-
-def _format_md_link(url: str) -> str:
-    host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
-    return f"[{host}]({url})"
 
 
 def _is_unverified_death_line(text: str) -> bool:
@@ -293,34 +237,6 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
     return False
 
 
-def _link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
-    if not prompt:
-        return None
-    name = None
-    m = LINK_TO_RE.search(prompt)
-    if m:
-        name = m.group(1).lower().strip(".,!?")
-    else:
-        if re.search(r"\b(link|url|website|site)\b", prompt, re.IGNORECASE):
-            m2 = re.search(
-                r"\b(?:link|url|website|site)\b.*?\b([A-Za-z][A-Za-z0-9.-]{1,30})\b",
-                prompt,
-                re.IGNORECASE,
-            )
-            if m2:
-                name = m2.group(1).lower().strip(".,!?")
-    if not name or name in STOPWORDS or name in {"official", "the", "me", "a", "an", "for", "to"}:
-        return None
-    url = SITE_NAME_TO_URL.get(name)
-    if not url:
-        if re.fullmatch(r"[a-z0-9-]+", name) and len(name) >= 3:
-            url = f"https://www.{name}.com"
-        else:
-            return None
-    reply = f"Here you go: {_format_md_link(url)}"
-    return reply, url
-
-
 def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> Optional[Tuple[str, str]]:
     if not market or not hasattr(market, "get_quote"):
         return None
@@ -358,7 +274,6 @@ def _quote_reply_for_prompt(prompt: str, last_ticker: Optional[str] = None) -> O
     return (reply, ticker)
 
 
-# ---------- Core Route ----------
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
     if request.method == "OPTIONS":
@@ -408,7 +323,7 @@ def ask():
     pronoun_detected = PRONOUN_RE.search(user_prompt)
     vague_followup_detected = VAGUE_FOLLOWUP_RE.search(user_prompt)
     number_followup = NUMBER_FOLLOWUP_RE.search(user_prompt)
-    link_followup = bool(LINK_FOLLOWUP_RE.match(user_prompt))
+    link_followup = is_link_followup(user_prompt)
     word_count = len(user_prompt.split())
     is_short_message = word_count <= 12
 
@@ -429,7 +344,7 @@ def ask():
         f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
 
-    link_req = _link_request_reply(user_prompt)
+    link_req = link_request_reply(user_prompt)
     if link_req:
         reply, url = link_req
         reply = sanitize_reply(reply)
@@ -463,9 +378,9 @@ def ask():
         })
 
     if link_followup:
-        url = last_url or _extract_url_from_text(chosen_previous_fact) or _extract_url_from_text(last_fact_mem)
+        url = last_url or extract_url_from_text(chosen_previous_fact) or extract_url_from_text(last_fact_mem)
         if url:
-            reply = f"Here you go: {_format_md_link(url)}"
+            reply = f"Here you go: {format_md_link(url)}"
             reply = sanitize_reply(reply)
             store_fact = reply[:400]
             new_history = history + [
@@ -586,9 +501,9 @@ def ask():
     else:
         new_entity = (
             last_person if _is_unverified_death_line(liveweb_analyzed or "") else
-            _extract_entity_from_text(reply) or
-            _extract_entity_from_text(liveweb_analyzed or "") or
-            chosen_context_person
+            _extract_entity_from_text(reply)
+            or _extract_entity_from_text(liveweb_analyzed or "")
+            or chosen_context_person
         )
 
     store_fact = None
@@ -600,16 +515,13 @@ def ask():
         store_fact = sanitize_reply(chained_fact)[:300]
 
     found_url = (
-        _extract_url_from_text(reply)
-        or _extract_url_from_text(liveweb_analyzed)
-        or _extract_url_from_text(store_fact)
+        extract_url_from_text(reply)
+        or extract_url_from_text(liveweb_analyzed)
+        or extract_url_from_text(store_fact)
         or last_url
         or None
     )
-    for site_name, site_url in SITE_NAME_TO_URL.items():
-        if re.search(rf"\b{re.escape(site_name)}\b", user_prompt, re.IGNORECASE):
-            found_url = site_url
-            break
+    found_url = prefer_site_url_from_prompt(user_prompt, found_url)
 
     new_history = history + [
         {"role": "user", "content": user_prompt},
@@ -675,10 +587,7 @@ def welcome():
     print(f"[Welcome] topic={last_topic!r} history={len(history)}")
     return jsonify({
         "reply": reply,
-        "memory": {
-            "last_topic": last_topic,
-            "has_history": bool(history),
-        },
+        "memory": {"last_topic": last_topic, "has_history": bool(history)},
     })
 
 
