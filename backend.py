@@ -26,6 +26,8 @@ from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
 
+from sanitize import sanitize_reply
+
 # ---------- Version Diagnostics ----------
 try:
     print(f"[Debug] Flask version: {importlib.metadata.version('flask')}")
@@ -55,7 +57,7 @@ liveweb = safe_import("liveweb") or safe_import("Liveweb")
 market = safe_import("market")
 
 print("📂 Working directory:", os.getcwd())
-for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "discord_bot.py", "market.py"]:
+for fn in ["tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py", "discord_bot.py", "market.py", "sanitize.py"]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
 
@@ -129,7 +131,6 @@ IDENTITY_RE = re.compile(
     r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
     re.IGNORECASE
 )
-# "What's Google" / "What is YouTube" = info, not a stock quote
 WHAT_IS_RE = re.compile(
     r"^\s*(what(?:'s| is| are)|who is|tell me about|explain)\b",
     re.IGNORECASE
@@ -185,40 +186,6 @@ STOPWORDS = {
     "stock", "share", "shares", "price", "quote", "rn", "now", "current", "check", "again",
     "link", "url", "site", "website", "official", "send", "give", "me"
 }
-
-
-def sanitize_reply(text: Optional[str]) -> str:
-    """
-    Convert HTML anchors / mangled link junk into clean markdown or plain URLs.
-    Never leave target= / rel= debris in stored memory or API replies.
-    """
-    if not text:
-        return ""
-    s = str(text)
-    s = re.sub(
-        r'<a\s+[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>',
-        lambda m: f"[{(m.group(2) or m.group(1)).strip()}]({m.group(1).strip()})",
-        s,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    s = re.sub(
-        r'(https?://[^\s"\'<>]+)"\s*target=["\']?_blank["\']?\s*rel=["\'][^"\']*["\']\s*>([^\n<]+)',
-        lambda m: f"[{m.group(2).strip()}]({m.group(1).strip()})",
-        s,
-        flags=re.IGNORECASE,
-    )
-    s = re.sub(r"<[^>]+>", "", s)
-    s = (
-        s.replace("&nbsp;", " ")
-         .replace("&amp;", "&")
-         .replace("&lt;", "<")
-         .replace("&gt;", ">")
-         .replace("&quot;", '"')
-         .replace("&#39;", "'")
-    )
-    s = re.sub(r"[ \t]+", " ", s)
-    s = re.sub(r"\n{3,}", "\n\n", s)
-    return s.strip()
 
 
 def _now() -> float:
@@ -390,15 +357,12 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
         return False
     if IDENTITY_RE.search(prompt):
         return False
-    # "What's Google" / "What is YouTube" = informational, not a quote
     if WHAT_IS_RE.search(prompt) and not STOCK_KEYWORD_RE.search(prompt):
         return False
-
     company = _extract_company_ticker(prompt)
     explicit = _extract_explicit_ticker(prompt)
     has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
     is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
-
     if company and has_stock_kw:
         return True
     if explicit and has_stock_kw:
@@ -411,9 +375,7 @@ def _looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> bo
 
 
 def _link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
-    """
-    Explicit "link to X" / "official link for yahoo" → (reply, url).
-    """
+    """Explicit "link to X" / "official link for yahoo" → (reply, url)."""
     if not prompt:
         return None
     name = None
@@ -421,7 +383,6 @@ def _link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
     if m:
         name = m.group(1).lower().strip(".,!?")
     else:
-        # broader: anything with link/url/website + a name
         if re.search(r"\b(link|url|website|site)\b", prompt, re.IGNORECASE):
             m2 = re.search(
                 r"\b(?:link|url|website|site)\b.*?\b([A-Za-z][A-Za-z0-9.-]{1,30})\b",
@@ -550,7 +511,7 @@ def ask():
         f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
 
-    # ---- Explicit "link to X" (before stock / generic link follow-up) ----
+    # ---- Explicit "link to X" ----
     link_req = _link_request_reply(user_prompt)
     if link_req:
         reply, url = link_req
@@ -561,11 +522,11 @@ def ask():
         ]
         _update_session(
             session_id,
-            last_person=None,  # clear stale badge (e.g. Rainbet)
+            last_person=None,
             last_fact=reply[:400],
             last_topic=new_topic or "website",
             history=new_history,
-            last_ticker=None,  # clear ticker so stock/link don't collide
+            last_ticker=None,
             last_url=url,
         )
         return jsonify({
@@ -584,7 +545,7 @@ def ask():
             },
         })
 
-    # ---- Link follow-up path ("send me the link") ----
+    # ---- Link follow-up ("send me the link") ----
     if link_followup:
         url = last_url or _extract_url_from_text(chosen_previous_fact) or _extract_url_from_text(last_fact_mem)
         if url:
@@ -620,7 +581,7 @@ def ask():
                 }
             })
 
-    # ---- Live stock quote path (before OpenAI) ----
+    # ---- Live stock quote ----
     market_result = _quote_reply_for_prompt(user_prompt, last_ticker=last_ticker or None)
     if market_result:
         reply, used_ticker = market_result
@@ -630,7 +591,6 @@ def ask():
             {"role": "user", "content": user_prompt},
             {"role": "assistant", "content": reply}
         ]
-        # Keep last_url as-is (stock answers shouldn't steal the website memory)
         _update_session(
             session_id,
             last_person=None,
@@ -709,7 +669,6 @@ def ask():
         reply = _concise_trim(reply)
         reply = sanitize_reply(reply)
 
-    # Clear stale entity badge when topic clearly changed
     if last_topic and new_topic and not topic_overlap:
         new_entity = _extract_entity_from_text(reply) or _extract_entity_from_text(liveweb_analyzed or "")
     else:
@@ -736,7 +695,6 @@ def ask():
         or None
     )
 
-    # Known site names in the user prompt → prefer that URL for memory
     for site_name, site_url in SITE_NAME_TO_URL.items():
         if re.search(rf"\b{re.escape(site_name)}\b", user_prompt, re.IGNORECASE):
             found_url = site_url
@@ -919,7 +877,6 @@ def health():
 
 @app.route("/clear-memory", methods=["POST", "OPTIONS"])
 def clear_memory():
-    """One-shot: wipe web session memory after deploy."""
     if request.method == "OPTIONS":
         return ("", 200)
     with _session_lock:
@@ -928,7 +885,7 @@ def clear_memory():
     return jsonify({"ok": True, "cleared": WEB_MEMORY_KEY})
 
 
-# ---------- Discord bot startup (works with gunicorn) ----------
+# ---------- Discord bot startup ----------
 _discord_started = False
 
 
@@ -953,7 +910,7 @@ def _start_discord_background():
 
 _start_discord_background()
 
-# ---------- Main Entrypoint (local testing) ----------
+
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
