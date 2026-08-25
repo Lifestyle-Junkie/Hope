@@ -472,129 +472,13 @@
     </div>
   </main>
 
+  <script>
+    window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
+  </script>
   <script src="typing-animation.js"></script>
   <script src="js/md.js"></script>
   <script src="js/media.js"></script>
   <script src="js/voice.js"></script>
-  <script>
-    window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
-
-    let audioUnlocked = false;
-    let welcomePlayed = false;
-
-    const ta = document.getElementById('chat-input');
-    const submitBtn = document.getElementById('submitBtn');
-    const chatThread = document.getElementById('chat-thread');
-
-    function autoresize() {
-      ta.style.height = 'auto';
-      ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
-    }
-    ['input', 'change'].forEach(ev => ta.addEventListener(ev, autoresize));
-
-    function addHopeBubble(text) {
-      const aiBubble = document.createElement("div");
-      aiBubble.className = "chat-bubble";
-      aiBubble.innerHTML = mdToHTML(text);
-      chatThread.appendChild(aiBubble);
-      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-      return aiBubble;
-    }
-
-    async function playWelcome() {
-      if (welcomePlayed) return;
-      welcomePlayed = true;
-      window.hopeIsProcessing = true;
-      if (window.setStatus) setStatus('Welcome…', true);
-
-      let reply = "Welcome back. Want today's briefing, or just ask me something?";
-      try {
-        const res = await fetch(`${window.BACKEND_URL}/welcome`, { method: "GET" });
-        if (res.ok) {
-          const data = await res.json();
-          reply = data.reply || reply;
-        }
-      } catch (e) {
-        console.error("Welcome error:", e);
-      }
-
-      addHopeBubble(reply);
-      try {
-        if (window.setStatus) setStatus('Speaking…', true);
-        if (window.speakText) await speakText(reply);
-      } catch (e) {
-        console.error("Welcome speak error:", e);
-      }
-
-      window.hopeIsProcessing = false;
-      if (window.setStatus) setStatus('Listening for “Hope”…');
-      if (window.startWakeWordMode) startWakeWordMode();
-    }
-
-    function unlockAudio() {
-      if (audioUnlocked) return;
-      const silent = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
-      silent.volume = 0.01;
-      silent.play().then(async () => {
-        audioUnlocked = true;
-        console.log("Audio unlocked");
-        await playWelcome();
-      }).catch(async () => {
-        audioUnlocked = true;
-        await playWelcome();
-      });
-    }
-
-    document.body.addEventListener('click', unlockAudio, { once: true });
-    document.body.addEventListener('touchstart', unlockAudio, { once: true });
-    window.addEventListener('DOMContentLoaded', () => {
-      document.body.classList.add('ready');
-    });
-
-    submitBtn.addEventListener('click', async () => {
-      const text = ta.value.trim();
-      if (!text) return;
-      ta.value = '';
-      autoresize();
-      if (window.simulateChatResponse) {
-        await window.simulateChatResponse(text, chatThread, 35);
-      } else {
-        const userBubble = document.createElement("div");
-        userBubble.className = "chat-bubble user";
-        userBubble.textContent = text;
-        chatThread.appendChild(userBubble);
-        const aiBubble = document.createElement("div");
-        aiBubble.className = "chat-bubble";
-        aiBubble.textContent = "…";
-        chatThread.appendChild(aiBubble);
-        try {
-          const res = await fetch(`${window.BACKEND_URL}/ask`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message: text })
-          });
-          const data = await res.json();
-          aiBubble.innerHTML = mdToHTML(data.reply || "No response");
-        } catch (e) {
-          aiBubble.textContent = "Error contacting Hope";
-        }
-      }
-    });
-
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        submitBtn.click();
-      }
-    });
-
-    document.querySelectorAll('.chat-marquee li').forEach(li => {
-      li.addEventListener('click', () => {
-        ta.value = li.textContent;
-        autoresize();
-        ta.focus();
-      });
-    });
-  </script>
+  <script src="js/chat.js"></script>
 </body>
 </html>
