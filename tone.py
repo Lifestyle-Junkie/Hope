@@ -5,7 +5,7 @@ Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra only (via official OpenAI client).
-TEMP: _call_openai returns real OpenAI error text in the reply for debugging.
+Terra-only: uses max_completion_tokens with retry budgets (no max_tokens).
 """
 from __future__ import annotations
 import os
@@ -417,46 +417,50 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
-    """TEMP DEBUG: returns real OpenAI error text in the reply."""
+    """Terra-only caller. Never uses max_tokens (unsupported on this model)."""
     client = _get_client()
     if not client:
-        return "Model unavailable. (no client / no OPENAI_API_KEY)"
+        return "Model unavailable right now."
 
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    errors = []
 
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            max_completion_tokens=max_tokens,
-            messages=messages,
-        )
-        content = (resp.choices[0].message.content or "").strip()
-        if content:
-            return _sanitize_md(content)
-        errors.append("empty content (max_completion_tokens)")
-    except Exception as e:
-        errors.append(f"max_completion_tokens: {type(e).__name__}: {e}")
+    # Terra can return empty content when the budget is tight — retry higher.
+    # Never send max_tokens (causes 400 on gpt-5.6-terra).
+    budgets = [max(int(max_tokens), 200), 400, 700]
 
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            max_tokens=max_tokens,
-            messages=messages,
-        )
-        content = (resp.choices[0].message.content or "").strip()
-        if content:
-            return _sanitize_md(content)
-        errors.append("empty content (max_tokens)")
-    except Exception as e:
-        errors.append(f"max_tokens: {type(e).__name__}: {e}")
+    last_err = None
+    for budget in budgets:
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                max_completion_tokens=budget,
+                messages=messages,
+            )
+            content = ""
+            try:
+                content = (resp.choices[0].message.content or "").strip()
+            except Exception:
+                content = ""
 
-    detail = " | ".join(errors)[:500]
-    print(f"[Tone] OpenAI failed: {detail}")
-    return f"Model temporarily unavailable: {detail}"
+            if content:
+                return _sanitize_md(content)
+
+            fr = None
+            try:
+                fr = getattr(resp.choices[0], "finish_reason", None)
+            except Exception:
+                pass
+            print(f"[Tone] Empty content at budget={budget}, finish_reason={fr}")
+        except Exception as e:
+            last_err = e
+            print(f"[Tone] OpenAI error at budget={budget}: {type(e).__name__}: {e}")
+
+    if last_err:
+        print(f"[Tone] All attempts failed: {type(last_err).__name__}: {last_err}")
+    return "Sorry, I hit a temporary glitch. Ask me that again."
 
 
 def _extract_message_text(resp) -> str:
@@ -814,31 +818,22 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         {"role": "user", "content": user},
     ]
 
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            max_completion_tokens=max_tokens,
-            messages=messages,
-        )
-        content = _extract_message_text(resp)
-        print(f"[Tone] Code path attempt1 length: {len(content)}")
-        if content:
-            return _finalize_code_content(content)
-    except Exception as e:
-        print(f"[Tone] OpenAI attempt1 error: {type(e).__name__}: {e}")
+    # Only max_completion_tokens — never max_tokens on Terra
+    budgets = [max(int(max_tokens), 1200), 2000, 2500]
 
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            max_tokens=min(max_tokens, 1800),
-            messages=messages,
-        )
-        content = _extract_message_text(resp)
-        print(f"[Tone] Code path attempt2 length: {len(content)}")
-        if content:
-            return _finalize_code_content(content)
-    except Exception as e:
-        print(f"[Tone] OpenAI attempt2 error: {type(e).__name__}: {e}")
+    for i, budget in enumerate(budgets, start=1):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                max_completion_tokens=budget,
+                messages=messages,
+            )
+            content = _extract_message_text(resp)
+            print(f"[Tone] Code path attempt{i} length: {len(content)} budget={budget}")
+            if content:
+                return _finalize_code_content(content)
+        except Exception as e:
+            print(f"[Tone] OpenAI code attempt{i} error: {type(e).__name__}: {e}")
 
     try:
         short_system = (
@@ -857,11 +852,11 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             ],
         )
         content = _extract_message_text(resp)
-        print(f"[Tone] Code path attempt3 length: {len(content)}")
+        print(f"[Tone] Code path short-system length: {len(content)}")
         if content:
             return _finalize_code_content(content)
     except Exception as e:
-        print(f"[Tone] OpenAI attempt3 error: {type(e).__name__}: {e}")
+        print(f"[Tone] OpenAI code short-system error: {type(e).__name__}: {e}")
 
     if is_iteration_payload:
         m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
