@@ -13,6 +13,7 @@ Enhancements:
 - Tighter history follow-up detection (won't treat "hello" as code)
 - Richer dropship store fallback so in-chat preview looks like a real site
 - HTML iteration: attach previous ```html from history so "make background blue" updates the page
+- Local CSS edit path for simple color/background/button changes (no model required)
 """
 from __future__ import annotations
 import os
@@ -83,6 +84,24 @@ STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "he", "she", "they", "cause", "death", "die"
+}
+
+_COLOR_MAP = {
+    "blue": "#1e3a8a",
+    "navy": "#0f172a",
+    "sky": "#0ea5e9",
+    "red": "#7f1d1d",
+    "green": "#14532d",
+    "purple": "#581c87",
+    "pink": "#9d174d",
+    "orange": "#9a3412",
+    "yellow": "#854d0e",
+    "white": "#f8fafc",
+    "black": "#0a0a0a",
+    "gray": "#1f2937",
+    "grey": "#1f2937",
+    "teal": "#134e4a",
+    "mint": "#7dffb3",
 }
 
 
@@ -163,6 +182,84 @@ def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
     except Exception as e:
         print(f"[Tone] last_html extract error: {e}")
     return None
+
+
+def _pick_color_from_prompt(prompt: str) -> Optional[str]:
+    low = (prompt or "").lower()
+    for name, hex_ in _COLOR_MAP.items():
+        if re.search(rf"\b{name}\b", low):
+            return hex_
+    return None
+
+
+def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
+    """
+    Deterministic edits for common follow-ups (background / button color).
+    Returns full updated HTML string (no fence) or None if nothing matched.
+    """
+    if not prev_html or not prompt:
+        return None
+    low = prompt.lower()
+    html = prev_html
+    changed = False
+
+    wants_bg = bool(re.search(r"\bbackground\b", low)) or bool(
+        re.search(r"\b(make|change|set)\b.*\b(it|page|site|html)\b", low)
+    )
+    color = _pick_color_from_prompt(prompt)
+
+    if color and (wants_bg or re.search(r"\b(blue|green|red|purple|pink|black|white|navy|sky|teal)\b", low)):
+        # Prefer updating existing body background
+        new_html, n = re.subn(
+            r"(body\s*\{[^}]*?background\s*:\s*)([^;]+)",
+            rf"\1{color}",
+            html,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if n:
+            html = new_html
+            changed = True
+        else:
+            new_html, n = re.subn(
+                r"(body\s*\{)",
+                rf"\1\n      background: {color};",
+                html,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            if n:
+                html = new_html
+                changed = True
+
+        # Soft-match header bar to a related translucent tone when body changes
+        if changed:
+            new_html, n = re.subn(
+                r"(header\s*\{[^}]*?background\s*:\s*)([^;]+)",
+                rf"\1{color}ee",
+                html,
+                count=1,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if n:
+                html = new_html
+
+    # button color when user mentions buttons + a color
+    if re.search(r"\b(button|buttons|cta)\b", low):
+        btn = _pick_color_from_prompt(prompt)
+        if btn:
+            new_html, n = re.subn(
+                r"(button\s*\{[^}]*?background\s*:\s*)([^;]+)",
+                rf"\1{btn}",
+                html,
+                count=1,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if n:
+                html = new_html
+                changed = True
+
+    return html if changed else None
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
@@ -413,9 +510,14 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         print("[Tone] Code path: OpenAI unavailable")
         low = (user or "").lower()
         if "previous html" in low:
+            m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
+            if m:
+                local = _apply_simple_html_edits(m.group(1).strip(), user)
+                if local:
+                    return f"Updated the page:\n\n```html\n{local}\n```"
             return (
                 "I couldn't regenerate that page right now. "
-                "Try again with a specific change (e.g. blue background)."
+                "Try a clear change like: make the background blue"
             )
         if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page")):
             return _html_store_fallback(user)
@@ -479,9 +581,18 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
 
     low = (user or "").lower()
     if "previous html" in low:
+        m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
+        if m:
+            # Prefer the original user request line for color detection
+            req_m = re.search(r"User request:\s*(.+)", user)
+            req = req_m.group(1).strip() if req_m else user
+            local = _apply_simple_html_edits(m.group(1).strip(), req)
+            if local:
+                print("[Tone] Local HTML edit after empty model response")
+                return f"Updated the page:\n\n```html\n{local}\n```"
         return (
             "I couldn't regenerate that page right now. "
-            "Try again with a specific change (e.g. blue background)."
+            "Try a clear change like: make the background blue"
         )
     if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page", "product")):
         print("[Tone] Using local HTML fallback after empty model responses")
@@ -637,6 +748,13 @@ def generate_with_tone(
             pass
 
     if is_code_query or history_suggests_code or (wants_iterate and prev_html):
+        # Fast path: simple color/background tweaks without the model
+        if prev_html and wants_iterate:
+            local = _apply_simple_html_edits(prev_html, prompt)
+            if local:
+                print("[Tone] Applied local HTML style edit")
+                return f"Updated the page:\n\n```html\n{local}\n```"
+
         code_system = (
             "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
             "CODE RULES (follow strictly):\n"
