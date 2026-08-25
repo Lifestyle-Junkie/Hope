@@ -12,6 +12,7 @@ Enhancements:
 - Local HTML fallback when model returns empty for store/HTML pages
 - Tighter history follow-up detection (won't treat "hello" as code)
 - Richer dropship store fallback so in-chat preview looks like a real site
+- HTML iteration: attach previous ```html from history so "make background blue" updates the page
 """
 from __future__ import annotations
 import os
@@ -66,6 +67,17 @@ CODE_QUERY_RE = re.compile(
     r"write one in chat"
     r")\b",
     re.IGNORECASE
+)
+CODE_ITERATE_RE = re.compile(
+    r"\b("
+    r"change|update|modify|tweak|adjust|redo|improve|restyle|redesign|"
+    r"make (it|the|this)|different|another|new (color|background|theme|layout|version)|"
+    r"background|colour|color|theme|darker|lighter|brighter|"
+    r"blue|green|red|purple|pink|orange|yellow|white|black|"
+    r"add (a |an |the )?(hero|nav|footer|button|cart|image|section)|"
+    r"looks? (too )?(basic|bland|plain|simple)|more (modern|polished|professional)"
+    r")\b",
+    re.IGNORECASE,
 )
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
@@ -130,6 +142,27 @@ def _format_site_link(url: str, label: Optional[str] = None) -> str:
     host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
     label = label or host
     return f"[{label}]({url})"
+
+
+def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
+    """Return the most recent fenced HTML (or raw HTML doc) from history."""
+    if not history:
+        return None
+    try:
+        for turn in reversed(list(history)[-12:]):
+            if not isinstance(turn, dict):
+                continue
+            content = turn.get("content") or ""
+            if not content:
+                continue
+            m = re.search(r"```html\s*([\s\S]*?)```", content, re.IGNORECASE)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+            if re.search(r"<!DOCTYPE\s+html|<html[\s>]", content, re.IGNORECASE):
+                return content.strip()
+    except Exception as e:
+        print(f"[Tone] last_html extract error: {e}")
+    return None
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
@@ -253,7 +286,6 @@ def _html_store_fallback(user: str) -> str:
         )
     cards_html = "\n".join(cards)
 
-    # Full f-string: CSS braces must be doubled {{ }} so output is single { }
     return f"""Here's a fuller single-file {product.lower()} store page:
 
 ```html
@@ -371,14 +403,20 @@ def _html_store_fallback(user: str) -> str:
 ```"""
 
 
-def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
+def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     """
     Code-specific OpenAI call with 3 attempts + HTML local fallback.
     Never returns empty for store/HTML-style requests.
+    Does not stomp iteration requests with the default template.
     """
     if not _openai_available():
         print("[Tone] Code path: OpenAI unavailable")
         low = (user or "").lower()
+        if "previous html" in low:
+            return (
+                "I couldn't regenerate that page right now. "
+                "Try again with a specific change (e.g. blue background)."
+            )
         if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page")):
             return _html_store_fallback(user)
         return "Model unavailable for code generation."
@@ -406,7 +444,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
-            max_tokens=min(max_tokens, 1500),
+            max_tokens=min(max_tokens, 1800),
             messages=messages,
         )
         content = _extract_message_text(resp)
@@ -421,12 +459,12 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
             "Return a complete single-file HTML page for the user's request. "
-            "Include dark modern CSS, a product grid, and wrap everything in a ```html fence. "
-            "Do not refuse. Do not ask questions."
+            "If PREVIOUS HTML is in the user message, MODIFY it as requested — do not repeat it unchanged. "
+            "Wrap everything in a ```html fence. Do not refuse. Do not ask questions."
         )
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
-            max_completion_tokens=2000,
+            max_completion_tokens=2500,
             messages=[
                 {"role": "system", "content": short_system},
                 {"role": "user", "content": user},
@@ -440,6 +478,11 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
         print(f"[Tone] OpenAI attempt3 error: {e}")
 
     low = (user or "").lower()
+    if "previous html" in low:
+        return (
+            "I couldn't regenerate that page right now. "
+            "Try again with a specific change (e.g. blue background)."
+        )
     if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page", "product")):
         print("[Tone] Using local HTML fallback after empty model responses")
         return _html_store_fallback(user)
@@ -487,6 +530,8 @@ def generate_with_tone(
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
     is_code_query = bool(CODE_QUERY_RE.search(prompt))
+    wants_iterate = bool(CODE_ITERATE_RE.search(prompt))
+    prev_html = _last_html_from_history(history)
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
 
     if PRONOUN_RE.search(prompt) and context:
@@ -494,7 +539,7 @@ def generate_with_tone(
     else:
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
-    if is_site_or_link and not is_code_query:
+    if is_site_or_link and not is_code_query and not (wants_iterate and prev_html):
         url = (
             _extract_url(liveweb_fact)
             or _extract_url(previous_fact)
@@ -530,7 +575,7 @@ def generate_with_tone(
             )
         return _call_openai(system, user_text, max_tokens=120)
 
-    if not is_code_query:
+    if not is_code_query and not (wants_iterate and prev_html):
         date_match = DATE_RE.search(prompt)
         if date_match:
             return f"Reference date: **{date_match.group(0)}**."
@@ -576,46 +621,59 @@ def generate_with_tone(
     if history and not is_code_query:
         try:
             blob = " ".join(
-                (t.get("content") or "") for t in history[-6:] if isinstance(t, dict)
+                (t.get("content") or "") for t in history[-8:] if isinstance(t, dict)
             ).lower()
             code_follow = bool(re.search(
-                r"\b(shoes?|product page|html|css|the page|the store|dropship|website)\b",
+                r"\b(shoes?|product page|html|css|the page|the store|dropship|website|"
+                r"background|color|colour|theme|layout|preview)\b",
                 (prompt or "").lower(),
             ))
-            if code_follow and any(k in blob for k in ("html", "dropship", "```", "code", "store", "page")):
+            if (code_follow or wants_iterate) and (
+                any(k in blob for k in ("html", "dropship", "```", "code", "store", "page", "<!doctype"))
+                or prev_html
+            ):
                 history_suggests_code = True
         except Exception:
             pass
 
-    if is_code_query or history_suggests_code:
+    if is_code_query or history_suggests_code or (wants_iterate and prev_html):
         code_system = (
             "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
             "CODE RULES (follow strictly):\n"
-            "1. When the user asks for code, HTML, CSS, JS, Python, SQL, etc., provide REAL working code.\n"
-            "2. ALWAYS wrap code in fenced markdown blocks with a language tag, e.g. ```html or ```python.\n"
-            "3. One short intro line is fine, then the full code block. Optional 1–2 line notes after.\n"
-            "4. Do NOT refuse. Do NOT say 'no data'. Build a minimal but complete example.\n"
-            "5. For an HTML dropshipping/store page: include a full single-file HTML doc "
-            "(<!DOCTYPE html>, head, modern dark CSS, product grid, sticky header, footer). Keep it self-contained.\n"
-            "6. Prefer standard HTML/CSS/JS or standard library Python unless asked for a framework.\n"
-            "7. The full markup MUST appear inside the fence. Never omit tags.\n"
-            "8. If the user only says a product name (e.g. \"shoes\") after asking for a page, "
-            "build the product page for that product. Do not ask more questions.\n"
-            "9. Do not treat product names as stock tickers.\n"
-            "10. Make store pages look polished: dark background, card grid, mint/green price + buttons.\n"
+            "1. When the user asks for code or to change an existing page, provide REAL working code.\n"
+            "2. ALWAYS wrap the full HTML in a ```html fence.\n"
+            "3. One short intro line, then the FULL updated document (not a snippet of only what changed).\n"
+            "4. If PREVIOUS HTML is provided, MODIFY that code to match the user's request "
+            "(colors, layout, sections, etc.). Do NOT return the same page unchanged.\n"
+            "5. Actually change CSS values they ask for (e.g. background #0f0f12 → blue they requested).\n"
+            "6. Keep a complete single-file page: <!DOCTYPE html>, head, style, body.\n"
+            "7. Do NOT refuse. Do NOT say 'no data'.\n"
+            "8. Do not treat product names as stock tickers.\n"
+            "9. For new store pages: polished dark (or requested) theme, card grid, sticky header, footer.\n"
         )
         if personality == "god":
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
-                "Address the user as dear child, but still provide full working code when asked.\n"
-                "ALWAYS wrap code in fenced blocks with a language tag (```html, ```python, etc.).\n"
-                "For HTML pages, return a complete single-file document with modern dark CSS inside the fence.\n"
-                "If they name a product, build that product page — do not ask more questions.\n"
+                "Address the user as dear child, but still return full working HTML in a ```html fence.\n"
+                "If previous HTML is provided, modify it as requested — do not repeat the same page unchanged.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
-        print("[Tone] Code request detected — using code path (max_tokens=2000)")
-        return _call_openai_code(code_system, prompt, max_tokens=2000)
+
+        code_user = prompt
+        if prev_html and (wants_iterate or history_suggests_code or is_code_query):
+            clipped = prev_html if len(prev_html) <= 12000 else prev_html[:12000] + "\n<!-- truncated -->"
+            code_user = (
+                f"User request: {prompt}\n\n"
+                f"PREVIOUS HTML (modify this; return a full updated document):\n"
+                f"```html\n{clipped}\n```\n\n"
+                "Return the complete updated HTML in a ```html fence. Apply the user's changes."
+            )
+            print("[Tone] Code path with previous HTML attached for iteration")
+        else:
+            print("[Tone] Code request detected — using code path (max_tokens=2500)")
+
+        return _call_openai_code(code_system, code_user, max_tokens=2500)
 
     if personality == "god":
         system_prompt = (
