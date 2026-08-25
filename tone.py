@@ -9,6 +9,7 @@ Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 Enhancements:
 - Code/HTML/script path with higher token limit
 - Sanitize preserves fenced code blocks (so HTML isn't stripped)
+- Code path never returns empty (wraps unfenced HTML, surfaces API errors)
 """
 from __future__ import annotations
 import os
@@ -55,12 +56,14 @@ DOMAIN_RE = re.compile(
 CODE_QUERY_RE = re.compile(
     r"\b("
     r"write (me |us |the |a |an )?(code|script|function|class|html|css|python|javascript|js|sql|program|page|store|site|app)|"
+    r"write (me |us |the |a |an )?.*\b(html|code|script|page|website)\b|"
     r"(html|css|python|javascript|js|typescript|sql|react|flask)(\s+(code|page|file|script|store|site|app|snippet))?|"
-    r"code (for|that|to)|"
+    r"code (for|that|to|out)|"
     r"(implement|refactor|debug)\b|"
     r"dropship(ping)?\s+(store|site|page|shop)|"
     r"full (html|page|script)|"
-    r"product page"
+    r"product page|"
+    r"write one in chat"
     r")\b",
     re.IGNORECASE
 )
@@ -89,9 +92,7 @@ def _sanitize_md(text: str) -> str:
         fences.append(m.group(0))
         return f"\0FENCE{len(fences) - 1}\0"
 
-    # Protect ``` code fences first
     text = re.sub(r"```[\s\S]*?```", _save_fence, text)
-
     text = re.sub(r"<\s*/?\s*(?:b|strong)\s*>", "**", text)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\*{3,}", "**", text)
@@ -139,7 +140,6 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     if not _openai_available():
         return "Model unavailable."
     try:
-        # GPT-5.6 Terra: no custom temperature (only default supported)
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
             max_completion_tokens=max_tokens,
@@ -153,6 +153,50 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI call error: {e}")
         return "Model temporarily unavailable, please try again."
+
+
+def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
+    """
+    Code-specific OpenAI call:
+    - Never return empty
+    - Preserve / wrap HTML so sanitize doesn't wipe it
+    - Surface API errors clearly
+    """
+    if not _openai_available():
+        print("[Tone] Code path: OpenAI unavailable")
+        return "Model unavailable for code generation."
+    try:
+        resp = openai.chat.completions.create(
+            model="gpt-5.6-terra",
+            max_completion_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        print(f"[Tone] Code path raw length: {len(content)}")
+        if not content:
+            print("[Tone] OpenAI returned empty content for code request")
+            return "I couldn't generate that code right now. Try again."
+
+        # If model already used fences, sanitize safely (keeps fences)
+        if "```" in content:
+            cleaned = _sanitize_md(content)
+            if cleaned:
+                return cleaned
+            # sanitize wiped everything somehow — return original
+            return content
+
+        # Unfenced HTML/code — wrap so tags aren't stripped later
+        looks_html = bool(
+            re.search(r"<!DOCTYPE|<html|<head|<body|<div|<style", content, re.IGNORECASE)
+        )
+        lang = "html" if looks_html else "text"
+        return f"```{lang}\n{content}\n```"
+    except Exception as e:
+        print(f"[Tone] OpenAI call error (code): {e}")
+        return f"Model error generating code: {e}"
 
 
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
@@ -205,7 +249,6 @@ def generate_with_tone(
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
     # ---------- Website / "send me the link" handling ----------
-    # Skip when it's clearly a code request ("write an HTML website")
     if is_site_or_link and not is_code_query:
         url = (
             _extract_url(liveweb_fact)
@@ -261,7 +304,6 @@ def generate_with_tone(
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         supplemental.append(f"Live snippet: {liveweb_fact}")
     if history:
-        # Include last few turns so follow-ups like "shoes" / "product page" still make sense
         try:
             recent = history[-6:] if isinstance(history, list) else []
             if recent:
@@ -288,16 +330,15 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
     )
 
-    # ---------- CODE path (higher tokens, no "keep it short") ----------
-    # Also treat short follow-ups after a code conversation as code when history suggests it
+    # ---------- CODE path ----------
     history_suggests_code = False
     if history and not is_code_query:
         try:
             blob = " ".join(
                 (t.get("content") or "") for t in history[-6:] if isinstance(t, dict)
             ).lower()
-            if any(k in blob for k in ("html", "dropship", "product page", "```", "css", "javascript")):
-                if len(prompt.split()) <= 6:
+            if any(k in blob for k in ("html", "dropship", "product page", "```", "css", "javascript", "code")):
+                if len(prompt.split()) <= 8:
                     history_suggests_code = True
         except Exception:
             pass
@@ -307,13 +348,13 @@ def generate_with_tone(
             "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
             "CODE RULES (follow strictly):\n"
             "1. When the user asks for code, HTML, CSS, JS, Python, SQL, etc., provide REAL working code.\n"
-            "2. Always wrap code in fenced markdown blocks with a language tag, e.g. ```html or ```python.\n"
+            "2. ALWAYS wrap code in fenced markdown blocks with a language tag, e.g. ```html or ```python.\n"
             "3. One short intro line is fine, then the full code block. Optional 1–2 line notes after.\n"
-            "4. Do NOT refuse with 'no data' or 'I can't'. Build a minimal but complete example.\n"
+            "4. Do NOT refuse. Do NOT say 'no data'. Build a minimal but complete example.\n"
             "5. For an HTML dropshipping/store page: include a full single-file HTML doc "
             "(<!DOCTYPE html>, head, basic CSS, product grid or product page, nav, footer). Keep it self-contained.\n"
             "6. Prefer standard HTML/CSS/JS or standard library Python unless asked for a framework.\n"
-            "7. Do not strip or omit tags — the full markup must appear inside the fence.\n"
+            "7. The full markup MUST appear inside the fence. Never omit tags.\n"
             "8. If the user only says a product name (e.g. \"shoes\") after asking for a page, "
             "build the product page for that product. Do not ask more questions.\n"
             "9. Do not treat product names as stock tickers.\n"
@@ -322,14 +363,14 @@ def generate_with_tone(
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
                 "Address the user as dear child, but still provide full working code when asked.\n"
-                "Wrap all code in fenced blocks with a language tag (```html, ```python, etc.).\n"
+                "ALWAYS wrap code in fenced blocks with a language tag (```html, ```python, etc.).\n"
                 "For HTML pages, return a complete single-file document inside the fence.\n"
                 "If they name a product, build that product page — do not ask more questions.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
         print("[Tone] Code request detected — using code path (max_tokens=2000)")
-        return _call_openai(code_system, prompt, max_tokens=2000)
+        return _call_openai_code(code_system, prompt, max_tokens=2000)
 
     # ---------- Personality prompts (normal chat) ----------
     if personality == "god":
@@ -381,4 +422,4 @@ if __name__ == "__main__":
             previous_fact="Official site: [rainbet.com](https://rainbet.com)"
         )
     )
-    print(generate_with_tone("write a small html dropshipping store for shoes"))
+    print(generate_with_tone("write me a html code for a dropshipping website"))
