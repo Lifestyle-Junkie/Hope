@@ -6,15 +6,13 @@ Supports two personalities:
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 Enhancements:
-- Code/HTML/script path with higher token limit
-- Sanitize preserves fenced code blocks (so HTML isn't stripped)
-- Code path: multi-attempt OpenAI calls
-- Local HTML fallback when model returns empty for store/HTML pages
-- Tighter history follow-up detection (won't treat "hello" as code)
-- Richer dropship store fallback so in-chat preview looks like a real site
-- HTML iteration: attach previous ```html from history so design follow-ups work
-- Local CSS edit path: colors, bold text, font size, card radius (no model required)
-- Style variety so new pages are not always the same dark-mint grid
+- Code/HTML path with higher token limit + multi-attempt OpenAI
+- Sanitize preserves fenced code blocks
+- Local HTML fallback for store/landing pages
+- Fresh "write a page" never force-edits previous HTML
+- Iteration only when user is clearly editing
+- Local CSS edits: background, buttons, bold, font size, card radius
+- Style variety for new pages
 """
 from __future__ import annotations
 import os
@@ -59,13 +57,13 @@ DOMAIN_RE = re.compile(
 CODE_QUERY_RE = re.compile(
     r"\b("
     r"write (me |us |the |a |an )?(code|script|function|class|html|css|python|javascript|js|sql|program|page|store|site|app)|"
-    r"write (me |us |the |a |an )?.*\b(html|code|script|page|website)\b|"
+    r"write (me |us |the |a |an )?.*\b(html|code|script|page|website|landing)\b|"
     r"(html|css|python|javascript|js|typescript|sql|react|flask)(\s+(code|page|file|script|store|site|app|snippet))?|"
     r"code (for|that|to|out)|"
     r"(implement|refactor|debug)\b|"
     r"dropship(ping)?\s+(store|site|page|shop)|"
     r"full (html|page|script)|"
-    r"product page|"
+    r"product page|landing page|"
     r"write one in chat"
     r")\b",
     re.IGNORECASE
@@ -83,6 +81,12 @@ CODE_ITERATE_RE = re.compile(
     r"add (a |an |the )?(hero|nav|footer|button|cart|image|section)|"
     r"looks? (too )?(basic|bland|plain|simple)|more (modern|polished|professional|bold)"
     r")\b",
+    re.IGNORECASE,
+)
+FRESH_PAGE_RE = re.compile(
+    r"\b(write|create|build|generate|make)\b.*\b(html|page|website|landing|site|store)\b"
+    r"|\blanding page\b"
+    r"|\bnew (page|site|website|store|html)\b",
     re.IGNORECASE,
 )
 STOP = {
@@ -117,7 +121,6 @@ def _openai_available() -> bool:
 
 
 def _sanitize_md(text: str) -> str:
-    """Strip unsafe HTML but KEEP fenced code blocks (```...```) intact."""
     if not text:
         return ""
     fences: List[str] = []
@@ -169,7 +172,6 @@ def _format_site_link(url: str, label: Optional[str] = None) -> str:
 
 
 def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
-    """Return the most recent fenced HTML (or raw HTML doc) from history."""
     if not history:
         return None
     try:
@@ -198,26 +200,29 @@ def _pick_color_from_prompt(prompt: str) -> Optional[str]:
 
 
 def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
-    """
-    Deterministic edits for common design follow-ups.
-    Returns full updated HTML string (no fence) or None if nothing matched.
-    """
+    """Local CSS edits. Button colors never recolor the whole page."""
     if not prev_html or not prompt:
         return None
     low = prompt.lower()
     html = prev_html
     changed = False
 
-    wants_bg = bool(re.search(r"\bbackground\b", low)) or bool(
-        re.search(r"\b(make|change|set)\b.*\b(it|page|site|html)\b", low)
-    )
+    mentions_button = bool(re.search(r"\b(button|buttons|cta)\b", low))
     color = _pick_color_from_prompt(prompt)
+    wants_bg = bool(
+        re.search(r"\bbackground\b", low)
+        or re.search(r"\btheme\b", low)
+        or re.search(r"\b(make|change|set)\b.*\b(background|theme|page|site|html)\b", low)
+    )
 
-    # --- background / theme color ---
-    if color and (wants_bg or re.search(
-        r"\b(blue|green|red|purple|pink|black|white|navy|sky|teal|orange|yellow|gray|grey|mint)\b",
-        low,
-    )):
+    # Body/header background — NOT when the user only asked about buttons
+    if color and not mentions_button and (
+        wants_bg
+        or re.search(
+            r"\b(blue|green|red|purple|pink|black|white|navy|sky|teal|orange|yellow|gray|grey|mint)\b",
+            low,
+        )
+    ):
         new_html, n = re.subn(
             r"(body\s*\{[^}]*?background\s*:\s*)([^;]+)",
             rf"\1{color}",
@@ -250,22 +255,31 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
 
-    # --- button color ---
-    if re.search(r"\b(button|buttons|cta)\b", low):
-        btn = _pick_color_from_prompt(prompt)
-        if btn:
+    # Buttons only
+    if mentions_button and color:
+        new_html, n = re.subn(
+            r"(button\s*\{[^}]*?background\s*:\s*)([^;]+)",
+            rf"\1{color}",
+            html,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if n:
+            html = new_html
+            changed = True
+        else:
             new_html, n = re.subn(
-                r"(button\s*\{[^}]*?background\s*:\s*)([^;]+)",
-                rf"\1{btn}",
+                r"(button\s*\{)",
+                rf"\1\n      background: {color};",
                 html,
                 count=1,
-                flags=re.IGNORECASE | re.DOTALL,
+                flags=re.IGNORECASE,
             )
             if n:
                 html = new_html
                 changed = True
 
-    # --- bold / font-weight ---
+    # Bold
     if re.search(r"\b(bold|bolder|thicker|more bold)\b", low):
         injected = False
         for sel in ("body", "h1", "h2", "h3"):
@@ -295,7 +309,7 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             )
             changed = True
 
-    # --- bigger text ---
+    # Bigger text
     if (
         re.search(r"\b(bigger|larger|increase)\b.*\b(text|font)\b", low)
         or re.search(r"\b(text|font)\b.*\b(bigger|larger)\b", low)
@@ -322,7 +336,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-        # bump hero title a bit
         new_html, n = re.subn(
             r"(\.hero h1\s*\{[^}]*?font-size\s*:\s*)([^;]+)",
             r"\1 clamp(1.9rem, 3.5vw, 2.6rem)",
@@ -334,7 +347,7 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             html = new_html
             changed = True
 
-    # --- smaller text ---
+    # Smaller text
     if (
         re.search(r"\b(smaller|tinier|decrease)\b.*\b(text|font)\b", low)
         or re.search(r"\b(text|font)\b.*\b(smaller|tinier)\b", low)
@@ -361,7 +374,7 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
                 html = new_html
                 changed = True
 
-    # --- card radius ---
+    # Card radius
     if re.search(r"\b(rounder|more rounded|softer)\b", low):
         new_html, n = re.subn(
             r"(\.card\s*\{[^}]*?border-radius\s*:\s*)([^;]+)",
@@ -420,7 +433,6 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
 
 
 def _extract_message_text(resp) -> str:
-    """Pull text from OpenAI chat completion, including edge cases."""
     try:
         choice = resp.choices[0]
         msg = choice.message
@@ -447,7 +459,6 @@ def _extract_message_text(resp) -> str:
 
 
 def _finalize_code_content(content: str) -> str:
-    """Sanitize fenced code or wrap unfenced HTML."""
     content = (content or "").strip()
     if not content:
         return ""
@@ -462,32 +473,34 @@ def _finalize_code_content(content: str) -> str:
 
 
 def _style_variant(user: str) -> Tuple[str, str, str, str]:
-    """
-    Pick a visual variant so new pages are not always identical.
-    Returns (bg, card_bg, accent, text).
-    """
     low = (user or "").lower()
     seed = sum(ord(c) for c in low) % 4
-    # keyword overrides
     if any(k in low for k in ("light", "clean", "minimal", "white")):
         return ("#f6f7fb", "#ffffff", "#111111", "#111111")
     if any(k in low for k in ("neon", "night", "cyber")):
         return ("#050510", "#12122a", "#00f0ff", "#e8f7ff")
-    if any(k in low for k in ("magazine", "bold", "editorial")):
+    if any(k in low for k in ("magazine", "bold", "editorial", "book")):
         return ("#111111", "#1c1c1c", "#ff4d6d", "#f5f5f5")
     variants = [
-        ("#0f0f12", "#1a1a1f", "#7dffb3", "#eeeeee"),  # dark mint
-        ("#0b1220", "#152033", "#60a5fa", "#e2e8f0"),  # navy blue
-        ("#140f0a", "#241c14", "#fbbf24", "#f5f0e8"),  # warm gold
-        ("#0f1410", "#1a221c", "#a3e635", "#ecfccb"),  # forest lime
+        ("#0f0f12", "#1a1a1f", "#7dffb3", "#eeeeee"),
+        ("#0b1220", "#152033", "#60a5fa", "#e2e8f0"),
+        ("#140f0a", "#241c14", "#fbbf24", "#f5f0e8"),
+        ("#0f1410", "#1a221c", "#a3e635", "#ecfccb"),
     ]
     return variants[seed]
 
 
 def _html_store_fallback(user: str) -> str:
-    """Richer single-file store page; style rotates so previews feel different."""
     low = (user or "").lower()
-    if "shoe" in low:
+    if "book" in low:
+        product = "Books"
+        items = [
+            ("Midnight Library", "Quiet fiction pick", "$18"),
+            ("Atomic Habits", "Practical daily systems", "$22"),
+            ("Design of Everyday", "How good products feel", "$24"),
+            ("Deep Work", "Focus in a noisy world", "$20"),
+        ]
+    elif "shoe" in low:
         product = "Shoes"
         items = [
             ("Classic Runner", "Everyday comfort", "$79"),
@@ -529,7 +542,7 @@ def _html_store_fallback(user: str) -> str:
         ]
 
     bg, card_bg, accent, text = _style_variant(user)
-    title = f"{product} Dropship Store"
+    title = f"{product} {'Landing' if 'landing' in low else 'Dropship Store'}"
     cards = []
     for name, desc, price in items:
         cards.append(
@@ -539,13 +552,18 @@ def _html_store_fallback(user: str) -> str:
           <h3>{name}</h3>
           <p>{desc}</p>
           <div class="price">{price}</div>
-          <button type="button">Add to cart</button>
+          <button type="button">{"View" if "book" in low or "landing" in low else "Add to cart"}</button>
         </div>
       </article>"""
         )
     cards_html = "\n".join(cards)
+    hero_line = (
+        f"{product} worth opening tonight"
+        if "book" in low
+        else f"{product} built for everyday wear"
+    )
 
-    return f"""Here's a fuller single-file {product.lower()} store page:
+    return f"""Here's a fuller single-file {product.lower()} page:
 
 ```html
 <!DOCTYPE html>
@@ -648,31 +666,28 @@ def _html_store_fallback(user: str) -> str:
 <body>
   <header>
     <strong>{title.upper()}</strong>
-    <span>Cart (0)</span>
+    <span>{"Browse" if "book" in low or "landing" in low else "Cart (0)"}</span>
   </header>
   <section class="hero">
-    <h1>{product} built for everyday wear</h1>
-    <p>Clean dropship template — swap in your supplier images, prices, and checkout link.</p>
+    <h1>{hero_line}</h1>
+    <p>Clean single-file template — edit copy, colors, and products in the HTML.</p>
   </section>
   <main class="grid">
 {cards_html}
   </main>
-  <footer>Demo storefront · edit products in the HTML · wire your own cart later</footer>
+  <footer>Demo page · tweak styles in chat · copy when ready</footer>
 </body>
 </html>
 ```"""
 
 
 def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
-    """
-    Code-specific OpenAI call with 3 attempts + HTML local fallback.
-    Never returns empty for store/HTML-style requests.
-    Does not stomp iteration requests with the default template.
-    """
+    """Multi-attempt code path. Fresh pages never die on 'couldn't regenerate'."""
+    is_iteration_payload = "previous html" in (user or "").lower()
+
     if not _openai_available():
         print("[Tone] Code path: OpenAI unavailable")
-        low = (user or "").lower()
-        if "previous html" in low:
+        if is_iteration_payload:
             m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
             if m:
                 req_m = re.search(r"User request:\s*(.+)", user)
@@ -681,12 +696,10 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
                 if local:
                     return f"Updated the page:\n\n```html\n{local}\n```"
             return (
-                "I couldn't regenerate that page right now. "
-                "Try a clear change like: make the background blue / make the text more bold"
+                "I couldn't apply that edit right now. "
+                "Try: make the background blue / make the buttons purple / make the text more bold"
             )
-        if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page")):
-            return _html_store_fallback(user)
-        return "Model unavailable for code generation."
+        return _html_store_fallback(user)
 
     messages = [
         {"role": "system", "content": system},
@@ -722,10 +735,10 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     try:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
-            "Return a complete single-file HTML page for the user's request. "
-            "If PREVIOUS HTML is in the user message, MODIFY it as requested — do not repeat it unchanged. "
-            "Vary visual style when creating a NEW page. "
-            "Wrap everything in a ```html fence. Do not refuse. Do not ask questions."
+            "Return a complete single-file HTML page. "
+            "If PREVIOUS HTML is present, MODIFY it as requested — do not repeat it unchanged. "
+            "If this is a NEW page request, create a fresh page (do not reuse unrelated old pages). "
+            "Vary visual style. Wrap in ```html. Do not refuse."
         )
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -742,8 +755,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt3 error: {e}")
 
-    low = (user or "").lower()
-    if "previous html" in low:
+    if is_iteration_payload:
         m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
         if m:
             req_m = re.search(r"User request:\s*(.+)", user)
@@ -753,13 +765,12 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
                 print("[Tone] Local HTML edit after empty model response")
                 return f"Updated the page:\n\n```html\n{local}\n```"
         return (
-            "I couldn't regenerate that page right now. "
-            "Try a clear change like: make the background blue / make the text more bold"
+            "I couldn't apply that edit right now. "
+            "Try: make the background blue / make the buttons purple / make the text more bold"
         )
-    if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page", "product")):
-        print("[Tone] Using local HTML fallback after empty model responses")
-        return _html_store_fallback(user)
-    return "I couldn't generate that code right now. Try again."
+
+    print("[Tone] Using local HTML fallback after empty model responses")
+    return _html_store_fallback(user)
 
 
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
@@ -804,15 +815,19 @@ def generate_with_tone(
     is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
     is_code_query = bool(CODE_QUERY_RE.search(prompt))
     wants_iterate = bool(CODE_ITERATE_RE.search(prompt))
+    is_fresh_page = bool(FRESH_PAGE_RE.search(prompt))
     prev_html = _last_html_from_history(history)
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
+
+    # Editing previous page only when user is iterating — never on a fresh "write a page"
+    should_iterate = bool(prev_html and wants_iterate and not is_fresh_page)
 
     if PRONOUN_RE.search(prompt) and context:
         entity = context
     else:
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
-    if is_site_or_link and not is_code_query and not (wants_iterate and prev_html):
+    if is_site_or_link and not is_code_query and not should_iterate:
         url = (
             _extract_url(liveweb_fact)
             or _extract_url(previous_fact)
@@ -848,7 +863,7 @@ def generate_with_tone(
             )
         return _call_openai(system, user_text, max_tokens=120)
 
-    if not is_code_query and not (wants_iterate and prev_html):
+    if not is_code_query and not should_iterate:
         date_match = DATE_RE.search(prompt)
         if date_match:
             return f"Reference date: **{date_match.group(0)}**."
@@ -885,13 +900,12 @@ def generate_with_tone(
         "- When giving a website, ALWAYS use markdown link format: [label](https://example.com)\n"
         "- Good: [rainbet.com](https://rainbet.com)\n"
         "- Bad: rainbet.com\n"
-        "- Bad: https://rainbet.com with no markdown\n"
-        "- If previous context already has the correct URL, reuse that URL. Do not invent a different site.\n"
-        "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
+        "- If previous context already has the correct URL, reuse that URL.\n"
+        "- For follow-ups like \"send me the link\", return the known URL in markdown.\n"
     )
 
     history_suggests_code = False
-    if history and not is_code_query:
+    if history and not is_code_query and not is_fresh_page:
         try:
             blob = " ".join(
                 (t.get("content") or "") for t in history[-8:] if isinstance(t, dict)
@@ -909,9 +923,9 @@ def generate_with_tone(
         except Exception:
             pass
 
-    if is_code_query or history_suggests_code or (wants_iterate and prev_html):
-        # Fast path: local design edits without the model
-        if prev_html and wants_iterate:
+    if is_code_query or history_suggests_code or should_iterate:
+        # Local design edits only for real iterations
+        if should_iterate and prev_html:
             local = _apply_simple_html_edits(prev_html, prompt)
             if local:
                 print("[Tone] Applied local HTML style edit")
@@ -920,31 +934,28 @@ def generate_with_tone(
         code_system = (
             "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
             "CODE RULES (follow strictly):\n"
-            "1. When the user asks for code or to change an existing page, provide REAL working code.\n"
+            "1. Provide REAL working code for page/code requests.\n"
             "2. ALWAYS wrap the full HTML in a ```html fence.\n"
-            "3. One short intro line, then the FULL updated document (not a snippet of only what changed).\n"
-            "4. If PREVIOUS HTML is provided, MODIFY that code to match the user's request "
-            "(colors, bold text, font size, layout, sections, etc.). Do NOT return the same page unchanged.\n"
-            "5. Actually change CSS values they ask for.\n"
-            "6. Keep a complete single-file page: <!DOCTYPE html>, head, style, body.\n"
-            "7. Do NOT refuse. Do NOT say 'no data'.\n"
-            "8. Do not treat product names as stock tickers.\n"
-            "9. For NEW pages: do NOT always use the same dark mint product grid. "
-            "Vary style (light clean, navy, neon, warm gold, magazine/editorial, etc.).\n"
-            "10. When iterating, keep the existing structure and only change what was requested.\n"
+            "3. One short intro line, then the FULL document.\n"
+            "4. If PREVIOUS HTML is provided, MODIFY it as requested. Do not return it unchanged.\n"
+            "5. If this is a NEW page request, create a fresh page — do not reuse an unrelated old page.\n"
+            "6. Actually change CSS when asked (colors, bold, size, buttons, etc.).\n"
+            "7. Complete single-file page: <!DOCTYPE html>, head, style, body.\n"
+            "8. Do NOT refuse. Do NOT say 'no data'.\n"
+            "9. Do not treat product names as stock tickers.\n"
+            "10. Vary visual style on NEW pages (not always the same dark mint grid).\n"
         )
         if personality == "god":
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
                 "Address the user as dear child, but still return full working HTML in a ```html fence.\n"
-                "If previous HTML is provided, modify it as requested — do not repeat the same page unchanged.\n"
-                "Vary style on new pages; do not always use the same template.\n"
+                "Modify previous HTML only when asked to edit. For new pages, create something fresh.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
 
         code_user = prompt
-        if prev_html and (wants_iterate or history_suggests_code or is_code_query):
+        if should_iterate and prev_html:
             clipped = prev_html if len(prev_html) <= 12000 else prev_html[:12000] + "\n<!-- truncated -->"
             code_user = (
                 f"User request: {prompt}\n\n"
@@ -954,7 +965,7 @@ def generate_with_tone(
             )
             print("[Tone] Code path with previous HTML attached for iteration")
         else:
-            print("[Tone] Code request detected — using code path (max_tokens=2500)")
+            print("[Tone] Fresh code/page request — no previous HTML attached")
 
         return _call_openai_code(code_system, code_user, max_tokens=2500)
 
@@ -969,8 +980,6 @@ def generate_with_tone(
             "- Do not pretend to be the God of any real-world religion.\n"
             "- When asked who created you, say you were created by Hope, one of the old gods.\n"
             "- Keep answers short, calm, and clear.\n"
-            "- Be warm in a quiet way.\n"
-            "- You may lightly reference wisdom, paths, light, or guidance, but never force it.\n"
             + link_rules
         )
     else:
@@ -978,17 +987,10 @@ def generate_with_tone(
             "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
             "CRITICAL RULES (follow strictly):\n"
             "1. Keep answers SHORT and natural — this is spoken out loud.\n"
-            "2. For any math or investment question:\n"
-            " - Use the exact numbers from the previous conversation context if they exist.\n"
-            " - Do the calculation and give the final dollar amount or share count.\n"
-            " - Do NOT say vague things like \"it depends\" or \"the value would increase\".\n"
-            "3. Good example:\n"
-            " User previously established 1,136 shares at $22.\n"
-            " User asks what it becomes at $30 → Answer: \"About $34,080.\"\n"
-            "4. Bad example: \"The value of your investment would increase.\"\n"
-            "5. Never invent new share counts if one was already calculated.\n"
-            "6. Sound like a helpful person, not a textbook.\n"
-            "7. Emojis are allowed but use them sparingly.\n"
+            "2. For math or investment questions, use prior numbers and give the final result.\n"
+            "3. Never invent share counts that contradict prior context.\n"
+            "4. Sound like a helpful person, not a textbook.\n"
+            "5. Emojis are allowed but use them sparingly.\n"
             + link_rules
         )
 
@@ -1000,10 +1002,4 @@ def generate_with_tone(
 if __name__ == "__main__":
     print(generate_with_tone("Who made you?"))
     print(generate_with_tone("Who made you?", personality="god"))
-    print(
-        generate_with_tone(
-            "send me the link",
-            previous_fact="Official site: [rainbet.com](https://rainbet.com)"
-        )
-    )
-    print(generate_with_tone("write me a html code for a dropshipping website"))
+    print(generate_with_tone("write a html landing page about books"))
