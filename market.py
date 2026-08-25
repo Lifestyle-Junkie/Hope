@@ -2,6 +2,10 @@
 market.py
 Yahoo Finance quote helper for Hope
 + stock-question detection used by /ask
+
+Fixes:
+- Common English / product words (shoes, html, page, etc.) are never treated as tickers
+- Pure single-word messages only count as tickers if not in COMMON_WORDS
 """
 from __future__ import annotations
 import re
@@ -51,6 +55,20 @@ IGNORE_TICKERS = {
     "U", "I", "GO", "OR", "IF", "SO", "WE", "US", "BY", "AS", "UP",
     "IN", "OUT", "ALL", "ANY", "NOT", "BUT", "PER", "VIA", "LINK", "URL",
     "SITE", "WEBSITE", "OFFICIAL",
+    # product / code words that were being misread as tickers
+    "SHOES", "SHOE", "HTML", "CODE", "PAGE", "STORE", "BASIC", "FULL",
+    "PRODUCT", "DROP", "CSS", "JSON", "HTTP", "HTTPS", "FILE", "SCRIPT",
+    "CLASS", "STYLE", "IMAGE", "VIDEO", "AUDIO", "TEXT", "WRITE", "MAKE",
+}
+
+# Lowercase common words — pure messages like "shoes" must NOT hit the stock path
+COMMON_WORDS = {
+    "shoes", "shoe", "html", "css", "code", "page", "store", "basic", "full",
+    "just", "product", "website", "hello", "thanks", "please", "price",
+    "script", "function", "class", "file", "image", "video", "audio", "text",
+    "write", "make", "create", "build", "dropship", "dropshipping", "shop",
+    "yes", "no", "ok", "okay", "hi", "hey", "thanks", "thank", "please",
+    "python", "javascript", "java", "sql", "react", "flask",
 }
 
 STOCK_KEYWORD_RE = re.compile(
@@ -70,6 +88,10 @@ IDENTITY_RE = re.compile(
 )
 WHAT_IS_RE = re.compile(
     r"^\s*(what(?:'s| is| are)|who is|tell me about|explain)\b",
+    re.IGNORECASE,
+)
+CODE_OR_BUILD_RE = re.compile(
+    r"\b(html|css|python|javascript|js|code|script|dropship|product page|write me|write a)\b",
     re.IGNORECASE,
 )
 
@@ -99,19 +121,16 @@ def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
         "range": "5d",
         "includePrePost": "true",
     }
-
     try:
         resp = requests.get(url, headers=HEADERS, params=params, timeout=12)
         if resp.status_code != 200:
             print(f"[Market] Yahoo error {resp.status_code} for {symbol}: {resp.text[:200]}")
             return None
-
         data = resp.json()
         result = (data.get("chart") or {}).get("result") or []
         if not result:
             print(f"[Market] No result for {symbol}")
             return None
-
         meta = result[0].get("meta") or {}
         price = _safe_float(
             meta.get("regularMarketPrice")
@@ -122,13 +141,11 @@ def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
             meta.get("chartPreviousClose")
             or meta.get("previousClose")
         )
-
         change = None
         change_percent = None
         if price is not None and previous_close is not None and previous_close != 0:
             change = price - previous_close
             change_percent = (change / previous_close) * 100.0
-
         return {
             "symbol": symbol,
             "price": price,
@@ -171,16 +188,12 @@ def format_quote_line(q: Dict[str, Any]) -> str:
     price = q.get("price")
     prev = q.get("previous_close")
     change_percent = q.get("change_percent")
-
     if price is None:
         return f"{symbol}: price unavailable"
-
     price_txt = f"${price:,.2f}"
     prev_txt = f"${prev:,.2f}" if prev is not None else "n/a"
-
     if change_percent is None:
         return f"{symbol}: {price_txt} (prev close {prev_txt})"
-
     sign = "+" if change_percent >= 0 else ""
     return f"{symbol}: {price_txt} (prev close {prev_txt}, {sign}{change_percent:.2f}%)"
 
@@ -202,6 +215,9 @@ def extract_explicit_ticker(prompt: str) -> Optional[str]:
     for tok in candidates:
         up = tok.upper()
         if up not in IGNORE_TICKERS and 2 <= len(up) <= 5:
+            # also block if the original token is a common word
+            if tok.lower() in COMMON_WORDS or up.lower() in COMMON_WORDS:
+                continue
             return up
     return None
 
@@ -212,7 +228,17 @@ def looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> boo
         return False
     if IDENTITY_RE.search(prompt):
         return False
+    if CODE_OR_BUILD_RE.search(prompt):
+        return False
     if WHAT_IS_RE.search(prompt) and not STOCK_KEYWORD_RE.search(prompt):
+        return False
+
+    lower = prompt.strip().lower()
+    # Single common word (e.g. "shoes") is never a stock question
+    if lower in COMMON_WORDS:
+        return False
+    # Strip trailing ? for the same check
+    if lower.rstrip("?") in COMMON_WORDS:
         return False
 
     company = extract_company_ticker(prompt)
@@ -224,8 +250,10 @@ def looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> boo
         return True
     if explicit and has_stock_kw:
         return True
+    # Pure ticker message (e.g. "AAPL" or "SHOP") — but not common words
     if explicit and re.fullmatch(r"[A-Za-z]{2,5}\??", prompt.strip()):
-        return True
+        if lower.rstrip("?") not in COMMON_WORDS:
+            return True
     if has_last_ticker and is_followup:
         return True
     return False
@@ -247,6 +275,10 @@ def quote_reply_for_prompt(
     if not ticker and has_last and STOCK_FOLLOWUP_RE.search(prompt or ""):
         ticker = last_ticker
     if not ticker:
+        return None
+
+    # Extra safety: never quote common words even if something slipped through
+    if ticker.lower() in COMMON_WORDS or ticker in IGNORE_TICKERS:
         return None
 
     if re.search(
@@ -282,3 +314,10 @@ if __name__ == "__main__":
     for s in ["SHOP", "AAPL", "CMCSA"]:
         q = get_quote(s)
         print(format_quote_line(q) if q else f"{s}: failed")
+
+    # Sanity checks
+    assert looks_like_stock_question("shoes") is False
+    assert looks_like_stock_question("html") is False
+    assert looks_like_stock_question("AAPL") is True
+    assert looks_like_stock_question("what's the stock price of shopify") is True
+    print("market.py self-checks passed")
