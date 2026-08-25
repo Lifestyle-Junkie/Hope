@@ -2,10 +2,9 @@
 typing-animation.js
 Frontend chat helper
 - FIXED: strip mangled target=_blank debris so links don't get a trailing "
+- NEW: live HTML preview card when reply contains ```html or a full HTML document
 */
-
 let CONCISE_MODE = false;
-
 let backendMemory = {
   last_person: null,
   topic: null
@@ -42,7 +41,6 @@ function simulateTypingEffect(text, element, speed = 18, done) {
   let i = 0;
   const BATCH_SIZE = 3;
   const full = String(text || "");
-
   function step() {
     if (i < full.length) {
       const end = Math.min(i + BATCH_SIZE, full.length);
@@ -59,8 +57,6 @@ function simulateTypingEffect(text, element, speed = 18, done) {
 function stripToPlain(s) {
   if (!s) return "";
   let text = String(s);
-
-  // REAL HTML anchors → Label (url)
   text = text.replace(
     /<a\s+[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
     (_, href, label) => {
@@ -72,27 +68,15 @@ function stripToPlain(s) {
       return cleanHref;
     }
   );
-
-  // NUCLEAR: remove leaked attribute junk
-  // Turns:  https://www.yahoo.com" target="_blank" rel="noopener noreferrer">Yahoo
-  // Into:   https://www.yahoo.com Yahoo
   text = text.replace(
     /["']?\s*target\s*=\s*["']?_blank["']?\s*rel\s*=\s*["'][^"']*["']\s*>/gi,
     " "
   );
-
-  // Full mangled pattern with label
   text = text.replace(
     /(https?:\/\/[^\s"'<>]+)["']?\s+([A-Za-z0-9][A-Za-z0-9._-]*)/g,
-    (m, url, maybeLabel) => {
-      // only collapse if it looked like debris was removed above
-      return `${maybeLabel} (${url})`;
-    }
+    (m, url, maybeLabel) => `${maybeLabel} (${url})`
   );
-
-  // Safety: never leave a quote stuck to a URL
   text = text.replace(/(https?:\/\/[^\s]+?)["']+/g, "$1");
-
   return text
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
@@ -120,24 +104,17 @@ function plainForTyping(s) {
 
 function mdToHTML(s) {
   if (!s) return "";
-
   let text = stripToPlain(s);
-
   let html = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
-
   html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  // Markdown links
   html = html.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi,
     '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
   );
-
-  // Bare URLs — never re-wrap href, never keep trailing quotes in href
   html = html.replace(/https?:\/\/[^\s<]+/gi, (match, offset, full) => {
     const before = full.slice(Math.max(0, offset - 12), offset).toLowerCase();
     if (
@@ -147,16 +124,12 @@ function mdToHTML(s) {
     ) {
       return match;
     }
-
-    // Strip trailing punctuation / quotes from the URL itself
     const trailing = match.match(/[.,!?);:"'\]]+$/);
     let clean = trailing ? match.slice(0, -trailing[0].length) : match;
-    clean = clean.replace(/["']/g, ""); // force no quotes in href
+    clean = clean.replace(/["']/g, "");
     const end = trailing ? trailing[0].replace(/["']/g, "") : "";
     return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${end}`;
   });
-
-  // Plain domains
   html = html.replace(
     /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz|info|biz))\b/gi,
     (domain, _1, offset, full) => {
@@ -171,7 +144,6 @@ function mdToHTML(s) {
       return `<a href="https://${domain}" target="_blank" rel="noopener noreferrer">${domain}</a>`;
     }
   );
-
   html = html.replace(/\n\n/g, "<br><br>");
   html = html.replace(/\n/g, "<br>");
   return html;
@@ -186,6 +158,118 @@ function renderReplyHTML(element, reply) {
       element.innerHTML = mdToHTML(raw);
     }
   }
+}
+
+/* ---------- HTML preview ---------- */
+function extractHtmlFence(text) {
+  if (!text) return null;
+  const raw = String(text);
+
+  // Prefer fenced ```html ... ```
+  const fence = raw.match(/```html\s*([\s\S]*?)```/i);
+  if (fence) {
+    return {
+      html: fence[1].trim(),
+      intro: raw.slice(0, fence.index).trim(),
+      rest: raw.slice(fence.index + fence[0].length).trim()
+    };
+  }
+
+  // Any fence that clearly contains a full HTML doc
+  const anyFence = raw.match(/```[a-zA-Z]*\s*([\s\S]*?)```/);
+  if (anyFence && /<!DOCTYPE\s+html|<html[\s>]/i.test(anyFence[1])) {
+    return {
+      html: anyFence[1].trim(),
+      intro: raw.slice(0, anyFence.index).trim(),
+      rest: raw.slice(anyFence.index + anyFence[0].length).trim()
+    };
+  }
+
+  // Unfenced full document
+  if (/<!DOCTYPE\s+html|<html[\s>]/i.test(raw)) {
+    return { html: raw.trim(), intro: "", rest: "" };
+  }
+
+  return null;
+}
+
+function renderHtmlPreviewCard(container, htmlSource, introText) {
+  container.innerHTML = "";
+  container.style.whiteSpace = "normal";
+
+  if (introText) {
+    const intro = document.createElement("div");
+    intro.className = "hp-intro";
+    intro.textContent = introText;
+    container.appendChild(intro);
+  }
+
+  const card = document.createElement("div");
+  card.className = "html-preview-card";
+
+  const header = document.createElement("div");
+  header.className = "hp-header";
+
+  const title = document.createElement("span");
+  title.textContent = "HTML";
+  header.appendChild(title);
+
+  const actions = document.createElement("div");
+  actions.className = "hp-actions";
+
+  const btnPreview = document.createElement("button");
+  btnPreview.type = "button";
+  btnPreview.textContent = "Preview";
+
+  const btnCode = document.createElement("button");
+  btnCode.type = "button";
+  btnCode.textContent = "Code";
+
+  const btnCopy = document.createElement("button");
+  btnCopy.type = "button";
+  btnCopy.textContent = "Copy";
+
+  actions.appendChild(btnPreview);
+  actions.appendChild(btnCode);
+  actions.appendChild(btnCopy);
+  header.appendChild(actions);
+  card.appendChild(header);
+
+  const frameWrap = document.createElement("div");
+  frameWrap.className = "hp-frame-wrap";
+
+  const iframe = document.createElement("iframe");
+  iframe.className = "hp-frame";
+  iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
+  iframe.title = "HTML preview";
+  iframe.srcdoc = htmlSource;
+  frameWrap.appendChild(iframe);
+  card.appendChild(frameWrap);
+
+  const pre = document.createElement("pre");
+  pre.className = "hp-code";
+  pre.textContent = htmlSource;
+  card.appendChild(pre);
+
+  btnPreview.addEventListener("click", () => card.classList.remove("show-code"));
+  btnCode.addEventListener("click", () => card.classList.add("show-code"));
+  btnCopy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(htmlSource);
+      btnCopy.textContent = "Copied";
+      setTimeout(() => {
+        btnCopy.textContent = "Copy";
+      }, 1200);
+    } catch (_) {
+      btnCopy.textContent = "Failed";
+      setTimeout(() => {
+        btnCopy.textContent = "Copy";
+      }, 1200);
+    }
+  });
+
+  container.appendChild(card);
+  return card;
 }
 
 async function simulateChatResponse(userText, chatThread, speed = 22, imageData = null) {
@@ -242,7 +326,6 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.error || `HTTP ${res.status}`);
@@ -255,7 +338,6 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
   }
 
   let reply = data.reply || data.liveweb_analyzed || "No response available.";
-
   if (userText && reply.includes(userText)) {
     reply =
       reply.replace(userText, "").trim() ||
@@ -279,11 +361,28 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
     chatThread.insertBefore(ctxBadge, aiBubble);
   }
 
-  const typingText = plainForTyping(reply);
-  simulateTypingEffect(typingText, aiBubble, speed, () => {
-    renderReplyHTML(aiBubble, reply);
+  // Live HTML preview when the reply is (or contains) a page
+  const htmlPart = extractHtmlFence(reply);
+  if (htmlPart && htmlPart.html) {
+    renderHtmlPreviewCard(
+      aiBubble,
+      htmlPart.html,
+      htmlPart.intro || "Here's a preview:"
+    );
+    if (htmlPart.rest) {
+      const extra = document.createElement("div");
+      extra.style.marginTop = "0.5rem";
+      extra.innerHTML = mdToHTML(htmlPart.rest);
+      aiBubble.appendChild(extra);
+    }
     aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-  });
+  } else {
+    const typingText = plainForTyping(reply);
+    simulateTypingEffect(typingText, aiBubble, speed, () => {
+      renderReplyHTML(aiBubble, reply);
+      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
+    });
+  }
 
   if (
     data.liveweb_analyzed &&
@@ -302,4 +401,5 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
 
 window.simulateChatResponse = simulateChatResponse;
 window.setConciseMode = setConciseMode;
-window.mdToHTML = mdToHTML;
+window.extractHtmlFence = extractHtmlFence;
+window.renderHtmlPreviewCard = renderHtmlPreviewCard;
