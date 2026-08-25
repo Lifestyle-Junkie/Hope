@@ -5,13 +5,13 @@ Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra (no custom temperature — model only supports default).
-
 Enhancements:
 - Code/HTML/script path with higher token limit
 - Sanitize preserves fenced code blocks (so HTML isn't stripped)
 - Code path: multi-attempt OpenAI calls
 - Local HTML fallback when model returns empty for store/HTML pages
 - Tighter history follow-up detection (won't treat "hello" as code)
+- Richer dropship store fallback so in-chat preview looks like a real site
 """
 from __future__ import annotations
 import os
@@ -53,7 +53,6 @@ DOMAIN_RE = re.compile(
     r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|co|app|ai|gg|tv|me|us|uk|ca|de|fr|nz)\b",
     re.IGNORECASE
 )
-
 CODE_QUERY_RE = re.compile(
     r"\b("
     r"write (me |us |the |a |an )?(code|script|function|class|html|css|python|javascript|js|sql|program|page|store|site|app)|"
@@ -68,7 +67,6 @@ CODE_QUERY_RE = re.compile(
     r")\b",
     re.IGNORECASE
 )
-
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
@@ -86,7 +84,6 @@ def _sanitize_md(text: str) -> str:
     """Strip unsafe HTML but KEEP fenced code blocks (```...```) intact."""
     if not text:
         return ""
-
     fences: List[str] = []
 
     def _save_fence(m: re.Match) -> str:
@@ -98,10 +95,8 @@ def _sanitize_md(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\*{3,}", "**", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-
     for i, fence in enumerate(fences):
         text = text.replace(f"\0FENCE{i}\0", fence)
-
     return text.strip()
 
 
@@ -199,86 +194,181 @@ def _finalize_code_content(content: str) -> str:
 
 
 def _html_store_fallback(user: str) -> str:
-    """Local fallback when the model returns empty for HTML / dropship / store pages."""
+    """Richer single-file store page so in-chat preview looks like a real site."""
     low = (user or "").lower()
-    product = "Shoes"
     if "shoe" in low:
         product = "Shoes"
+        items = [
+            ("Classic Runner", "Everyday comfort", "$79"),
+            ("Street High", "Bold high-top style", "$95"),
+            ("Trail Flex", "All-terrain grip", "$110"),
+            ("Night Slip", "Lightweight daily", "$68"),
+        ]
     elif "shirt" in low:
         product = "Shirts"
+        items = [
+            ("Core Tee", "Soft cotton fit", "$29"),
+            ("Oxford Button", "Clean casual", "$48"),
+            ("Oversize Hood", "Heavy fleece", "$62"),
+            ("Linen Camp", "Warm-weather ease", "$54"),
+        ]
     elif "watch" in low:
         product = "Watches"
+        items = [
+            ("Field Chrono", "Everyday precision", "$149"),
+            ("Night Diver", "Water-ready build", "$189"),
+            ("Slim Quartz", "Minimal daily", "$99"),
+            ("Steel Classic", "Timeless metal", "$129"),
+        ]
     elif "hat" in low or "cap" in low:
         product = "Hats"
+        items = [
+            ("Dad Cap", "Soft unstructured", "$28"),
+            ("Wool Beanie", "Cold-day staple", "$24"),
+            ("Trucker Mesh", "Breathable daily", "$26"),
+            ("Bucket Soft", "Shade + style", "$32"),
+        ]
     else:
-        # generic
         product = "Products"
+        items = [
+            ("Classic Runner", "Everyday comfort", "$79"),
+            ("Street High", "Bold high-top style", "$95"),
+            ("Trail Flex", "All-terrain grip", "$110"),
+            ("Night Slip", "Lightweight daily", "$68"),
+        ]
 
     title = f"{product} Dropship Store"
-    return (
-        f"Here's a simple single-file {product.lower()} dropshipping page:\n\n"
-        "```html\n"
-        "<!DOCTYPE html>\n"
-        "<html lang=\"en\">\n"
-        "<head>\n"
-        "  <meta charset=\"UTF-8\" />\n"
-        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n"
-        f"  <title>{title}</title>\n"
-        "  <style>\n"
-        "    * {{ box-sizing: border-box; }}\n"
-        "    body {{ margin: 0; font-family: system-ui, sans-serif; background: #0f0f12; color: #eee; }}\n"
-        "    header {{ padding: 1.25rem 1.5rem; border-bottom: 1px solid #222; display: flex; justify-content: space-between; align-items: center; }}\n"
-        "    header strong {{ letter-spacing: 0.04em; }}\n"
-        "    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; padding: 1.5rem; }}\n"
-        "    .card {{ background: #1a1a1f; border-radius: 12px; overflow: hidden; border: 1px solid #2a2a30; }}\n"
-        "    .card .img {{ height: 160px; background: linear-gradient(135deg, #333, #111); }}\n"
-        "    .card .body {{ padding: 1rem; }}\n"
-        "    .card h3 {{ margin: 0 0 0.35rem; font-size: 1rem; }}\n"
-        "    .card p {{ margin: 0 0 0.75rem; color: #aaa; font-size: 0.9rem; }}\n"
-        "    .price {{ font-weight: 700; color: #7dffb3; margin-bottom: 0.6rem; }}\n"
-        "    button {{ width: 100%; padding: 0.6rem; border: 0; border-radius: 8px; background: #7dffb3; color: #111; font-weight: 700; cursor: pointer; }}\n"
-        "    footer {{ text-align: center; padding: 2rem; color: #666; font-size: 0.85rem; }}\n"
-        "  </style>\n"
-        "</head>\n"
-        "<body>\n"
-        "  <header>\n"
-        f"    <strong>{title.upper()}</strong>\n"
-        "    <span>Cart (0)</span>\n"
-        "  </header>\n"
-        "  <main class=\"grid\">\n"
-        "    <article class=\"card\">\n"
-        "      <div class=\"img\"></div>\n"
-        "      <div class=\"body\">\n"
-        "        <h3>Classic Runner</h3>\n"
-        "        <p>Everyday comfort</p>\n"
-        "        <div class=\"price\">$79</div>\n"
-        "        <button type=\"button\">Add to cart</button>\n"
-        "      </div>\n"
-        "    </article>\n"
-        "    <article class=\"card\">\n"
-        "      <div class=\"img\"></div>\n"
-        "      <div class=\"body\">\n"
-        "        <h3>Street High</h3>\n"
-        "        <p>Bold high-top style</p>\n"
-        "        <div class=\"price\">$95</div>\n"
-        "        <button type=\"button\">Add to cart</button>\n"
-        "      </div>\n"
-        "    </article>\n"
-        "    <article class=\"card\">\n"
-        "      <div class=\"img\"></div>\n"
-        "      <div class=\"body\">\n"
-        "        <h3>Trail Flex</h3>\n"
-        "        <p>All-terrain grip</p>\n"
-        "        <div class=\"price\">$110</div>\n"
-        "        <button type=\"button\">Add to cart</button>\n"
-        "      </div>\n"
-        "    </article>\n"
-        "  </main>\n"
-        "  <footer>Demo dropshipping template — swap images and wire up your supplier checkout.</footer>\n"
-        "</body>\n"
-        "</html>\n"
-        "```"
-    )
+    cards = []
+    for name, desc, price in items:
+        cards.append(
+            f"""      <article class="card">
+        <div class="img"></div>
+        <div class="body">
+          <h3>{name}</h3>
+          <p>{desc}</p>
+          <div class="price">{price}</div>
+          <button type="button">Add to cart</button>
+        </div>
+      </article>"""
+        )
+    cards_html = "\n".join(cards)
+
+    # Full f-string: CSS braces must be doubled {{ }} so output is single { }
+    return f"""Here's a fuller single-file {product.lower()} store page:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{title}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0f0f12;
+      color: #eee;
+      min-height: 100vh;
+    }}
+    header {{
+      padding: 1.1rem 1.5rem;
+      border-bottom: 1px solid #222;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      background: rgba(15,15,18,0.92);
+      backdrop-filter: blur(8px);
+      z-index: 5;
+    }}
+    header strong {{ letter-spacing: 0.06em; font-size: 0.95rem; }}
+    header span {{ color: #9aa; font-size: 0.9rem; }}
+    .hero {{
+      padding: 2.5rem 1.5rem 1.25rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }}
+    .hero h1 {{
+      margin: 0 0 0.5rem;
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+    }}
+    .hero p {{ margin: 0; color: #9aa; max-width: 36rem; line-height: 1.5; }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+      padding: 1rem 1.5rem 2.5rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }}
+    .card {{
+      background: #1a1a1f;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #2a2a30;
+      display: flex;
+      flex-direction: column;
+    }}
+    .card .img {{
+      height: 170px;
+      background: linear-gradient(135deg, #2a2a32, #111);
+    }}
+    .card .body {{
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      flex: 1;
+    }}
+    .card h3 {{ margin: 0; font-size: 1.02rem; }}
+    .card p {{ margin: 0; color: #9aa; font-size: 0.9rem; }}
+    .price {{
+      font-weight: 700;
+      color: #7dffb3;
+      margin: 0.35rem 0 0.55rem;
+      font-size: 1.05rem;
+    }}
+    button {{
+      width: 100%;
+      margin-top: auto;
+      padding: 0.7rem;
+      border: 0;
+      border-radius: 10px;
+      background: #7dffb3;
+      color: #111;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }}
+    button:hover {{ filter: brightness(1.05); }}
+    footer {{
+      text-align: center;
+      padding: 1.5rem;
+      color: #666;
+      font-size: 0.85rem;
+      border-top: 1px solid #1c1c22;
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>{title.upper()}</strong>
+    <span>Cart (0)</span>
+  </header>
+  <section class="hero">
+    <h1>{product} built for everyday wear</h1>
+    <p>Clean dropship template — swap in your supplier images, prices, and checkout link.</p>
+  </section>
+  <main class="grid">
+{cards_html}
+  </main>
+  <footer>Demo storefront · edit products in the HTML · wire your own cart later</footer>
+</body>
+</html>
+```"""
 
 
 def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
@@ -298,7 +388,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
         {"role": "user", "content": user},
     ]
 
-    # Attempt 1: max_completion_tokens
+    # Attempt 1
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -312,7 +402,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt1 error: {e}")
 
-    # Attempt 2: max_tokens
+    # Attempt 2
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -326,12 +416,13 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt2 error: {e}")
 
-    # Attempt 3: short system prompt
+    # Attempt 3
     try:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
             "Return a complete single-file HTML page for the user's request. "
-            "Wrap the entire HTML in a ```html fence. Do not refuse. Do not ask questions."
+            "Include dark modern CSS, a product grid, and wrap everything in a ```html fence. "
+            "Do not refuse. Do not ask questions."
         )
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -348,12 +439,10 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt3 error: {e}")
 
-    # Local HTML fallback when model stays empty
     low = (user or "").lower()
     if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page", "product")):
         print("[Tone] Using local HTML fallback after empty model responses")
         return _html_store_fallback(user)
-
     return "I couldn't generate that code right now. Try again."
 
 
@@ -483,7 +572,6 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
     )
 
-    # Only treat short follow-ups as code when the prompt itself looks product/page related
     history_suggests_code = False
     if history and not is_code_query:
         try:
@@ -508,19 +596,20 @@ def generate_with_tone(
             "3. One short intro line is fine, then the full code block. Optional 1–2 line notes after.\n"
             "4. Do NOT refuse. Do NOT say 'no data'. Build a minimal but complete example.\n"
             "5. For an HTML dropshipping/store page: include a full single-file HTML doc "
-            "(<!DOCTYPE html>, head, basic CSS, product grid or product page, nav, footer). Keep it self-contained.\n"
+            "(<!DOCTYPE html>, head, modern dark CSS, product grid, sticky header, footer). Keep it self-contained.\n"
             "6. Prefer standard HTML/CSS/JS or standard library Python unless asked for a framework.\n"
             "7. The full markup MUST appear inside the fence. Never omit tags.\n"
             "8. If the user only says a product name (e.g. \"shoes\") after asking for a page, "
             "build the product page for that product. Do not ask more questions.\n"
             "9. Do not treat product names as stock tickers.\n"
+            "10. Make store pages look polished: dark background, card grid, mint/green price + buttons.\n"
         )
         if personality == "god":
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
                 "Address the user as dear child, but still provide full working code when asked.\n"
                 "ALWAYS wrap code in fenced blocks with a language tag (```html, ```python, etc.).\n"
-                "For HTML pages, return a complete single-file document inside the fence.\n"
+                "For HTML pages, return a complete single-file document with modern dark CSS inside the fence.\n"
                 "If they name a product, build that product page — do not ask more questions.\n"
             )
         if supplemental_block:
@@ -564,7 +653,6 @@ def generate_with_tone(
 
     if supplemental_block:
         system_prompt += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
-
     return _call_openai(system_prompt, prompt, max_tokens=160)
 
 
