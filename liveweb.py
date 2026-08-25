@@ -6,18 +6,18 @@ Key points:
 - Website / "official site" queries return a clickable markdown link when possible.
 - Vague follow-ups like "send me the link" do NOT trigger a new live search
   (backend/tone should reuse previous context instead).
+- Code / HTML / "write me a website" requests do NOT trigger live search
+  (tone should generate code instead of searching templates).
 - Never fabricate; returns **Note:** lines when evidence insufficient.
 - Provides (raw_text, analyzed_text). analyzed_text is short + bolded entities.
 - Caching layer to reduce repeated external calls.
 - Basic spell correction for names in death queries.
-
 Install:
   pip install ddgs
 Optional:
   pip install jellyfish
 """
 from __future__ import annotations
-
 import re
 import time
 import html
@@ -69,21 +69,29 @@ LINK_FOLLOWUP_ONLY_RE = re.compile(
     re.IGNORECASE
 )
 
+# User wants CODE written in chat — never live-search these
+CODE_INTENT_RE = re.compile(
+    r"\b("
+    r"write|code|html|css|javascript|js|python|script|function|class|"
+    r"dropship|product page|source code|full page|markup|"
+    r"write me|write a|write the|write one"
+    r")\b",
+    re.IGNORECASE
+)
+
 DATE_PATTERN = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
     r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
     re.IGNORECASE
 )
-
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 
+# Bare "website" / "homepage" removed — those alone were searching for HTML template articles
 LIVE_KEYWORDS = {
     "when", "date", "release", "latest", "recent", "today", "this week",
     "breaking", "update", "news", "launched", "announced", "died", "death",
     "killed", "passed", "cause of death", "assassinated", "shot",
-    # website words only count when SITE_PATTERN also matches a real target
-    "website", "official site", "homepage"
 }
 
 RELIABLE_DOMAINS = {
@@ -106,6 +114,10 @@ def needs_live_data(query: str) -> bool:
     if not q:
         return False
 
+    # Never live-search when user wants code/HTML written in chat
+    if CODE_INTENT_RE.search(q):
+        return False
+
     # Never live-search pure "send me the link" style follow-ups
     if LINK_FOLLOWUP_ONLY_RE.match(q):
         return False
@@ -115,7 +127,7 @@ def needs_live_data(query: str) -> bool:
     if DEATH_PATTERN.search(low):
         return True
 
-    # Only true site lookups (with a target), not bare "link"
+    # Only true site lookups (with a target), not bare "link" / "website"
     if SITE_PATTERN.search(q):
         return True
 
@@ -181,7 +193,6 @@ def perform_live_search(query: str, max_results: int = 8) -> Tuple[Optional[str]
 
     raw_text = _merge_results(results, query=corrected_query)
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
-
     analyzed = _analyze_with_safety(query, results, raw_text)
     return raw_text, analyzed
 
@@ -192,7 +203,6 @@ def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
     try:
         ddg = DDGS()
         rows = ddg.text(query, max_results=max_results)
-
         for r in rows or []:
             if not isinstance(r, dict):
                 continue
@@ -275,27 +285,21 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
         href = _normalize_url(r.get("href") or "")
         if not href:
             continue
-
         host = _pretty_domain(href)
         score = 0
         title = (r.get("title") or "").lower()
         body = (r.get("body") or "").lower()
 
-        # Hard-penalize social / blog platforms
         if any(x in host for x in SKIP_HOST_PARTS):
             score -= 40
-
         if brand and brand in host:
             score += 50
         if brand and brand in title:
             score += 20
         if "official" in title or "official" in body:
             score += 10
-
-        # Prefer clean domains
         if host.count(".") <= 2:
             score += 15
-
         path = urlparse(href).path or ""
         if path in ("", "/"):
             score += 8
@@ -306,7 +310,6 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
 
     if not scored:
         return None
-
     scored.sort(key=lambda x: x[0], reverse=True)
     best_score, best = scored[0]
     if best_score < 10:
@@ -335,7 +338,6 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         return score
 
     sorted_results = sorted(results, key=score_snippet, reverse=True)
-
     parts: List[str] = []
     for r in sorted_results:
         href = (r.get("href") or "").strip()
@@ -345,7 +347,6 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         seg = _clean_text(seg)
         if seg:
             parts.append(seg)
-
     merged = " | ".join(parts)
     if len(merged) > char_limit:
         merged = merged[:char_limit].rsplit(" ", 1)[0] + "..."
@@ -404,7 +405,6 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         if best and best.get("href"):
             url = _normalize_url(best["href"])
             label = _pretty_domain(url) or "official site"
-            # Markdown link so frontend can make it clickable
             return f"Official site: **[{label}]({url})**"
         return safe_note("Couldn't confidently find an official website link.")
 
@@ -494,6 +494,9 @@ if __name__ == "__main__":
         "How did Alan Turing die",
         "When does GTA 6 come out",
         "Latest news on SpaceX launch",
+        "write me a html code for a dropshipping website",
+        "write the code out for a website",
+        "no write one in chat",
     ]
     print(f"[Info] DDG available: {_DDG_AVAILABLE}; {_DDG_IMPORT_ERR or ''}")
     for t in tests:
@@ -503,4 +506,4 @@ if __name__ == "__main__":
             print("RAW:", (raw[:200] + "..." if raw and len(raw) > 200 else raw))
             print("ANALYZED:", analyzed)
         else:
-            print("No live search needed (follow-up / not live).")
+            print("No live search needed (code / follow-up / not live).")
