@@ -4,14 +4,7 @@ Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
-Uses GPT-5.6 Terra only (training data through 2026).
-Enhancements:
-- Greeting fast-path (hi/hello works without OpenAI)
-- Hardened OpenAI calls (key bind + max_completion_tokens then max_tokens)
-- Code/HTML path with multi-attempt OpenAI + local layout fallbacks
-- Fresh "write a page" never force-edits previous HTML
-- Iteration only when user is clearly editing
-- Local CSS edits: background, buttons, bold, font size, card radius
+Uses GPT-5.6 Terra only (via official OpenAI client).
 """
 from __future__ import annotations
 import os
@@ -124,21 +117,26 @@ MODEL = "gpt-5.6-terra"
 
 
 def _openai_available() -> bool:
-    key_from_global = getattr(openai, "api_key", None) if openai else None
-    key_from_env = os.getenv("OPENAI_API_KEY")
-    return bool(openai and (key_from_global or key_from_env))
-
-
-def _bind_openai_key() -> None:
-    """Ensure API key is set on this gunicorn worker."""
     if not openai:
-        return
+        return False
+    key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
+    return bool(key)
+
+
+def _get_client():
+    """Official OpenAI client for this worker."""
+    if not openai:
+        print("[Tone] openai library missing")
+        return None
+    key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
+    if not key:
+        print("[Tone] No OPENAI_API_KEY in env or openai.api_key")
+        return None
     try:
-        key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
-        if key:
-            openai.api_key = key
+        return openai.OpenAI(api_key=key)
     except Exception as e:
-        print(f"[Tone] Key bind error: {e}")
+        print(f"[Tone] Client create error: {type(e).__name__}: {e}")
+        return None
 
 
 def _sanitize_md(text: str) -> str:
@@ -221,7 +219,6 @@ def _pick_color_from_prompt(prompt: str) -> Optional[str]:
 
 
 def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
-    """Local CSS edits. Button colors never recolor the whole page."""
     if not prev_html or not prompt:
         return None
     low = prompt.lower()
@@ -353,16 +350,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-        new_html, n = re.subn(
-            r"(\.hero h1\s*\{[^}]*?font-size\s*:\s*)([^;]+)",
-            r"\1 clamp(1.9rem, 3.5vw, 2.6rem)",
-            html,
-            count=1,
-            flags=re.I | re.S,
-        )
-        if n:
-            html = new_html
-            changed = True
 
     if (
         re.search(r"\b(smaller|tinier|decrease)\b.*\b(text|font)\b", low)
@@ -429,21 +416,17 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
-    """Terra only — try max_completion_tokens, then max_tokens. Log real errors."""
-    if not _openai_available():
-        print("[Tone] OpenAI unavailable: no key / library")
+    client = _get_client()
+    if not client:
         return "Model unavailable."
-
-    _bind_openai_key()
 
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
-    # Attempt 1: newer token arg
     try:
-        resp = openai.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL,
             max_completion_tokens=max_tokens,
             messages=messages,
@@ -455,9 +438,8 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI error (max_completion_tokens): {type(e).__name__}: {e}")
 
-    # Attempt 2: older token arg, same model
     try:
-        resp = openai.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL,
             max_tokens=max_tokens,
             messages=messages,
@@ -531,7 +513,6 @@ def _style_variant(user: str) -> Tuple[str, str, str, str]:
 
 
 def _html_store_fallback(user: str) -> str:
-    """Structurally different layouts: store_grid | editorial | split_hero | bento."""
     low = (user or "").lower()
     seed = sum(ord(c) for c in low) % 3
 
@@ -634,7 +615,7 @@ def _html_store_fallback(user: str) -> str:
   <header><strong>{product.upper()} STORE</strong><span>Cart (0)</span></header>
   <section class="hero">
     <h1>{product} built for everyday wear</h1>
-    <p>Product grid layout — different structure from editorial/bento templates.</p>
+    <p>Product grid layout.</p>
   </section>
   <main class="grid">
 {cards}
@@ -685,7 +666,7 @@ def _html_store_fallback(user: str) -> str:
   <section class="feature">
     <div class="cover"></div>
     <h1>{featured[0]}</h1>
-    <p>{featured[1]} — featured pick on an editorial landing canvas (not a product grid).</p>
+    <p>{featured[1]} — editorial landing canvas.</p>
     <button type="button">Read more · {featured[2]}</button>
   </section>
   <section class="list">
@@ -732,7 +713,7 @@ def _html_store_fallback(user: str) -> str:
   <div class="wrap">
     <section class="left">
       <h1>{product} with room to breathe</h1>
-      <p>Split-hero landing — big message on the left, catalog list on the right.</p>
+      <p>Split-hero landing.</p>
       <button type="button">Explore {product.lower()}</button>
     </section>
     <aside class="right">
@@ -785,7 +766,7 @@ def _html_store_fallback(user: str) -> str:
     <article class="tile"><h3>{c[0]}</h3><p>{c[1]}</p><div class="price">{c[2]}</div></article>
     <article class="tile" style="grid-column:2 / -1"><h3>{d[0]}</h3><p>{d[1]}</p><div class="price">{d[2]}</div></article>
   </main>
-  <footer>Bento mosaic layout — not a standard card grid</footer>
+  <footer>Bento mosaic layout</footer>
 </body>
 </html>"""
 
@@ -804,10 +785,10 @@ def _html_store_fallback(user: str) -> str:
 
 
 def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
-    """Terra only for code path."""
     is_iteration_payload = "previous html" in (user or "").lower()
+    client = _get_client()
 
-    if not _openai_available():
+    if not client:
         print("[Tone] Code path: OpenAI unavailable")
         if is_iteration_payload:
             m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
@@ -823,15 +804,13 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             )
         return _html_store_fallback(user)
 
-    _bind_openai_key()
-
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
     try:
-        resp = openai.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL,
             max_completion_tokens=max_tokens,
             messages=messages,
@@ -844,7 +823,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         print(f"[Tone] OpenAI attempt1 error: {type(e).__name__}: {e}")
 
     try:
-        resp = openai.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL,
             max_tokens=min(max_tokens, 1800),
             messages=messages,
@@ -861,11 +840,10 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             "You are Hope, a coding assistant by Nick. "
             "Return a complete single-file HTML page. "
             "If PREVIOUS HTML is present, MODIFY it as requested. "
-            "If this is a NEW page, use a different layout structure when appropriate "
-            "(editorial, split-hero, bento, list) — do not only recolor the same grid. "
+            "If this is a NEW page, use a different layout when appropriate. "
             "Wrap in ```html. Do not refuse."
         )
-        resp = openai.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL,
             max_completion_tokens=2500,
             messages=[
@@ -887,7 +865,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             req = req_m.group(1).strip() if req_m else user
             local = _apply_simple_html_edits(m.group(1).strip(), req)
             if local:
-                print("[Tone] Local HTML edit after empty model response")
                 return f"Updated the page:\n\n```html\n{local}\n```"
         return (
             "I couldn't apply that edit right now. "
@@ -948,7 +925,6 @@ def generate_with_tone(
     is_fresh_page = bool(FRESH_PAGE_RE.search(prompt))
     prev_html = _last_html_from_history(history)
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
-
     should_iterate = bool(prev_html and wants_iterate and not is_fresh_page)
 
     if PRONOUN_RE.search(prompt) and context:
@@ -1068,20 +1044,17 @@ def generate_with_tone(
             "1. Provide REAL working code for page/code requests.\n"
             "2. ALWAYS wrap the full HTML in a ```html fence.\n"
             "3. One short intro line, then the FULL document.\n"
-            "4. If PREVIOUS HTML is provided, MODIFY it as requested. Do not return it unchanged.\n"
-            "5. If this is a NEW page request, create a fresh page with a DIFFERENT layout structure "
-            "when appropriate (editorial landing, split-hero, bento mosaic, list) — "
-            "do not only recolor the same 4-card grid.\n"
-            "6. Actually change CSS when asked (colors, bold, size, buttons, etc.).\n"
-            "7. Complete single-file page: <!DOCTYPE html>, head, style, body.\n"
+            "4. If PREVIOUS HTML is provided, MODIFY it as requested.\n"
+            "5. NEW pages should use a DIFFERENT layout when appropriate "
+            "(editorial, split-hero, bento) — not only a recolored grid.\n"
+            "6. Actually change CSS when asked.\n"
+            "7. Complete single-file page.\n"
             "8. Do NOT refuse. Do NOT say 'no data'.\n"
-            "9. Do not treat product names as stock tickers.\n"
         )
         if personality == "god":
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
                 "Address the user as dear child, but still return full working HTML in a ```html fence.\n"
-                "Modify previous HTML only when asked to edit. For new pages, use a fresh layout.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
@@ -1093,7 +1066,7 @@ def generate_with_tone(
                 f"User request: {prompt}\n\n"
                 f"PREVIOUS HTML (modify this; return a full updated document):\n"
                 f"```html\n{clipped}\n```\n\n"
-                "Return the complete updated HTML in a ```html fence. Apply the user's changes."
+                "Return the complete updated HTML in a ```html fence."
             )
             print("[Tone] Code path with previous HTML attached for iteration")
         else:
