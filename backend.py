@@ -79,7 +79,7 @@ else:
     print("🔐 OpenAI enabled.")
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = "weA4Q36twV5kwSaTEL0Q"
+ELEVENLABS_VOICE_ID = "sgk995upfe3tYLvoGcBN"
 
 app = Flask(__name__)
 CORS(app)
