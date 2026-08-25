@@ -5,6 +5,10 @@ Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra (no custom temperature — model only supports default).
+
+Enhancements:
+- Code/HTML/script path with higher token limit
+- Sanitize preserves fenced code blocks (so HTML isn't stripped)
 """
 from __future__ import annotations
 import os
@@ -55,7 +59,8 @@ CODE_QUERY_RE = re.compile(
     r"code (for|that|to)|"
     r"(implement|refactor|debug)\b|"
     r"dropship(ping)?\s+(store|site|page|shop)|"
-    r"full (html|page|script)"
+    r"full (html|page|script)|"
+    r"product page"
     r")\b",
     re.IGNORECASE
 )
@@ -200,6 +205,7 @@ def generate_with_tone(
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
     # ---------- Website / "send me the link" handling ----------
+    # Skip when it's clearly a code request ("write an HTML website")
     if is_site_or_link and not is_code_query:
         url = (
             _extract_url(liveweb_fact)
@@ -255,7 +261,21 @@ def generate_with_tone(
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         supplemental.append(f"Live snippet: {liveweb_fact}")
     if history:
-        supplemental.append(f"Recent history length: {len(history)}")
+        # Include last few turns so follow-ups like "shoes" / "product page" still make sense
+        try:
+            recent = history[-6:] if isinstance(history, list) else []
+            if recent:
+                lines = []
+                for turn in recent:
+                    if not isinstance(turn, dict):
+                        continue
+                    role = turn.get("role", "?")
+                    content = (turn.get("content") or "")[:220]
+                    lines.append(f"{role}: {content}")
+                if lines:
+                    supplemental.append("Recent messages:\n" + "\n".join(lines))
+        except Exception:
+            supplemental.append(f"Recent history length: {len(history)}")
     supplemental_block = "\n".join(supplemental)
 
     link_rules = (
@@ -269,7 +289,20 @@ def generate_with_tone(
     )
 
     # ---------- CODE path (higher tokens, no "keep it short") ----------
-    if is_code_query:
+    # Also treat short follow-ups after a code conversation as code when history suggests it
+    history_suggests_code = False
+    if history and not is_code_query:
+        try:
+            blob = " ".join(
+                (t.get("content") or "") for t in history[-6:] if isinstance(t, dict)
+            ).lower()
+            if any(k in blob for k in ("html", "dropship", "product page", "```", "css", "javascript")):
+                if len(prompt.split()) <= 6:
+                    history_suggests_code = True
+        except Exception:
+            pass
+
+    if is_code_query or history_suggests_code:
         code_system = (
             "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
             "CODE RULES (follow strictly):\n"
@@ -278,9 +311,12 @@ def generate_with_tone(
             "3. One short intro line is fine, then the full code block. Optional 1–2 line notes after.\n"
             "4. Do NOT refuse with 'no data' or 'I can't'. Build a minimal but complete example.\n"
             "5. For an HTML dropshipping/store page: include a full single-file HTML doc "
-            "(<!DOCTYPE html>, head, basic CSS, product grid, nav, footer). Keep it self-contained.\n"
+            "(<!DOCTYPE html>, head, basic CSS, product grid or product page, nav, footer). Keep it self-contained.\n"
             "6. Prefer standard HTML/CSS/JS or standard library Python unless asked for a framework.\n"
             "7. Do not strip or omit tags — the full markup must appear inside the fence.\n"
+            "8. If the user only says a product name (e.g. \"shoes\") after asking for a page, "
+            "build the product page for that product. Do not ask more questions.\n"
+            "9. Do not treat product names as stock tickers.\n"
         )
         if personality == "god":
             code_system = (
@@ -288,6 +324,7 @@ def generate_with_tone(
                 "Address the user as dear child, but still provide full working code when asked.\n"
                 "Wrap all code in fenced blocks with a language tag (```html, ```python, etc.).\n"
                 "For HTML pages, return a complete single-file document inside the fence.\n"
+                "If they name a product, build that product page — do not ask more questions.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
