@@ -2,6 +2,7 @@
   voice.js
   Wake word + mic + speech recognition + TTS for Hope
   Continuous conversation: while mic is checked, keep listening after Hope speaks
+  AirPods-friendly: longer post-TTS delay + continuous/interim recognition in command mode
 */
 (function () {
   let recognition = null;
@@ -94,10 +95,11 @@
   }
 
   // After Hope finishes: keep talking if mic is on, otherwise wake word
+  // Longer delay helps AirPods switch from speaker → mic
   function resumeAfterHope() {
     if (isMicOn()) {
-      // Continuous conversation mode
-      setTimeout(() => startCommandMode(), 350);
+      setStatus("Get ready…", true);
+      setTimeout(() => startCommandMode(), 1200);
     } else {
       startWakeWordMode();
     }
@@ -106,7 +108,6 @@
   function safeRestartWake() {
     if (mode !== "wake" || window.hopeIsProcessing) return;
     if (isMicOn()) {
-      // Mic was turned on — stay in command mode
       startCommandMode();
       return;
     }
@@ -126,7 +127,6 @@
   function startWakeWordMode() {
     if (window.hopeIsProcessing) return;
     if (isMicOn()) {
-      // Don't fall back to wake while user wants continuous talk
       startCommandMode();
       return;
     }
@@ -190,38 +190,46 @@
 
     mode = "command";
     setStatus("Listening… speak now", true);
-    const { micLabel, ta, micCheckbox } = getEls();
+    const { micLabel, ta } = getEls();
     if (micLabel) micLabel.classList.add("listening-active");
-    // Keep checkbox in sync when entering command from wake word
-    if (micCheckbox && !micCheckbox.checked) {
-      // optional: leave unchecked for pure wake-word one-shots
-    }
     restartAttempts = 0;
 
     stopRecognition();
     recognition = createRecognition();
     if (!recognition) return;
 
+    // Stronger pickup for continuous talk + AirPods
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
     recognition.onresult = async (event) => {
-      const transcript = event.results[0][0].transcript.trim();
-      console.log("[Command] Heard:", transcript);
-      if (transcript) {
-        if (ta) {
-          ta.value = transcript;
-          autoresize();
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          transcript += event.results[i][0].transcript;
         }
-        await handleVoiceCommand(transcript);
-      } else {
-        resumeAfterHope();
       }
+      transcript = transcript.trim();
+      if (!transcript) return;
+
+      console.log("[Command] Heard:", transcript);
+      stopRecognition(); // stop before thinking / speaking
+      if (ta) {
+        ta.value = transcript;
+        autoresize();
+      }
+      await handleVoiceCommand(transcript);
     };
 
     recognition.onerror = (event) => {
       console.log("[Command] Error:", event.error);
       if (micLabel) micLabel.classList.remove("listening-active");
-      // Keep listening if mic is still on
-      if (isMicOn() && !window.hopeIsProcessing) {
-        setTimeout(() => startCommandMode(), 500);
+      if (window.hopeIsProcessing) return;
+
+      if (isMicOn()) {
+        const delay =
+          event.error === "no-speech" || event.error === "aborted" ? 700 : 900;
+        setTimeout(() => startCommandMode(), delay);
       } else {
         setTimeout(() => startWakeWordMode(), 600);
       }
@@ -229,10 +237,9 @@
 
     recognition.onend = () => {
       if (micLabel) micLabel.classList.remove("listening-active");
-      // If still in command mode and not processing, and mic is on → listen again
       if (mode === "command" && !window.hopeIsProcessing) {
         if (isMicOn()) {
-          setTimeout(() => startCommandMode(), 400);
+          setTimeout(() => startCommandMode(), 600);
         } else {
           setTimeout(() => startWakeWordMode(), 650);
         }
@@ -244,7 +251,7 @@
     } catch (e) {
       console.warn("Command start failed:", e);
       if (isMicOn()) {
-        setTimeout(() => startCommandMode(), 700);
+        setTimeout(() => startCommandMode(), 800);
       } else {
         startWakeWordMode();
       }
@@ -305,7 +312,6 @@
     }
 
     window.hopeIsProcessing = false;
-    // KEY CHANGE: continuous if mic is on
     resumeAfterHope();
   }
   window.handleVoiceCommand = handleVoiceCommand;
@@ -316,10 +322,8 @@
 
     micCheckbox.addEventListener("change", () => {
       if (micCheckbox.checked) {
-        // Continuous conversation ON
         startCommandMode();
       } else {
-        // Continuous OFF → back to wake word only
         mode = "wake";
         stopRecognition();
         startWakeWordMode();
@@ -329,7 +333,7 @@
 
   function initVoice() {
     wireMic();
-    console.log("[Voice] Ready (continuous mic supported)");
+    console.log("[Voice] Ready (continuous mic + AirPods delay)");
   }
 
   if (document.readyState === "loading") {
