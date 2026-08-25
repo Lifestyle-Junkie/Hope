@@ -6,6 +6,7 @@ Supports two personalities:
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 Enhancements:
+- Greeting fast-path (hi/hello works without OpenAI)
 - Code/HTML path with higher token limit + multi-attempt OpenAI
 - Sanitize preserves fenced code blocks
 - Local HTML fallback with MULTIPLE layouts (grid, editorial, split-hero, bento)
@@ -86,6 +87,14 @@ FRESH_PAGE_RE = re.compile(
     r"\b(write|create|build|generate|make)\b.*\b(html|page|website|landing|site|store)\b"
     r"|\blanding page\b"
     r"|\bnew (page|site|website|store|html)\b",
+    re.IGNORECASE,
+)
+GREETING_RE = re.compile(
+    r"^\s*("
+    r"hi|hello|hey|yo|sup|hiya|howdy|"
+    r"good\s*(morning|afternoon|evening)|"
+    r"what'?s\s*up|how\s*are\s*you|how'?s\s*it\s*going"
+    r")[\s!?.]*$",
     re.IGNORECASE,
 )
 STOP = {
@@ -484,10 +493,7 @@ def _style_variant(user: str) -> Tuple[str, str, str, str]:
 
 
 def _html_store_fallback(user: str) -> str:
-    """
-    Structurally different layouts for NEW pages — not the same card grid every time.
-    Layouts: store_grid | editorial | split_hero | bento
-    """
+    """Structurally different layouts: store_grid | editorial | split_hero | bento."""
     low = (user or "").lower()
     seed = sum(ord(c) for c in low) % 3
 
@@ -549,7 +555,6 @@ def _html_store_fallback(user: str) -> str:
     else:
         layout = ["store_grid", "split_hero", "bento"][seed]
 
-    # ---- store grid ----
     if layout == "store_grid":
         cards = "\n".join(
             f"""      <article class="card">
@@ -600,7 +605,6 @@ def _html_store_fallback(user: str) -> str:
 </body>
 </html>"""
 
-    # ---- editorial landing ----
     elif layout == "editorial":
         featured = items[0]
         rows = "\n".join(
@@ -653,7 +657,6 @@ def _html_store_fallback(user: str) -> str:
 </body>
 </html>"""
 
-    # ---- split hero ----
     elif layout == "split_hero":
         side = "\n".join(
             f"""      <li>
@@ -691,7 +694,7 @@ def _html_store_fallback(user: str) -> str:
   <div class="wrap">
     <section class="left">
       <h1>{product} with room to breathe</h1>
-      <p>Split-hero landing — big message on the left, catalog list on the right. Different canvas from the card grid.</p>
+      <p>Split-hero landing — big message on the left, catalog list on the right.</p>
       <button type="button">Explore {product.lower()}</button>
     </section>
     <aside class="right">
@@ -704,7 +707,6 @@ def _html_store_fallback(user: str) -> str:
 </body>
 </html>"""
 
-    # ---- bento ----
     else:
         a, b, c, d = items[0], items[1], items[2], items[3]
         html = f"""<!DOCTYPE html>
@@ -893,6 +895,12 @@ def generate_with_tone(
             return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
         return "My name is **Hope**. I was designed by my creator **Nick** 😊"
 
+    # Greetings — no model required (fixes "hi" when OpenAI is flaky)
+    if GREETING_RE.search(prompt):
+        if personality == "god":
+            return "Hello, dear child. I am here. What weighs on your mind?"
+        return "Hey! I'm Hope — what do you need? 😊"
+
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
     is_code_query = bool(CODE_QUERY_RE.search(prompt))
@@ -985,22 +993,26 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\", return the known URL in markdown.\n"
     )
 
+    # Only continue design threads on clear edit language — never on "hi" / small talk
     history_suggests_code = False
     if history and not is_code_query and not is_fresh_page:
         try:
-            blob = " ".join(
-                (t.get("content") or "") for t in history[-8:] if isinstance(t, dict)
-            ).lower()
-            code_follow = bool(re.search(
-                r"\b(shoes?|product page|html|css|the page|the store|dropship|website|"
-                r"background|color|colour|theme|layout|preview|bold|font|text|button)\b",
+            explicit_edit = bool(re.search(
+                r"\b("
+                r"background|color|colour|theme|layout|bold|font|button|buttons|"
+                r"change|update|modify|tweak|restyle|make (it|the|this)|"
+                r"the (page|store|site|html)|preview"
+                r")\b",
                 (prompt or "").lower(),
             ))
-            if (code_follow or wants_iterate) and (
-                any(k in blob for k in ("html", "dropship", "```", "code", "store", "page", "<!doctype"))
-                or prev_html
-            ):
+            if explicit_edit and prev_html:
                 history_suggests_code = True
+            elif explicit_edit:
+                blob = " ".join(
+                    (t.get("content") or "") for t in history[-8:] if isinstance(t, dict)
+                ).lower()
+                if any(k in blob for k in ("```html", "<!doctype", "dropship", "landing")):
+                    history_suggests_code = True
         except Exception:
             pass
 
@@ -1081,7 +1093,6 @@ def generate_with_tone(
 
 
 if __name__ == "__main__":
+    print(generate_with_tone("hi"))
     print(generate_with_tone("Who made you?"))
-    print(generate_with_tone("Who made you?", personality="god"))
     print(generate_with_tone("write a html landing page about books"))
-    print(generate_with_tone("write me a html for a shoe website"))
