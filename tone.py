@@ -8,11 +8,10 @@ Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 Enhancements:
 - Code/HTML path with higher token limit + multi-attempt OpenAI
 - Sanitize preserves fenced code blocks
-- Local HTML fallback for store/landing pages
+- Local HTML fallback with MULTIPLE layouts (grid, editorial, split-hero, bento)
 - Fresh "write a page" never force-edits previous HTML
 - Iteration only when user is clearly editing
 - Local CSS edits: background, buttons, bold, font size, card radius
-- Style variety for new pages
 """
 from __future__ import annotations
 import os
@@ -215,7 +214,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
         or re.search(r"\b(make|change|set)\b.*\b(background|theme|page|site|html)\b", low)
     )
 
-    # Body/header background — NOT when the user only asked about buttons
     if color and not mentions_button and (
         wants_bg
         or re.search(
@@ -255,7 +253,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
 
-    # Buttons only
     if mentions_button and color:
         new_html, n = re.subn(
             r"(button\s*\{[^}]*?background\s*:\s*)([^;]+)",
@@ -279,7 +276,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
                 html = new_html
                 changed = True
 
-    # Bold
     if re.search(r"\b(bold|bolder|thicker|more bold)\b", low):
         injected = False
         for sel in ("body", "h1", "h2", "h3"):
@@ -309,7 +305,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             )
             changed = True
 
-    # Bigger text
     if (
         re.search(r"\b(bigger|larger|increase)\b.*\b(text|font)\b", low)
         or re.search(r"\b(text|font)\b.*\b(bigger|larger)\b", low)
@@ -347,7 +342,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             html = new_html
             changed = True
 
-    # Smaller text
     if (
         re.search(r"\b(smaller|tinier|decrease)\b.*\b(text|font)\b", low)
         or re.search(r"\b(text|font)\b.*\b(smaller|tinier)\b", low)
@@ -374,7 +368,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
                 html = new_html
                 changed = True
 
-    # Card radius
     if re.search(r"\b(rounder|more rounded|softer)\b", low):
         new_html, n = re.subn(
             r"(\.card\s*\{[^}]*?border-radius\s*:\s*)([^;]+)",
@@ -491,7 +484,13 @@ def _style_variant(user: str) -> Tuple[str, str, str, str]:
 
 
 def _html_store_fallback(user: str) -> str:
+    """
+    Structurally different layouts for NEW pages — not the same card grid every time.
+    Layouts: store_grid | editorial | split_hero | bento
+    """
     low = (user or "").lower()
+    seed = sum(ord(c) for c in low) % 3
+
     if "book" in low:
         product = "Books"
         items = [
@@ -542,147 +541,229 @@ def _html_store_fallback(user: str) -> str:
         ]
 
     bg, card_bg, accent, text = _style_variant(user)
-    title = f"{product} {'Landing' if 'landing' in low else 'Dropship Store'}"
-    cards = []
-    for name, desc, price in items:
-        cards.append(
+
+    if "landing" in low or "book" in low:
+        layout = "editorial" if seed != 1 else "split_hero"
+    elif "shoe" in low or "store" in low or "shop" in low:
+        layout = "store_grid" if seed != 2 else "bento"
+    else:
+        layout = ["store_grid", "split_hero", "bento"][seed]
+
+    # ---- store grid ----
+    if layout == "store_grid":
+        cards = "\n".join(
             f"""      <article class="card">
         <div class="img"></div>
         <div class="body">
-          <h3>{name}</h3>
-          <p>{desc}</p>
-          <div class="price">{price}</div>
-          <button type="button">{"View" if "book" in low or "landing" in low else "Add to cart"}</button>
+          <h3>{n}</h3>
+          <p>{d}</p>
+          <div class="price">{p}</div>
+          <button type="button">Add to cart</button>
         </div>
       </article>"""
+            for n, d, p in items
         )
-    cards_html = "\n".join(cards)
-    hero_line = (
-        f"{product} worth opening tonight"
-        if "book" in low
-        else f"{product} built for everyday wear"
-    )
-
-    return f"""Here's a fuller single-file {product.lower()} page:
-
-```html
-<!DOCTYPE html>
+        html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{title}</title>
+  <title>{product} Store</title>
   <style>
     * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: {bg};
-      color: {text};
-      min-height: 100vh;
-    }}
-    header {{
-      padding: 1.1rem 1.5rem;
-      border-bottom: 1px solid rgba(127,127,127,0.25);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      position: sticky;
-      top: 0;
-      background: {bg}ee;
-      backdrop-filter: blur(8px);
-      z-index: 5;
-    }}
-    header strong {{ letter-spacing: 0.06em; font-size: 0.95rem; }}
-    header span {{ opacity: 0.7; font-size: 0.9rem; }}
-    .hero {{
-      padding: 2.5rem 1.5rem 1.25rem;
-      max-width: 1100px;
-      margin: 0 auto;
-    }}
-    .hero h1 {{
-      margin: 0 0 0.5rem;
-      font-size: clamp(1.6rem, 3vw, 2.2rem);
-      font-weight: 700;
-    }}
-    .hero p {{ margin: 0; opacity: 0.7; max-width: 36rem; line-height: 1.5; }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 1rem;
-      padding: 1rem 1.5rem 2.5rem;
-      max-width: 1100px;
-      margin: 0 auto;
-    }}
-    .card {{
-      background: {card_bg};
-      border-radius: 14px;
-      overflow: hidden;
-      border: 1px solid rgba(127,127,127,0.2);
-      display: flex;
-      flex-direction: column;
-    }}
-    .card .img {{
-      height: 170px;
-      background: linear-gradient(135deg, {card_bg}, {bg});
-    }}
-    .card .body {{
-      padding: 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.35rem;
-      flex: 1;
-    }}
-    .card h3 {{ margin: 0; font-size: 1.02rem; font-weight: 700; }}
-    .card p {{ margin: 0; opacity: 0.7; font-size: 0.9rem; }}
-    .price {{
-      font-weight: 700;
-      color: {accent};
-      margin: 0.35rem 0 0.55rem;
-      font-size: 1.05rem;
-    }}
-    button {{
-      width: 100%;
-      margin-top: auto;
-      padding: 0.7rem;
-      border: 0;
-      border-radius: 10px;
-      background: {accent};
-      color: #111;
-      font-weight: 700;
-      cursor: pointer;
-      font-size: 0.95rem;
-    }}
-    button:hover {{ filter: brightness(1.05); }}
-    footer {{
-      text-align: center;
-      padding: 1.5rem;
-      opacity: 0.55;
-      font-size: 0.85rem;
-      border-top: 1px solid rgba(127,127,127,0.2);
-    }}
+    body {{ margin:0; font-family:system-ui,sans-serif; background:{bg}; color:{text}; }}
+    header {{ display:flex; justify-content:space-between; padding:1rem 1.5rem; border-bottom:1px solid rgba(127,127,127,.25); position:sticky; top:0; background:{bg}ee; }}
+    .hero {{ padding:2.5rem 1.5rem 1rem; max-width:1100px; margin:0 auto; }}
+    .hero h1 {{ margin:0 0 .5rem; font-size:clamp(1.6rem,3vw,2.2rem); }}
+    .hero p {{ opacity:.7; max-width:36rem; }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:1rem; padding:1rem 1.5rem 2.5rem; max-width:1100px; margin:0 auto; }}
+    .card {{ background:{card_bg}; border-radius:14px; border:1px solid rgba(127,127,127,.2); overflow:hidden; display:flex; flex-direction:column; }}
+    .card .img {{ height:160px; background:linear-gradient(135deg,{card_bg},{bg}); }}
+    .card .body {{ padding:1rem; display:flex; flex-direction:column; gap:.35rem; flex:1; }}
+    .card h3 {{ margin:0; }}
+    .card p {{ margin:0; opacity:.7; font-size:.9rem; }}
+    .price {{ color:{accent}; font-weight:700; margin:.35rem 0 .55rem; }}
+    button {{ margin-top:auto; width:100%; padding:.7rem; border:0; border-radius:10px; background:{accent}; color:#111; font-weight:700; cursor:pointer; }}
+    footer {{ text-align:center; padding:1.5rem; opacity:.55; font-size:.85rem; }}
   </style>
 </head>
 <body>
-  <header>
-    <strong>{title.upper()}</strong>
-    <span>{"Browse" if "book" in low or "landing" in low else "Cart (0)"}</span>
-  </header>
+  <header><strong>{product.upper()} STORE</strong><span>Cart (0)</span></header>
   <section class="hero">
-    <h1>{hero_line}</h1>
-    <p>Clean single-file template — edit copy, colors, and products in the HTML.</p>
+    <h1>{product} built for everyday wear</h1>
+    <p>Product grid layout — different structure from editorial/bento templates.</p>
   </section>
   <main class="grid">
-{cards_html}
+{cards}
   </main>
-  <footer>Demo page · tweak styles in chat · copy when ready</footer>
+  <footer>Store grid layout</footer>
 </body>
-</html>
+</html>"""
+
+    # ---- editorial landing ----
+    elif layout == "editorial":
+        featured = items[0]
+        rows = "\n".join(
+            f"""    <article class="row">
+      <div class="thumb"></div>
+      <div>
+        <h3>{n}</h3>
+        <p>{d}</p>
+        <span class="price">{p}</span>
+      </div>
+    </article>"""
+            for n, d, p in items
+        )
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{product} Landing</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ margin:0; font-family:Georgia,'Times New Roman',serif; background:{bg}; color:{text}; }}
+    .top {{ padding:1rem 1.5rem; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(127,127,127,.2); font-family:system-ui,sans-serif; font-size:.85rem; letter-spacing:.08em; text-transform:uppercase; }}
+    .feature {{ padding:3rem 1.5rem; max-width:900px; margin:0 auto; text-align:center; }}
+    .feature .cover {{ height:220px; max-width:280px; margin:0 auto 1.5rem; border-radius:8px; background:linear-gradient(160deg,{accent}55,{card_bg}); }}
+    .feature h1 {{ font-size:clamp(2rem,4vw,3rem); margin:0 0 .75rem; line-height:1.15; }}
+    .feature p {{ opacity:.75; font-size:1.1rem; max-width:28rem; margin:0 auto 1.25rem; }}
+    .feature button {{ font-family:system-ui,sans-serif; border:0; background:{accent}; color:#111; padding:.85rem 1.4rem; border-radius:999px; font-weight:700; cursor:pointer; }}
+    .list {{ max-width:720px; margin:0 auto; padding:1rem 1.5rem 3rem; display:flex; flex-direction:column; gap:1rem; }}
+    .row {{ display:grid; grid-template-columns:100px 1fr; gap:1rem; align-items:center; padding:1rem; background:{card_bg}; border-radius:12px; font-family:system-ui,sans-serif; }}
+    .thumb {{ height:80px; border-radius:8px; background:linear-gradient(135deg,{card_bg},{bg}); }}
+    .row h3 {{ margin:0 0 .25rem; font-size:1rem; }}
+    .row p {{ margin:0; opacity:.7; font-size:.9rem; }}
+    .price {{ color:{accent}; font-weight:700; font-size:.95rem; }}
+    footer {{ text-align:center; padding:1.5rem; opacity:.5; font-family:system-ui,sans-serif; font-size:.8rem; }}
+  </style>
+</head>
+<body>
+  <div class="top"><span>{product} · Landing</span><span>Browse</span></div>
+  <section class="feature">
+    <div class="cover"></div>
+    <h1>{featured[0]}</h1>
+    <p>{featured[1]} — featured pick on an editorial landing canvas (not a product grid).</p>
+    <button type="button">Read more · {featured[2]}</button>
+  </section>
+  <section class="list">
+{rows}
+  </section>
+  <footer>Editorial landing layout</footer>
+</body>
+</html>"""
+
+    # ---- split hero ----
+    elif layout == "split_hero":
+        side = "\n".join(
+            f"""      <li>
+        <strong>{n}</strong>
+        <span>{d}</span>
+        <em>{p}</em>
+      </li>"""
+            for n, d, p in items
+        )
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{product}</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ margin:0; font-family:system-ui,sans-serif; background:{bg}; color:{text}; min-height:100vh; }}
+    .wrap {{ display:grid; grid-template-columns:1.2fr 1fr; min-height:100vh; }}
+    @media (max-width:800px) {{ .wrap {{ grid-template-columns:1fr; }} }}
+    .left {{ padding:3rem 2rem; display:flex; flex-direction:column; justify-content:center; background:linear-gradient(160deg,{bg},{card_bg}); }}
+    .left h1 {{ font-size:clamp(2rem,4vw,3.2rem); margin:0 0 1rem; line-height:1.1; }}
+    .left p {{ opacity:.75; max-width:28rem; line-height:1.5; }}
+    .left button {{ margin-top:1.5rem; align-self:flex-start; border:0; background:{accent}; color:#111; padding:.85rem 1.3rem; border-radius:10px; font-weight:700; cursor:pointer; }}
+    .right {{ padding:2rem; border-left:1px solid rgba(127,127,127,.2); background:{card_bg}; }}
+    .right h2 {{ margin:0 0 1rem; font-size:1rem; letter-spacing:.06em; text-transform:uppercase; opacity:.7; }}
+    ul {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.85rem; }}
+    li {{ padding:1rem; border-radius:12px; background:{bg}; display:flex; flex-direction:column; gap:.25rem; }}
+    li strong {{ font-size:1rem; }}
+    li span {{ opacity:.7; font-size:.9rem; }}
+    li em {{ color:{accent}; font-style:normal; font-weight:700; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="left">
+      <h1>{product} with room to breathe</h1>
+      <p>Split-hero landing — big message on the left, catalog list on the right. Different canvas from the card grid.</p>
+      <button type="button">Explore {product.lower()}</button>
+    </section>
+    <aside class="right">
+      <h2>Picks</h2>
+      <ul>
+{side}
+      </ul>
+    </aside>
+  </div>
+</body>
+</html>"""
+
+    # ---- bento ----
+    else:
+        a, b, c, d = items[0], items[1], items[2], items[3]
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{product} Bento</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{ margin:0; font-family:system-ui,sans-serif; background:{bg}; color:{text}; }}
+    header {{ padding:1.25rem 1.5rem; }}
+    header strong {{ font-size:1.1rem; }}
+    .bento {{
+      max-width:1000px; margin:0 auto 2rem; padding:0 1.5rem;
+      display:grid; grid-template-columns:1.4fr 1fr 1fr; grid-template-rows:180px 180px; gap:1rem;
+    }}
+    @media (max-width:800px) {{ .bento {{ grid-template-columns:1fr 1fr; grid-template-rows:auto; }} .wide {{ grid-column:1 / -1; }} }}
+    .tile {{ background:{card_bg}; border-radius:18px; padding:1.25rem; border:1px solid rgba(127,127,127,.2); display:flex; flex-direction:column; justify-content:flex-end; }}
+    .wide {{ grid-row:1 / 3; background:linear-gradient(160deg,{card_bg},{bg}); }}
+    .wide h1 {{ margin:0 0 .5rem; font-size:1.8rem; }}
+    .wide p {{ margin:0; opacity:.75; }}
+    .tile h3 {{ margin:0 0 .35rem; font-size:1rem; }}
+    .tile p {{ margin:0; opacity:.7; font-size:.85rem; }}
+    .tile .price {{ margin-top:.5rem; color:{accent}; font-weight:700; }}
+    footer {{ text-align:center; padding:1rem; opacity:.5; font-size:.8rem; }}
+  </style>
+</head>
+<body>
+  <header><strong>{product.upper()} · Bento</strong></header>
+  <main class="bento">
+    <article class="tile wide">
+      <h1>{a[0]}</h1>
+      <p>{a[1]}</p>
+      <div class="price">{a[2]}</div>
+    </article>
+    <article class="tile"><h3>{b[0]}</h3><p>{b[1]}</p><div class="price">{b[2]}</div></article>
+    <article class="tile"><h3>{c[0]}</h3><p>{c[1]}</p><div class="price">{c[2]}</div></article>
+    <article class="tile" style="grid-column:2 / -1"><h3>{d[0]}</h3><p>{d[1]}</p><div class="price">{d[2]}</div></article>
+  </main>
+  <footer>Bento mosaic layout — not a standard card grid</footer>
+</body>
+</html>"""
+
+    label = {
+        "store_grid": "product grid",
+        "editorial": "editorial landing",
+        "split_hero": "split-hero",
+        "bento": "bento mosaic",
+    }.get(layout, layout)
+
+    return f"""Here's a single-file {product.lower()} page ({label} layout):
+
+```html
+{html}
 ```"""
 
 
 def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
-    """Multi-attempt code path. Fresh pages never die on 'couldn't regenerate'."""
     is_iteration_payload = "previous html" in (user or "").lower()
 
     if not _openai_available():
@@ -736,9 +817,10 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
             "Return a complete single-file HTML page. "
-            "If PREVIOUS HTML is present, MODIFY it as requested — do not repeat it unchanged. "
-            "If this is a NEW page request, create a fresh page (do not reuse unrelated old pages). "
-            "Vary visual style. Wrap in ```html. Do not refuse."
+            "If PREVIOUS HTML is present, MODIFY it as requested. "
+            "If this is a NEW page, use a different layout structure when appropriate "
+            "(editorial, split-hero, bento, list) — do not only recolor the same grid. "
+            "Wrap in ```html. Do not refuse."
         )
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -819,7 +901,6 @@ def generate_with_tone(
     prev_html = _last_html_from_history(history)
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
 
-    # Editing previous page only when user is iterating — never on a fresh "write a page"
     should_iterate = bool(prev_html and wants_iterate and not is_fresh_page)
 
     if PRONOUN_RE.search(prompt) and context:
@@ -924,7 +1005,6 @@ def generate_with_tone(
             pass
 
     if is_code_query or history_suggests_code or should_iterate:
-        # Local design edits only for real iterations
         if should_iterate and prev_html:
             local = _apply_simple_html_edits(prev_html, prompt)
             if local:
@@ -938,18 +1018,19 @@ def generate_with_tone(
             "2. ALWAYS wrap the full HTML in a ```html fence.\n"
             "3. One short intro line, then the FULL document.\n"
             "4. If PREVIOUS HTML is provided, MODIFY it as requested. Do not return it unchanged.\n"
-            "5. If this is a NEW page request, create a fresh page — do not reuse an unrelated old page.\n"
+            "5. If this is a NEW page request, create a fresh page with a DIFFERENT layout structure "
+            "when appropriate (editorial landing, split-hero, bento mosaic, list) — "
+            "do not only recolor the same 4-card grid.\n"
             "6. Actually change CSS when asked (colors, bold, size, buttons, etc.).\n"
             "7. Complete single-file page: <!DOCTYPE html>, head, style, body.\n"
             "8. Do NOT refuse. Do NOT say 'no data'.\n"
             "9. Do not treat product names as stock tickers.\n"
-            "10. Vary visual style on NEW pages (not always the same dark mint grid).\n"
         )
         if personality == "god":
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
                 "Address the user as dear child, but still return full working HTML in a ```html fence.\n"
-                "Modify previous HTML only when asked to edit. For new pages, create something fresh.\n"
+                "Modify previous HTML only when asked to edit. For new pages, use a fresh layout.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
@@ -1003,3 +1084,4 @@ if __name__ == "__main__":
     print(generate_with_tone("Who made you?"))
     print(generate_with_tone("Who made you?", personality="god"))
     print(generate_with_tone("write a html landing page about books"))
+    print(generate_with_tone("write me a html for a shoe website"))
