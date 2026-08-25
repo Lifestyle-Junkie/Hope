@@ -4,12 +4,11 @@ Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
-Uses GPT-5.6 Terra (no custom temperature — model only supports default).
+Uses GPT-5.6 Terra only (training data through 2026).
 Enhancements:
 - Greeting fast-path (hi/hello works without OpenAI)
-- Code/HTML path with higher token limit + multi-attempt OpenAI
-- Sanitize preserves fenced code blocks
-- Local HTML fallback with MULTIPLE layouts (grid, editorial, split-hero, bento)
+- Hardened OpenAI calls (key bind + max_completion_tokens then max_tokens)
+- Code/HTML path with multi-attempt OpenAI + local layout fallbacks
 - Fresh "write a page" never force-edits previous HTML
 - Iteration only when user is clearly editing
 - Local CSS edits: background, buttons, bold, font size, card radius
@@ -121,11 +120,25 @@ _COLOR_MAP = {
     "mint": "#7dffb3",
 }
 
+MODEL = "gpt-5.6-terra"
+
 
 def _openai_available() -> bool:
     key_from_global = getattr(openai, "api_key", None) if openai else None
     key_from_env = os.getenv("OPENAI_API_KEY")
     return bool(openai and (key_from_global or key_from_env))
+
+
+def _bind_openai_key() -> None:
+    """Ensure API key is set on this gunicorn worker."""
+    if not openai:
+        return
+    try:
+        key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
+        if key:
+            openai.api_key = key
+    except Exception as e:
+        print(f"[Tone] Key bind error: {e}")
 
 
 def _sanitize_md(text: str) -> str:
@@ -416,22 +429,47 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
+    """Terra only — try max_completion_tokens, then max_tokens. Log real errors."""
     if not _openai_available():
+        print("[Tone] OpenAI unavailable: no key / library")
         return "Model unavailable."
+
+    _bind_openai_key()
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    # Attempt 1: newer token arg
     try:
         resp = openai.chat.completions.create(
-            model="gpt-5.6-terra",
+            model=MODEL,
             max_completion_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user}
-            ]
+            messages=messages,
         )
-        content = resp.choices[0].message.content or ""
-        return _sanitize_md(content)
+        content = (resp.choices[0].message.content or "").strip()
+        if content:
+            return _sanitize_md(content)
+        print("[Tone] Empty content (max_completion_tokens)")
     except Exception as e:
-        print(f"[Tone] OpenAI call error: {e}")
-        return "Model temporarily unavailable, please try again."
+        print(f"[Tone] OpenAI error (max_completion_tokens): {type(e).__name__}: {e}")
+
+    # Attempt 2: older token arg, same model
+    try:
+        resp = openai.chat.completions.create(
+            model=MODEL,
+            max_tokens=max_tokens,
+            messages=messages,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if content:
+            return _sanitize_md(content)
+        print("[Tone] Empty content (max_tokens)")
+    except Exception as e:
+        print(f"[Tone] OpenAI error (max_tokens): {type(e).__name__}: {e}")
+
+    return "Model temporarily unavailable, please try again."
 
 
 def _extract_message_text(resp) -> str:
@@ -766,6 +804,7 @@ def _html_store_fallback(user: str) -> str:
 
 
 def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
+    """Terra only for code path."""
     is_iteration_payload = "previous html" in (user or "").lower()
 
     if not _openai_available():
@@ -784,6 +823,8 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             )
         return _html_store_fallback(user)
 
+    _bind_openai_key()
+
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -791,7 +832,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
 
     try:
         resp = openai.chat.completions.create(
-            model="gpt-5.6-terra",
+            model=MODEL,
             max_completion_tokens=max_tokens,
             messages=messages,
         )
@@ -800,11 +841,11 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         if content:
             return _finalize_code_content(content)
     except Exception as e:
-        print(f"[Tone] OpenAI attempt1 error: {e}")
+        print(f"[Tone] OpenAI attempt1 error: {type(e).__name__}: {e}")
 
     try:
         resp = openai.chat.completions.create(
-            model="gpt-5.6-terra",
+            model=MODEL,
             max_tokens=min(max_tokens, 1800),
             messages=messages,
         )
@@ -813,7 +854,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         if content:
             return _finalize_code_content(content)
     except Exception as e:
-        print(f"[Tone] OpenAI attempt2 error: {e}")
+        print(f"[Tone] OpenAI attempt2 error: {type(e).__name__}: {e}")
 
     try:
         short_system = (
@@ -825,7 +866,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             "Wrap in ```html. Do not refuse."
         )
         resp = openai.chat.completions.create(
-            model="gpt-5.6-terra",
+            model=MODEL,
             max_completion_tokens=2500,
             messages=[
                 {"role": "system", "content": short_system},
@@ -837,7 +878,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         if content:
             return _finalize_code_content(content)
     except Exception as e:
-        print(f"[Tone] OpenAI attempt3 error: {e}")
+        print(f"[Tone] OpenAI attempt3 error: {type(e).__name__}: {e}")
 
     if is_iteration_payload:
         m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
@@ -895,7 +936,6 @@ def generate_with_tone(
             return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
         return "My name is **Hope**. I was designed by my creator **Nick** 😊"
 
-    # Greetings — no model required (fixes "hi" when OpenAI is flaky)
     if GREETING_RE.search(prompt):
         if personality == "god":
             return "Hello, dear child. I am here. What weighs on your mind?"
@@ -993,7 +1033,6 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\", return the known URL in markdown.\n"
     )
 
-    # Only continue design threads on clear edit language — never on "hi" / small talk
     history_suggests_code = False
     if history and not is_code_query and not is_fresh_page:
         try:
