@@ -5,6 +5,7 @@ Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra only (via official OpenAI client).
+TEMP: _call_openai returns real OpenAI error text in the reply for debugging.
 """
 from __future__ import annotations
 import os
@@ -416,14 +417,16 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
 
 
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
+    """TEMP DEBUG: returns real OpenAI error text in the reply."""
     client = _get_client()
     if not client:
-        return "Model unavailable."
+        return "Model unavailable. (no client / no OPENAI_API_KEY)"
 
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+    errors = []
 
     try:
         resp = client.chat.completions.create(
@@ -434,9 +437,9 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
         content = (resp.choices[0].message.content or "").strip()
         if content:
             return _sanitize_md(content)
-        print("[Tone] Empty content (max_completion_tokens)")
+        errors.append("empty content (max_completion_tokens)")
     except Exception as e:
-        print(f"[Tone] OpenAI error (max_completion_tokens): {type(e).__name__}: {e}")
+        errors.append(f"max_completion_tokens: {type(e).__name__}: {e}")
 
     try:
         resp = client.chat.completions.create(
@@ -447,11 +450,13 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
         content = (resp.choices[0].message.content or "").strip()
         if content:
             return _sanitize_md(content)
-        print("[Tone] Empty content (max_tokens)")
+        errors.append("empty content (max_tokens)")
     except Exception as e:
-        print(f"[Tone] OpenAI error (max_tokens): {type(e).__name__}: {e}")
+        errors.append(f"max_tokens: {type(e).__name__}: {e}")
 
-    return "Model temporarily unavailable, please try again."
+    detail = " | ".join(errors)[:500]
+    print(f"[Tone] OpenAI failed: {detail}")
+    return f"Model temporarily unavailable: {detail}"
 
 
 def _extract_message_text(resp) -> str:
