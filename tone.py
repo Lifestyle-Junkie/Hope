@@ -4,7 +4,6 @@ Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
 - hope → personal assistant (default)
 - god → Discord personality (one of the new gods, created by Hope)
-
 Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 """
 from __future__ import annotations
@@ -48,6 +47,19 @@ DOMAIN_RE = re.compile(
     re.IGNORECASE
 )
 
+# Code / build requests (html store, scripts, functions, etc.)
+CODE_QUERY_RE = re.compile(
+    r"\b("
+    r"write (me |us |the |a |an )?(code|script|function|class|html|css|python|javascript|js|sql|program|page|store|site|app)|"
+    r"(html|css|python|javascript|js|typescript|sql|react|flask)(\s+(code|page|file|script|store|site|app|snippet))?|"
+    r"code (for|that|to)|"
+    r"(implement|refactor|debug)\b|"
+    r"dropship(ping)?\s+(store|site|page|shop)|"
+    r"full (html|page|script)"
+    r")\b",
+    re.IGNORECASE
+)
+
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
@@ -62,12 +74,27 @@ def _openai_available() -> bool:
 
 
 def _sanitize_md(text: str) -> str:
+    """Strip unsafe HTML but KEEP fenced code blocks (```...```) intact."""
     if not text:
         return ""
+
+    fences: List[str] = []
+
+    def _save_fence(m: re.Match) -> str:
+        fences.append(m.group(0))
+        return f"\0FENCE{len(fences) - 1}\0"
+
+    # Protect ``` code fences first
+    text = re.sub(r"```[\s\S]*?```", _save_fence, text)
+
     text = re.sub(r"<\s*/?\s*(?:b|strong)\s*>", "**", text)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\*{3,}", "**", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+
+    for i, fence in enumerate(fences):
+        text = text.replace(f"\0FENCE{i}\0", fence)
+
     return text.strip()
 
 
@@ -90,7 +117,6 @@ def _extract_url(text: Optional[str]) -> Optional[str]:
     m = URL_RE.search(text)
     if m:
         return m.group(0).rstrip(".,);]")
-    # Convert plain domain to https URL if present
     d = DOMAIN_RE.search(text)
     if d:
         host = d.group(0).lower()
@@ -165,6 +191,7 @@ def generate_with_tone(
 
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
+    is_code_query = bool(CODE_QUERY_RE.search(prompt))
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
 
     if PRONOUN_RE.search(prompt) and context:
@@ -173,20 +200,19 @@ def generate_with_tone(
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
     # ---------- Website / "send me the link" handling ----------
-    if is_site_or_link:
+    if is_site_or_link and not is_code_query:
         url = (
             _extract_url(liveweb_fact)
             or _extract_url(previous_fact)
             or _extract_url(prompt)
         )
         if url:
-            # Direct short answer so frontend can make it clickable
             if re.search(r"\b(send|give|drop|share)\b.*\b(link|url)\b", prompt, re.IGNORECASE) or \
                re.fullmatch(r"(the )?link\??", prompt.strip(), re.IGNORECASE):
                 return f"Here you go: {_format_site_link(url)}"
             return f"Official site: {_format_site_link(url)}"
 
-    # Death handling
+    # ---------- Death handling ----------
     if is_death_query and not has_support:
         if liveweb_fact and liveweb_fact.lower().startswith("**note:**"):
             return f"No verified evidence that **{entity}** has died."
@@ -211,14 +237,14 @@ def generate_with_tone(
             )
         return _call_openai(system, user_text, max_tokens=120)
 
-    # Date / year shortcuts
-    date_match = DATE_RE.search(prompt)
-    if date_match:
-        return f"Reference date: **{date_match.group(0)}**."
-
-    year_match = YEAR_RE.search(prompt)
-    if year_match and len(prompt) < 60:
-        return f"Reference year: **{year_match.group(0)}**."
+    # Date / year shortcuts (skip when it's a code request)
+    if not is_code_query:
+        date_match = DATE_RE.search(prompt)
+        if date_match:
+            return f"Reference date: **{date_match.group(0)}**."
+        year_match = YEAR_RE.search(prompt)
+        if year_match and len(prompt) < 60:
+            return f"Reference year: **{year_match.group(0)}**."
 
     # ---------- Build memory block ----------
     supplemental = []
@@ -232,7 +258,6 @@ def generate_with_tone(
         supplemental.append(f"Recent history length: {len(history)}")
     supplemental_block = "\n".join(supplemental)
 
-    # Shared link formatting rule for both personalities
     link_rules = (
         "\nLINK RULES (important):\n"
         "- When giving a website, ALWAYS use markdown link format: [label](https://example.com)\n"
@@ -243,7 +268,33 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
     )
 
-    # ---------- Personality prompts ----------
+    # ---------- CODE path (higher tokens, no "keep it short") ----------
+    if is_code_query:
+        code_system = (
+            "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
+            "CODE RULES (follow strictly):\n"
+            "1. When the user asks for code, HTML, CSS, JS, Python, SQL, etc., provide REAL working code.\n"
+            "2. Always wrap code in fenced markdown blocks with a language tag, e.g. ```html or ```python.\n"
+            "3. One short intro line is fine, then the full code block. Optional 1–2 line notes after.\n"
+            "4. Do NOT refuse with 'no data' or 'I can't'. Build a minimal but complete example.\n"
+            "5. For an HTML dropshipping/store page: include a full single-file HTML doc "
+            "(<!DOCTYPE html>, head, basic CSS, product grid, nav, footer). Keep it self-contained.\n"
+            "6. Prefer standard HTML/CSS/JS or standard library Python unless asked for a framework.\n"
+            "7. Do not strip or omit tags — the full markup must appear inside the fence.\n"
+        )
+        if personality == "god":
+            code_system = (
+                "You are one of the new gods, created by Hope.\n"
+                "Address the user as dear child, but still provide full working code when asked.\n"
+                "Wrap all code in fenced blocks with a language tag (```html, ```python, etc.).\n"
+                "For HTML pages, return a complete single-file document inside the fence.\n"
+            )
+        if supplemental_block:
+            code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
+        print("[Tone] Code request detected — using code path (max_tokens=2000)")
+        return _call_openai(code_system, prompt, max_tokens=2000)
+
+    # ---------- Personality prompts (normal chat) ----------
     if personality == "god":
         system_prompt = (
             "You are one of the new gods.\n"
@@ -293,3 +344,4 @@ if __name__ == "__main__":
             previous_fact="Official site: [rainbet.com](https://rainbet.com)"
         )
     )
+    print(generate_with_tone("write a small html dropshipping store for shoes"))
