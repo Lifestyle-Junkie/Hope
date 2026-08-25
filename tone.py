@@ -9,7 +9,7 @@ Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 Enhancements:
 - Code/HTML/script path with higher token limit
 - Sanitize preserves fenced code blocks (so HTML isn't stripped)
-- Code path never returns empty (wraps unfenced HTML, surfaces API errors)
+- Code path: multi-attempt OpenAI calls, never returns empty
 """
 from __future__ import annotations
 import os
@@ -52,7 +52,6 @@ DOMAIN_RE = re.compile(
     re.IGNORECASE
 )
 
-# Code / build requests (html store, scripts, functions, etc.)
 CODE_QUERY_RE = re.compile(
     r"\b("
     r"write (me |us |the |a |an )?(code|script|function|class|html|css|python|javascript|js|sql|program|page|store|site|app)|"
@@ -155,48 +154,116 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
         return "Model temporarily unavailable, please try again."
 
 
+def _extract_message_text(resp) -> str:
+    """Pull text from OpenAI chat completion, including edge cases."""
+    try:
+        choice = resp.choices[0]
+        msg = choice.message
+        content = getattr(msg, "content", None) or ""
+        if isinstance(content, list):
+            parts = []
+            for p in content:
+                if isinstance(p, dict) and p.get("text"):
+                    parts.append(p["text"])
+                elif isinstance(p, str):
+                    parts.append(p)
+            content = "".join(parts)
+        content = (content or "").strip()
+        if content:
+            return content
+        refusal = getattr(msg, "refusal", None)
+        if refusal:
+            print(f"[Tone] Model refusal: {refusal}")
+        fr = getattr(choice, "finish_reason", None)
+        print(f"[Tone] Empty content; finish_reason={fr}")
+    except Exception as e:
+        print(f"[Tone] Extract error: {e}")
+    return ""
+
+
+def _finalize_code_content(content: str) -> str:
+    """Sanitize fenced code or wrap unfenced HTML."""
+    content = (content or "").strip()
+    if not content:
+        return ""
+    if "```" in content:
+        cleaned = _sanitize_md(content)
+        return cleaned or content
+    looks_html = bool(
+        re.search(r"<!DOCTYPE|<html|<head|<body|<div|<style", content, re.IGNORECASE)
+    )
+    lang = "html" if looks_html else "text"
+    return f"```{lang}\n{content}\n```"
+
+
 def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     """
-    Code-specific OpenAI call:
-    - Never return empty
-    - Preserve / wrap HTML so sanitize doesn't wipe it
-    - Surface API errors clearly
+    Code-specific OpenAI call with 3 attempts:
+    1) max_completion_tokens + full system
+    2) max_tokens fallback
+    3) short system prompt nudge
+    Never returns empty.
     """
     if not _openai_available():
         print("[Tone] Code path: OpenAI unavailable")
         return "Model unavailable for code generation."
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+    # Attempt 1: max_completion_tokens (Terra-style)
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
             max_completion_tokens=max_tokens,
+            messages=messages,
+        )
+        content = _extract_message_text(resp)
+        print(f"[Tone] Code path attempt1 length: {len(content)}")
+        if content:
+            return _finalize_code_content(content)
+    except Exception as e:
+        print(f"[Tone] OpenAI attempt1 error: {e}")
+
+    # Attempt 2: max_tokens (older param)
+    try:
+        resp = openai.chat.completions.create(
+            model="gpt-5.6-terra",
+            max_tokens=min(max_tokens, 1500),
+            messages=messages,
+        )
+        content = _extract_message_text(resp)
+        print(f"[Tone] Code path attempt2 length: {len(content)}")
+        if content:
+            return _finalize_code_content(content)
+    except Exception as e:
+        print(f"[Tone] OpenAI attempt2 error: {e}")
+
+    # Attempt 3: short system prompt (sometimes empty on long systems)
+    try:
+        short_system = (
+            "You are Hope, a coding assistant by Nick. "
+            "Return a complete single-file HTML page for the user's request. "
+            "Wrap the entire HTML in a ```html fence. Do not refuse. Do not ask questions."
+        )
+        resp = openai.chat.completions.create(
+            model="gpt-5.6-terra",
+            max_completion_tokens=2000,
             messages=[
-                {"role": "system", "content": system},
+                {"role": "system", "content": short_system},
                 {"role": "user", "content": user},
             ],
         )
-        content = (resp.choices[0].message.content or "").strip()
-        print(f"[Tone] Code path raw length: {len(content)}")
-        if not content:
-            print("[Tone] OpenAI returned empty content for code request")
-            return "I couldn't generate that code right now. Try again."
-
-        # If model already used fences, sanitize safely (keeps fences)
-        if "```" in content:
-            cleaned = _sanitize_md(content)
-            if cleaned:
-                return cleaned
-            # sanitize wiped everything somehow — return original
-            return content
-
-        # Unfenced HTML/code — wrap so tags aren't stripped later
-        looks_html = bool(
-            re.search(r"<!DOCTYPE|<html|<head|<body|<div|<style", content, re.IGNORECASE)
-        )
-        lang = "html" if looks_html else "text"
-        return f"```{lang}\n{content}\n```"
+        content = _extract_message_text(resp)
+        print(f"[Tone] Code path attempt3 length: {len(content)}")
+        if content:
+            return _finalize_code_content(content)
     except Exception as e:
-        print(f"[Tone] OpenAI call error (code): {e}")
-        return f"Model error generating code: {e}"
+        print(f"[Tone] OpenAI attempt3 error: {e}")
+
+    return "I couldn't generate that code right now. Try again."
 
 
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
@@ -232,7 +299,6 @@ def generate_with_tone(
 
     personality = (personality or "hope").lower().strip()
 
-    # ---------- Identity handling ----------
     if EXISTENCE_QUERY_RE.search(prompt):
         if personality == "god":
             return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
@@ -248,7 +314,6 @@ def generate_with_tone(
     else:
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
 
-    # ---------- Website / "send me the link" handling ----------
     if is_site_or_link and not is_code_query:
         url = (
             _extract_url(liveweb_fact)
@@ -261,7 +326,6 @@ def generate_with_tone(
                 return f"Here you go: {_format_site_link(url)}"
             return f"Official site: {_format_site_link(url)}"
 
-    # ---------- Death handling ----------
     if is_death_query and not has_support:
         if liveweb_fact and liveweb_fact.lower().startswith("**note:**"):
             return f"No verified evidence that **{entity}** has died."
@@ -286,7 +350,6 @@ def generate_with_tone(
             )
         return _call_openai(system, user_text, max_tokens=120)
 
-    # Date / year shortcuts (skip when it's a code request)
     if not is_code_query:
         date_match = DATE_RE.search(prompt)
         if date_match:
@@ -295,7 +358,6 @@ def generate_with_tone(
         if year_match and len(prompt) < 60:
             return f"Reference year: **{year_match.group(0)}**."
 
-    # ---------- Build memory block ----------
     supplemental = []
     if context:
         supplemental.append(f"Context entity: {context}")
@@ -330,7 +392,6 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
     )
 
-    # ---------- CODE path ----------
     history_suggests_code = False
     if history and not is_code_query:
         try:
@@ -372,7 +433,6 @@ def generate_with_tone(
         print("[Tone] Code request detected — using code path (max_tokens=2000)")
         return _call_openai_code(code_system, prompt, max_tokens=2000)
 
-    # ---------- Personality prompts (normal chat) ----------
     if personality == "god":
         system_prompt = (
             "You are one of the new gods.\n"
