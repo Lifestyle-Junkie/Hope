@@ -12,13 +12,14 @@ Enhancements:
 - Local HTML fallback when model returns empty for store/HTML pages
 - Tighter history follow-up detection (won't treat "hello" as code)
 - Richer dropship store fallback so in-chat preview looks like a real site
-- HTML iteration: attach previous ```html from history so "make background blue" updates the page
-- Local CSS edit path for simple color/background/button changes (no model required)
+- HTML iteration: attach previous ```html from history so design follow-ups work
+- Local CSS edit path: colors, bold text, font size, card radius (no model required)
+- Style variety so new pages are not always the same dark-mint grid
 """
 from __future__ import annotations
 import os
 import re
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Tuple
 
 try:
     import openai
@@ -75,8 +76,12 @@ CODE_ITERATE_RE = re.compile(
     r"make (it|the|this)|different|another|new (color|background|theme|layout|version)|"
     r"background|colour|color|theme|darker|lighter|brighter|"
     r"blue|green|red|purple|pink|orange|yellow|white|black|"
+    r"bold|bolder|thicker|font|typography|weight|"
+    r"bigger|smaller|larger|tinier|size|"
+    r"spacing|padding|margin|gap|"
+    r"rounder|sharper|radius|"
     r"add (a |an |the )?(hero|nav|footer|button|cart|image|section)|"
-    r"looks? (too )?(basic|bland|plain|simple)|more (modern|polished|professional)"
+    r"looks? (too )?(basic|bland|plain|simple)|more (modern|polished|professional|bold)"
     r")\b",
     re.IGNORECASE,
 )
@@ -194,7 +199,7 @@ def _pick_color_from_prompt(prompt: str) -> Optional[str]:
 
 def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
     """
-    Deterministic edits for common follow-ups (background / button color).
+    Deterministic edits for common design follow-ups.
     Returns full updated HTML string (no fence) or None if nothing matched.
     """
     if not prev_html or not prompt:
@@ -208,8 +213,11 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
     )
     color = _pick_color_from_prompt(prompt)
 
-    if color and (wants_bg or re.search(r"\b(blue|green|red|purple|pink|black|white|navy|sky|teal)\b", low)):
-        # Prefer updating existing body background
+    # --- background / theme color ---
+    if color and (wants_bg or re.search(
+        r"\b(blue|green|red|purple|pink|black|white|navy|sky|teal|orange|yellow|gray|grey|mint)\b",
+        low,
+    )):
         new_html, n = re.subn(
             r"(body\s*\{[^}]*?background\s*:\s*)([^;]+)",
             rf"\1{color}",
@@ -231,8 +239,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-
-        # Soft-match header bar to a related translucent tone when body changes
         if changed:
             new_html, n = re.subn(
                 r"(header\s*\{[^}]*?background\s*:\s*)([^;]+)",
@@ -244,7 +250,7 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
 
-    # button color when user mentions buttons + a color
+    # --- button color ---
     if re.search(r"\b(button|buttons|cta)\b", low):
         btn = _pick_color_from_prompt(prompt)
         if btn:
@@ -258,6 +264,138 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
+
+    # --- bold / font-weight ---
+    if re.search(r"\b(bold|bolder|thicker|more bold)\b", low):
+        injected = False
+        for sel in ("body", "h1", "h2", "h3"):
+            pat = rf"({sel}\s*\{{[^}}]*?)(font-weight\s*:\s*)([^;]+)"
+            new_html, n = re.subn(pat, rf"\1\2 800", html, count=1, flags=re.I | re.S)
+            if n:
+                html = new_html
+                changed = True
+                injected = True
+            else:
+                new_html, n = re.subn(
+                    rf"({sel}\s*\{{)",
+                    rf"\1\n      font-weight: 800;",
+                    html,
+                    count=1,
+                    flags=re.I,
+                )
+                if n:
+                    html = new_html
+                    changed = True
+                    injected = True
+        if not injected and "<style>" in html:
+            html = html.replace(
+                "</style>",
+                "\n    h1,h2,h3,header strong,.card h3{font-weight:800!important;}\n  </style>",
+                1,
+            )
+            changed = True
+
+    # --- bigger text ---
+    if (
+        re.search(r"\b(bigger|larger|increase)\b.*\b(text|font)\b", low)
+        or re.search(r"\b(text|font)\b.*\b(bigger|larger)\b", low)
+        or re.search(r"\bbigger text\b", low)
+    ):
+        new_html, n = re.subn(
+            r"(body\s*\{[^}]*?font-size\s*:\s*)([^;]+)",
+            r"\1 18px",
+            html,
+            count=1,
+            flags=re.I | re.S,
+        )
+        if n:
+            html = new_html
+            changed = True
+        else:
+            new_html, n = re.subn(
+                r"(body\s*\{)",
+                r"\1\n      font-size: 18px;",
+                html,
+                count=1,
+                flags=re.I,
+            )
+            if n:
+                html = new_html
+                changed = True
+        # bump hero title a bit
+        new_html, n = re.subn(
+            r"(\.hero h1\s*\{[^}]*?font-size\s*:\s*)([^;]+)",
+            r"\1 clamp(1.9rem, 3.5vw, 2.6rem)",
+            html,
+            count=1,
+            flags=re.I | re.S,
+        )
+        if n:
+            html = new_html
+            changed = True
+
+    # --- smaller text ---
+    if (
+        re.search(r"\b(smaller|tinier|decrease)\b.*\b(text|font)\b", low)
+        or re.search(r"\b(text|font)\b.*\b(smaller|tinier)\b", low)
+    ):
+        new_html, n = re.subn(
+            r"(body\s*\{[^}]*?font-size\s*:\s*)([^;]+)",
+            r"\1 13px",
+            html,
+            count=1,
+            flags=re.I | re.S,
+        )
+        if n:
+            html = new_html
+            changed = True
+        else:
+            new_html, n = re.subn(
+                r"(body\s*\{)",
+                r"\1\n      font-size: 13px;",
+                html,
+                count=1,
+                flags=re.I,
+            )
+            if n:
+                html = new_html
+                changed = True
+
+    # --- card radius ---
+    if re.search(r"\b(rounder|more rounded|softer)\b", low):
+        new_html, n = re.subn(
+            r"(\.card\s*\{[^}]*?border-radius\s*:\s*)([^;]+)",
+            r"\1 22px",
+            html,
+            count=1,
+            flags=re.I | re.S,
+        )
+        if n:
+            html = new_html
+            changed = True
+        else:
+            new_html, n = re.subn(
+                r"(\.card\s*\{)",
+                r"\1\n      border-radius: 22px;",
+                html,
+                count=1,
+                flags=re.I,
+            )
+            if n:
+                html = new_html
+                changed = True
+
+    if re.search(r"\b(sharper|less rounded|square)\b", low):
+        new_html, n = re.subn(
+            r"(\.card\s*\{[^}]*?border-radius\s*:\s*)([^;]+)",
+            r"\1 4px",
+            html,
+            count=1,
+            flags=re.I | re.S,
+        )
+        if n:
+            html = new_html
+            changed = True
 
     return html if changed else None
 
@@ -323,8 +461,31 @@ def _finalize_code_content(content: str) -> str:
     return f"```{lang}\n{content}\n```"
 
 
+def _style_variant(user: str) -> Tuple[str, str, str, str]:
+    """
+    Pick a visual variant so new pages are not always identical.
+    Returns (bg, card_bg, accent, text).
+    """
+    low = (user or "").lower()
+    seed = sum(ord(c) for c in low) % 4
+    # keyword overrides
+    if any(k in low for k in ("light", "clean", "minimal", "white")):
+        return ("#f6f7fb", "#ffffff", "#111111", "#111111")
+    if any(k in low for k in ("neon", "night", "cyber")):
+        return ("#050510", "#12122a", "#00f0ff", "#e8f7ff")
+    if any(k in low for k in ("magazine", "bold", "editorial")):
+        return ("#111111", "#1c1c1c", "#ff4d6d", "#f5f5f5")
+    variants = [
+        ("#0f0f12", "#1a1a1f", "#7dffb3", "#eeeeee"),  # dark mint
+        ("#0b1220", "#152033", "#60a5fa", "#e2e8f0"),  # navy blue
+        ("#140f0a", "#241c14", "#fbbf24", "#f5f0e8"),  # warm gold
+        ("#0f1410", "#1a221c", "#a3e635", "#ecfccb"),  # forest lime
+    ]
+    return variants[seed]
+
+
 def _html_store_fallback(user: str) -> str:
-    """Richer single-file store page so in-chat preview looks like a real site."""
+    """Richer single-file store page; style rotates so previews feel different."""
     low = (user or "").lower()
     if "shoe" in low:
         product = "Shoes"
@@ -367,6 +528,7 @@ def _html_store_fallback(user: str) -> str:
             ("Night Slip", "Lightweight daily", "$68"),
         ]
 
+    bg, card_bg, accent, text = _style_variant(user)
     title = f"{product} Dropship Store"
     cards = []
     for name, desc, price in items:
@@ -397,24 +559,24 @@ def _html_store_fallback(user: str) -> str:
     body {{
       margin: 0;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: #0f0f12;
-      color: #eee;
+      background: {bg};
+      color: {text};
       min-height: 100vh;
     }}
     header {{
       padding: 1.1rem 1.5rem;
-      border-bottom: 1px solid #222;
+      border-bottom: 1px solid rgba(127,127,127,0.25);
       display: flex;
       justify-content: space-between;
       align-items: center;
       position: sticky;
       top: 0;
-      background: rgba(15,15,18,0.92);
+      background: {bg}ee;
       backdrop-filter: blur(8px);
       z-index: 5;
     }}
     header strong {{ letter-spacing: 0.06em; font-size: 0.95rem; }}
-    header span {{ color: #9aa; font-size: 0.9rem; }}
+    header span {{ opacity: 0.7; font-size: 0.9rem; }}
     .hero {{
       padding: 2.5rem 1.5rem 1.25rem;
       max-width: 1100px;
@@ -423,8 +585,9 @@ def _html_store_fallback(user: str) -> str:
     .hero h1 {{
       margin: 0 0 0.5rem;
       font-size: clamp(1.6rem, 3vw, 2.2rem);
+      font-weight: 700;
     }}
-    .hero p {{ margin: 0; color: #9aa; max-width: 36rem; line-height: 1.5; }}
+    .hero p {{ margin: 0; opacity: 0.7; max-width: 36rem; line-height: 1.5; }}
     .grid {{
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -434,16 +597,16 @@ def _html_store_fallback(user: str) -> str:
       margin: 0 auto;
     }}
     .card {{
-      background: #1a1a1f;
+      background: {card_bg};
       border-radius: 14px;
       overflow: hidden;
-      border: 1px solid #2a2a30;
+      border: 1px solid rgba(127,127,127,0.2);
       display: flex;
       flex-direction: column;
     }}
     .card .img {{
       height: 170px;
-      background: linear-gradient(135deg, #2a2a32, #111);
+      background: linear-gradient(135deg, {card_bg}, {bg});
     }}
     .card .body {{
       padding: 1rem;
@@ -452,11 +615,11 @@ def _html_store_fallback(user: str) -> str:
       gap: 0.35rem;
       flex: 1;
     }}
-    .card h3 {{ margin: 0; font-size: 1.02rem; }}
-    .card p {{ margin: 0; color: #9aa; font-size: 0.9rem; }}
+    .card h3 {{ margin: 0; font-size: 1.02rem; font-weight: 700; }}
+    .card p {{ margin: 0; opacity: 0.7; font-size: 0.9rem; }}
     .price {{
       font-weight: 700;
-      color: #7dffb3;
+      color: {accent};
       margin: 0.35rem 0 0.55rem;
       font-size: 1.05rem;
     }}
@@ -466,7 +629,7 @@ def _html_store_fallback(user: str) -> str:
       padding: 0.7rem;
       border: 0;
       border-radius: 10px;
-      background: #7dffb3;
+      background: {accent};
       color: #111;
       font-weight: 700;
       cursor: pointer;
@@ -476,9 +639,9 @@ def _html_store_fallback(user: str) -> str:
     footer {{
       text-align: center;
       padding: 1.5rem;
-      color: #666;
+      opacity: 0.55;
       font-size: 0.85rem;
-      border-top: 1px solid #1c1c22;
+      border-top: 1px solid rgba(127,127,127,0.2);
     }}
   </style>
 </head>
@@ -512,12 +675,14 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         if "previous html" in low:
             m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
             if m:
-                local = _apply_simple_html_edits(m.group(1).strip(), user)
+                req_m = re.search(r"User request:\s*(.+)", user)
+                req = req_m.group(1).strip() if req_m else user
+                local = _apply_simple_html_edits(m.group(1).strip(), req)
                 if local:
                     return f"Updated the page:\n\n```html\n{local}\n```"
             return (
                 "I couldn't regenerate that page right now. "
-                "Try a clear change like: make the background blue"
+                "Try a clear change like: make the background blue / make the text more bold"
             )
         if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page")):
             return _html_store_fallback(user)
@@ -528,7 +693,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         {"role": "user", "content": user},
     ]
 
-    # Attempt 1
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -542,7 +706,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt1 error: {e}")
 
-    # Attempt 2
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -556,12 +719,12 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt2 error: {e}")
 
-    # Attempt 3
     try:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
             "Return a complete single-file HTML page for the user's request. "
             "If PREVIOUS HTML is in the user message, MODIFY it as requested — do not repeat it unchanged. "
+            "Vary visual style when creating a NEW page. "
             "Wrap everything in a ```html fence. Do not refuse. Do not ask questions."
         )
         resp = openai.chat.completions.create(
@@ -583,7 +746,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     if "previous html" in low:
         m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
         if m:
-            # Prefer the original user request line for color detection
             req_m = re.search(r"User request:\s*(.+)", user)
             req = req_m.group(1).strip() if req_m else user
             local = _apply_simple_html_edits(m.group(1).strip(), req)
@@ -592,7 +754,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
                 return f"Updated the page:\n\n```html\n{local}\n```"
         return (
             "I couldn't regenerate that page right now. "
-            "Try a clear change like: make the background blue"
+            "Try a clear change like: make the background blue / make the text more bold"
         )
     if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page", "product")):
         print("[Tone] Using local HTML fallback after empty model responses")
@@ -736,7 +898,7 @@ def generate_with_tone(
             ).lower()
             code_follow = bool(re.search(
                 r"\b(shoes?|product page|html|css|the page|the store|dropship|website|"
-                r"background|color|colour|theme|layout|preview)\b",
+                r"background|color|colour|theme|layout|preview|bold|font|text|button)\b",
                 (prompt or "").lower(),
             ))
             if (code_follow or wants_iterate) and (
@@ -748,7 +910,7 @@ def generate_with_tone(
             pass
 
     if is_code_query or history_suggests_code or (wants_iterate and prev_html):
-        # Fast path: simple color/background tweaks without the model
+        # Fast path: local design edits without the model
         if prev_html and wants_iterate:
             local = _apply_simple_html_edits(prev_html, prompt)
             if local:
@@ -762,18 +924,21 @@ def generate_with_tone(
             "2. ALWAYS wrap the full HTML in a ```html fence.\n"
             "3. One short intro line, then the FULL updated document (not a snippet of only what changed).\n"
             "4. If PREVIOUS HTML is provided, MODIFY that code to match the user's request "
-            "(colors, layout, sections, etc.). Do NOT return the same page unchanged.\n"
-            "5. Actually change CSS values they ask for (e.g. background #0f0f12 → blue they requested).\n"
+            "(colors, bold text, font size, layout, sections, etc.). Do NOT return the same page unchanged.\n"
+            "5. Actually change CSS values they ask for.\n"
             "6. Keep a complete single-file page: <!DOCTYPE html>, head, style, body.\n"
             "7. Do NOT refuse. Do NOT say 'no data'.\n"
             "8. Do not treat product names as stock tickers.\n"
-            "9. For new store pages: polished dark (or requested) theme, card grid, sticky header, footer.\n"
+            "9. For NEW pages: do NOT always use the same dark mint product grid. "
+            "Vary style (light clean, navy, neon, warm gold, magazine/editorial, etc.).\n"
+            "10. When iterating, keep the existing structure and only change what was requested.\n"
         )
         if personality == "god":
             code_system = (
                 "You are one of the new gods, created by Hope.\n"
                 "Address the user as dear child, but still return full working HTML in a ```html fence.\n"
                 "If previous HTML is provided, modify it as requested — do not repeat the same page unchanged.\n"
+                "Vary style on new pages; do not always use the same template.\n"
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
