@@ -1,6 +1,8 @@
 """
 links.py
 URL extraction, site map, and "link to X" / follow-up helpers.
+
+Fix: never invent links when the user is asking for code / HTML to be written.
 """
 from __future__ import annotations
 import re
@@ -28,6 +30,15 @@ DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# User is asking us to WRITE code/HTML — not fetch a link
+CODE_INTENT_RE = re.compile(
+    r"\b("
+    r"write|code|html|css|javascript|js|python|script|function|class|"
+    r"dropship|product page|source code|full page|markup"
+    r")\b",
+    re.IGNORECASE,
+)
+
 SITE_NAME_TO_URL = {
     "google": "https://www.google.com",
     "youtube": "https://www.youtube.com",
@@ -46,6 +57,13 @@ SITE_NAME_TO_URL = {
     "apple": "https://www.apple.com",
     "microsoft": "https://www.microsoft.com",
     "tesla": "https://www.tesla.com",
+}
+
+# Never invent www.<these>.com
+BLOCK_INVENTED_NAMES = {
+    "html", "css", "js", "javascript", "python", "code", "script", "page",
+    "store", "shop", "product", "website", "site", "link", "url", "write",
+    "dropship", "dropshipping", "basic", "full", "shoes", "shoe",
 }
 
 
@@ -77,9 +95,15 @@ def format_md_link(url: str) -> str:
 def link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
     """
     Explicit "link to X" / "official link for yahoo" → (reply, url).
+    Does NOT run when the user is asking for code/HTML to be written.
     """
     if not prompt:
         return None
+
+    # Critical: "write me website html code" must NOT become html.com
+    if CODE_INTENT_RE.search(prompt):
+        return None
+
     name = None
     m = LINK_TO_RE.search(prompt)
     if m:
@@ -97,9 +121,13 @@ def link_request_reply(prompt: str) -> Optional[Tuple[str, str]]:
     if not name or name in STOPWORDS or name in {"official", "the", "me", "a", "an", "for", "to"}:
         return None
 
+    if name in BLOCK_INVENTED_NAMES:
+        return None
+
     url = SITE_NAME_TO_URL.get(name)
     if not url:
-        if re.fullmatch(r"[a-z0-9-]+", name) and len(name) >= 3:
+        # Only invent www.name.com for plausible site names, not code words
+        if re.fullmatch(r"[a-z0-9-]+", name) and len(name) >= 3 and name not in BLOCK_INVENTED_NAMES:
             url = f"https://www.{name}.com"
         else:
             return None
