@@ -475,28 +475,16 @@
   <script src="typing-animation.js"></script>
   <script src="js/md.js"></script>
   <script src="js/media.js"></script>
+  <script src="js/voice.js"></script>
   <script>
     window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
 
     let audioUnlocked = false;
     let welcomePlayed = false;
-    let isProcessing = false;
-    let mode = 'wake';
-    let recognition = null;
-    let restartAttempts = 0;
-    const MAX_RESTART_ATTEMPTS = 10;
 
     const ta = document.getElementById('chat-input');
     const submitBtn = document.getElementById('submitBtn');
     const chatThread = document.getElementById('chat-thread');
-    const micCheckbox = document.getElementById('mic');
-    const micLabel = document.querySelector('label[for="mic"]');
-    const wakeStatus = document.getElementById('wake-status');
-
-    function setStatus(text, active = false) {
-      wakeStatus.textContent = text;
-      wakeStatus.classList.toggle('active', active);
-    }
 
     function autoresize() {
       ta.style.height = 'auto';
@@ -513,31 +501,12 @@
       return aiBubble;
     }
 
-    async function speakText(text) {
-      const speakRes = await fetch(`${window.BACKEND_URL}/speak`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
-      });
-      if (!speakRes.ok) throw new Error("Speak failed");
-      const audioBlob = await speakRes.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      await new Promise((resolve, reject) => {
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl);
-          resolve();
-        };
-        audio.onerror = reject;
-        audio.play().catch(reject);
-      });
-    }
-
     async function playWelcome() {
       if (welcomePlayed) return;
       welcomePlayed = true;
-      isProcessing = true;
-      setStatus('Welcome…', true);
+      window.hopeIsProcessing = true;
+      if (window.setStatus) setStatus('Welcome…', true);
+
       let reply = "Welcome back. Want today's briefing, or just ask me something?";
       try {
         const res = await fetch(`${window.BACKEND_URL}/welcome`, { method: "GET" });
@@ -548,16 +517,18 @@
       } catch (e) {
         console.error("Welcome error:", e);
       }
+
       addHopeBubble(reply);
       try {
-        setStatus('Speaking…', true);
-        await speakText(reply);
+        if (window.setStatus) setStatus('Speaking…', true);
+        if (window.speakText) await speakText(reply);
       } catch (e) {
         console.error("Welcome speak error:", e);
       }
-      isProcessing = false;
-      setStatus('Listening for “Hope”…');
-      startWakeWordMode();
+
+      window.hopeIsProcessing = false;
+      if (window.setStatus) setStatus('Listening for “Hope”…');
+      if (window.startWakeWordMode) startWakeWordMode();
     }
 
     function unlockAudio() {
@@ -579,192 +550,6 @@
     window.addEventListener('DOMContentLoaded', () => {
       document.body.classList.add('ready');
     });
-
-    function createRecognition() {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        setStatus("Speech not supported – use Chrome");
-        return null;
-      }
-      const recog = new SpeechRecognition();
-      recog.continuous = false;
-      recog.interimResults = false;
-      recog.lang = 'en-US';
-      recog.maxAlternatives = 1;
-      return recog;
-    }
-
-    function safeRestartWake() {
-      if (mode !== 'wake' || isProcessing) return;
-      restartAttempts++;
-      if (restartAttempts > MAX_RESTART_ATTEMPTS) {
-        console.log("[Wake] Cooling down...");
-        setStatus('Wake word paused – click mic or say “Hope” again');
-        setTimeout(() => {
-          restartAttempts = 0;
-          startWakeWordMode();
-        }, 3500);
-        return;
-      }
-      startWakeWordMode();
-    }
-
-    function startWakeWordMode() {
-      if (isProcessing) return;
-      mode = 'wake';
-      setStatus('Listening for “Hope”…');
-      if (micLabel) micLabel.classList.remove('listening-active');
-      if (recognition) {
-        try {
-          recognition.onend = null;
-          recognition.onerror = null;
-          recognition.onresult = null;
-          recognition.abort();
-        } catch (e) {}
-        recognition = null;
-      }
-      recognition = createRecognition();
-      if (!recognition) return;
-
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript.toLowerCase().trim();
-        console.log("[Wake] Heard:", transcript);
-        if (
-          transcript.includes('hope') ||
-          transcript.includes('hey hope') ||
-          transcript.includes('hi hope') ||
-          transcript.includes('okay hope') ||
-          transcript.includes('yo hope') ||
-          transcript.includes('hey ho')
-        ) {
-          console.log("[Wake] Wake word detected!");
-          restartAttempts = 0;
-          startCommandMode();
-        } else {
-          setTimeout(() => {
-            if (mode === 'wake' && !isProcessing) safeRestartWake();
-          }, 280);
-        }
-      };
-
-      recognition.onerror = (event) => {
-        console.log("[Wake] Error:", event.error);
-        if (mode === 'wake' && !isProcessing) {
-          const delay = (event.error === 'no-speech' || event.error === 'aborted') ? 450 : 1100;
-          setTimeout(() => safeRestartWake(), delay);
-        }
-      };
-
-      recognition.onend = () => {
-        if (mode === 'wake' && !isProcessing) {
-          setTimeout(() => safeRestartWake(), 350);
-        }
-      };
-
-      try {
-        recognition.start();
-      } catch (e) {
-        console.warn("Wake start failed:", e);
-        setTimeout(() => safeRestartWake(), 900);
-      }
-    }
-
-    function startCommandMode() {
-      if (isProcessing) return;
-      mode = 'command';
-      setStatus('Listening… speak now', true);
-      if (micLabel) micLabel.classList.add('listening-active');
-      restartAttempts = 0;
-      if (recognition) {
-        try {
-          recognition.onend = null;
-          recognition.onerror = null;
-          recognition.onresult = null;
-          recognition.abort();
-        } catch (e) {}
-        recognition = null;
-      }
-      recognition = createRecognition();
-      if (!recognition) return;
-
-      recognition.onresult = async (event) => {
-        const transcript = event.results[0][0].transcript.trim();
-        console.log("[Command] Heard:", transcript);
-        if (transcript) {
-          ta.value = transcript;
-          autoresize();
-          await handleVoiceCommand(transcript);
-        } else {
-          startWakeWordMode();
-        }
-      };
-
-      recognition.onerror = (event) => {
-        console.log("[Command] Error:", event.error);
-        if (micLabel) micLabel.classList.remove('listening-active');
-        setTimeout(() => startWakeWordMode(), 600);
-      };
-
-      recognition.onend = () => {
-        if (micLabel) micLabel.classList.remove('listening-active');
-        if (mode === 'command' && !isProcessing) {
-          setTimeout(() => startWakeWordMode(), 650);
-        }
-      };
-
-      try {
-        recognition.start();
-      } catch (e) {
-        console.warn("Command start failed:", e);
-        startWakeWordMode();
-      }
-    }
-
-    async function handleVoiceCommand(text) {
-      if (isProcessing) return;
-      isProcessing = true;
-      setStatus('Thinking…');
-
-      const userBubble = document.createElement("div");
-      userBubble.className = "chat-bubble user";
-      userBubble.textContent = text;
-      chatThread.appendChild(userBubble);
-      userBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-
-      const aiBubble = document.createElement("div");
-      aiBubble.className = "chat-bubble";
-      aiBubble.innerHTML = "…";
-      chatThread.appendChild(aiBubble);
-      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-
-      let reply = "No response available.";
-      try {
-        const res = await fetch(`${window.BACKEND_URL}/ask`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        reply = data.reply || data.liveweb_analyzed || "No response available.";
-      } catch (e) {
-        reply = `⚠️ ${e.message || "Network error"}`;
-        console.error(e);
-      }
-
-      aiBubble.innerHTML = mdToHTML(reply);
-      aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-
-      try {
-        setStatus('Speaking…', true);
-        await speakText(reply);
-      } catch (err) {
-        console.error("TTS error:", err);
-      }
-
-      isProcessing = false;
-      startWakeWordMode();
-    }
 
     submitBtn.addEventListener('click', async () => {
       const text = ta.value.trim();
@@ -800,14 +585,6 @@
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         submitBtn.click();
-      }
-    });
-
-    micCheckbox.addEventListener('change', () => {
-      if (micCheckbox.checked) {
-        startCommandMode();
-      } else {
-        startWakeWordMode();
       }
     });
 
