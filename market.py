@@ -6,6 +6,8 @@ Yahoo Finance quote helper for Hope
 Fixes:
 - Common English / product words (shoes, html, page, etc.) are never treated as tickers
 - Pure single-word messages only count as tickers if not in COMMON_WORDS
+- Known tickers (SHOP, AAPL, ...) are NEVER blocked by common-word filters
+- Broader "price of X" / "current price" detection
 """
 from __future__ import annotations
 import re
@@ -42,6 +44,12 @@ COMPANY_TO_TICKER = {
     "robinhood": "HOOD",
 }
 
+# Real tickers we always allow (never blocked by COMMON_WORDS)
+KNOWN_TICKERS = set(COMPANY_TO_TICKER.values()) | {
+    "SHOP", "AAPL", "CMCSA", "TSLA", "NVDA", "MSFT", "AMZN", "GOOGL", "GOOG",
+    "META", "NFLX", "DIS", "AMD", "INTC", "COIN", "HOOD", "SPY", "QQQ", "VOO",
+}
+
 IGNORE_TICKERS = {
     "WHAT", "IS", "THE", "FOR", "AND", "NOW", "RN", "PRICE", "STOCK",
     "SHARE", "SHARES", "HOW", "MUCH", "AT", "TODAY", "CURRENT",
@@ -62,34 +70,42 @@ IGNORE_TICKERS = {
 }
 
 # Lowercase common words — pure messages like "shoes" must NOT hit the stock path
+# NOTE: do NOT put "shop" here — it blocks ticker SHOP
 COMMON_WORDS = {
     "shoes", "shoe", "html", "css", "code", "page", "store", "basic", "full",
     "just", "product", "website", "hello", "thanks", "please", "price",
     "script", "function", "class", "file", "image", "video", "audio", "text",
-    "write", "make", "create", "build", "dropship", "dropshipping", "shop",
-    "yes", "no", "ok", "okay", "hi", "hey", "thanks", "thank", "please",
+    "write", "make", "create", "build", "dropship", "dropshipping",
+    "yes", "no", "ok", "okay", "hi", "hey", "thank",
     "python", "javascript", "java", "sql", "react", "flask",
 }
 
 STOCK_KEYWORD_RE = re.compile(
-    r"\b(stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
-    r"current price|at rn|right now price|market cap)\b",
+    r"\b("
+    r"stock|share|shares|ticker|quote|trading at|price of|stock price|share price|"
+    r"current price|price now|at rn|right now price|market cap|"
+    r"how much is|trading price|live price|latest price"
+    r")\b",
     re.IGNORECASE,
 )
+
 STOCK_FOLLOWUP_RE = re.compile(
     r"\b(check( it)? again|check again|update( it)?|refresh|price now|how about now|"
     r"what(?:'s| is)? (?:it|that|the price) now)\b",
     re.IGNORECASE,
 )
+
 IDENTITY_RE = re.compile(
     r"\b(who made you|who created you|who designed you|who are you|what are you|"
     r"what(?:'s| is)? your name|are you (an ai|a bot)|who is hope|who is god)\b",
     re.IGNORECASE,
 )
+
 WHAT_IS_RE = re.compile(
     r"^\s*(what(?:'s| is| are)|who is|tell me about|explain)\b",
     re.IGNORECASE,
 )
+
 CODE_OR_BUILD_RE = re.compile(
     r"\b(html|css|python|javascript|js|code|script|dropship|product page|write me|write a)\b",
     re.IGNORECASE,
@@ -121,16 +137,19 @@ def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
         "range": "5d",
         "includePrePost": "true",
     }
+
     try:
         resp = requests.get(url, headers=HEADERS, params=params, timeout=12)
         if resp.status_code != 200:
             print(f"[Market] Yahoo error {resp.status_code} for {symbol}: {resp.text[:200]}")
             return None
+
         data = resp.json()
         result = (data.get("chart") or {}).get("result") or []
         if not result:
             print(f"[Market] No result for {symbol}")
             return None
+
         meta = result[0].get("meta") or {}
         price = _safe_float(
             meta.get("regularMarketPrice")
@@ -141,11 +160,13 @@ def get_quote(symbol: str) -> Optional[Dict[str, Any]]:
             meta.get("chartPreviousClose")
             or meta.get("previousClose")
         )
+
         change = None
         change_percent = None
         if price is not None and previous_close is not None and previous_close != 0:
             change = price - previous_close
             change_percent = (change / previous_close) * 100.0
+
         return {
             "symbol": symbol,
             "price": price,
@@ -188,12 +209,16 @@ def format_quote_line(q: Dict[str, Any]) -> str:
     price = q.get("price")
     prev = q.get("previous_close")
     change_percent = q.get("change_percent")
+
     if price is None:
         return f"{symbol}: price unavailable"
+
     price_txt = f"${price:,.2f}"
     prev_txt = f"${prev:,.2f}" if prev is not None else "n/a"
+
     if change_percent is None:
         return f"{symbol}: {price_txt} (prev close {prev_txt})"
+
     sign = "+" if change_percent >= 0 else ""
     return f"{symbol}: {price_txt} (prev close {prev_txt}, {sign}{change_percent:.2f}%)"
 
@@ -209,16 +234,24 @@ def extract_company_ticker(prompt: str) -> Optional[str]:
 
 def extract_explicit_ticker(prompt: str) -> Optional[str]:
     text = (prompt or "").strip()
+    # Prefer already-uppercase tokens first
     candidates = re.findall(r"\b[A-Z]{2,5}\b", text)
     if not candidates:
-        candidates = re.findall(r"\b[A-Z]{2,5}\b", text.upper())
+        candidates = re.findall(r"\b[A-Za-z]{2,5}\b", text)
+
     for tok in candidates:
         up = tok.upper()
-        if up not in IGNORE_TICKERS and 2 <= len(up) <= 5:
-            # also block if the original token is a common word
-            if tok.lower() in COMMON_WORDS or up.lower() in COMMON_WORDS:
-                continue
+        if up in IGNORE_TICKERS:
+            continue
+        if not (2 <= len(up) <= 5):
+            continue
+        # Always allow known real tickers (SHOP, AAPL, ...)
+        if up in KNOWN_TICKERS:
             return up
+        # Block common English/product words
+        if tok.lower() in COMMON_WORDS or up.lower() in COMMON_WORDS:
+            continue
+        return up
     return None
 
 
@@ -228,34 +261,44 @@ def looks_like_stock_question(prompt: str, has_last_ticker: bool = False) -> boo
         return False
     if IDENTITY_RE.search(prompt):
         return False
+    # Code/build requests are never stock
     if CODE_OR_BUILD_RE.search(prompt):
-        return False
-    if WHAT_IS_RE.search(prompt) and not STOCK_KEYWORD_RE.search(prompt):
         return False
 
     lower = prompt.strip().lower()
-    # Single common word (e.g. "shoes") is never a stock question
-    if lower in COMMON_WORDS:
+    if lower in COMMON_WORDS or lower.rstrip("?") in COMMON_WORDS:
         return False
-    # Strip trailing ? for the same check
-    if lower.rstrip("?") in COMMON_WORDS:
-        return False
+
+    if WHAT_IS_RE.search(prompt) and not STOCK_KEYWORD_RE.search(prompt):
+        # Allow "what is the price of shopify" via STOCK_KEYWORD; block pure "what is X"
+        if not extract_company_ticker(prompt):
+            return False
 
     company = extract_company_ticker(prompt)
     explicit = extract_explicit_ticker(prompt)
     has_stock_kw = bool(STOCK_KEYWORD_RE.search(prompt))
     is_followup = bool(STOCK_FOLLOWUP_RE.search(prompt))
 
+    # Company name + any price/stock language
     if company and has_stock_kw:
         return True
+    if company and re.search(r"\b(price|quote|stock|share|trading|worth)\b", prompt or "", re.IGNORECASE):
+        return True
+
+    # Explicit ticker + price/stock language
     if explicit and has_stock_kw:
         return True
-    # Pure ticker message (e.g. "AAPL" or "SHOP") — but not common words
+    if explicit and re.search(r"\b(price|quote|stock|share|trading|worth)\b", prompt or "", re.IGNORECASE):
+        return True
+
+    # Pure ticker message (e.g. "AAPL" or "SHOP")
     if explicit and re.fullmatch(r"[A-Za-z]{2,5}\??", prompt.strip()):
-        if lower.rstrip("?") not in COMMON_WORDS:
+        if explicit in KNOWN_TICKERS or lower.rstrip("?") not in COMMON_WORDS:
             return True
+
     if has_last_ticker and is_followup:
         return True
+
     return False
 
 
@@ -277,8 +320,10 @@ def quote_reply_for_prompt(
     if not ticker:
         return None
 
-    # Extra safety: never quote common words even if something slipped through
-    if ticker.lower() in COMMON_WORDS or ticker in IGNORE_TICKERS:
+    # Extra safety: never quote common product words
+    if ticker.lower() in COMMON_WORDS:
+        return None
+    if ticker in IGNORE_TICKERS and ticker not in KNOWN_TICKERS:
         return None
 
     if re.search(
@@ -315,9 +360,12 @@ if __name__ == "__main__":
         q = get_quote(s)
         print(format_quote_line(q) if q else f"{s}: failed")
 
-    # Sanity checks
     assert looks_like_stock_question("shoes") is False
     assert looks_like_stock_question("html") is False
     assert looks_like_stock_question("AAPL") is True
+    assert looks_like_stock_question("SHOP") is True
     assert looks_like_stock_question("what's the stock price of shopify") is True
+    assert looks_like_stock_question("what is current price of shopify") is True
+    assert looks_like_stock_question("What is current price of SHOP") is True
+    assert extract_explicit_ticker("What is current price of SHOP") == "SHOP"
     print("market.py self-checks passed")
