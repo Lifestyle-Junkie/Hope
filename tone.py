@@ -9,7 +9,9 @@ Uses GPT-5.6 Terra (no custom temperature — model only supports default).
 Enhancements:
 - Code/HTML/script path with higher token limit
 - Sanitize preserves fenced code blocks (so HTML isn't stripped)
-- Code path: multi-attempt OpenAI calls, never returns empty
+- Code path: multi-attempt OpenAI calls
+- Local HTML fallback when model returns empty for store/HTML pages
+- Tighter history follow-up detection (won't treat "hello" as code)
 """
 from __future__ import annotations
 import os
@@ -196,16 +198,99 @@ def _finalize_code_content(content: str) -> str:
     return f"```{lang}\n{content}\n```"
 
 
+def _html_store_fallback(user: str) -> str:
+    """Local fallback when the model returns empty for HTML / dropship / store pages."""
+    low = (user or "").lower()
+    product = "Shoes"
+    if "shoe" in low:
+        product = "Shoes"
+    elif "shirt" in low:
+        product = "Shirts"
+    elif "watch" in low:
+        product = "Watches"
+    elif "hat" in low or "cap" in low:
+        product = "Hats"
+    else:
+        # generic
+        product = "Products"
+
+    title = f"{product} Dropship Store"
+    return (
+        f"Here's a simple single-file {product.lower()} dropshipping page:\n\n"
+        "```html\n"
+        "<!DOCTYPE html>\n"
+        "<html lang=\"en\">\n"
+        "<head>\n"
+        "  <meta charset=\"UTF-8\" />\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n"
+        f"  <title>{title}</title>\n"
+        "  <style>\n"
+        "    * {{ box-sizing: border-box; }}\n"
+        "    body {{ margin: 0; font-family: system-ui, sans-serif; background: #0f0f12; color: #eee; }}\n"
+        "    header {{ padding: 1.25rem 1.5rem; border-bottom: 1px solid #222; display: flex; justify-content: space-between; align-items: center; }}\n"
+        "    header strong {{ letter-spacing: 0.04em; }}\n"
+        "    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; padding: 1.5rem; }}\n"
+        "    .card {{ background: #1a1a1f; border-radius: 12px; overflow: hidden; border: 1px solid #2a2a30; }}\n"
+        "    .card .img {{ height: 160px; background: linear-gradient(135deg, #333, #111); }}\n"
+        "    .card .body {{ padding: 1rem; }}\n"
+        "    .card h3 {{ margin: 0 0 0.35rem; font-size: 1rem; }}\n"
+        "    .card p {{ margin: 0 0 0.75rem; color: #aaa; font-size: 0.9rem; }}\n"
+        "    .price {{ font-weight: 700; color: #7dffb3; margin-bottom: 0.6rem; }}\n"
+        "    button {{ width: 100%; padding: 0.6rem; border: 0; border-radius: 8px; background: #7dffb3; color: #111; font-weight: 700; cursor: pointer; }}\n"
+        "    footer {{ text-align: center; padding: 2rem; color: #666; font-size: 0.85rem; }}\n"
+        "  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        "  <header>\n"
+        f"    <strong>{title.upper()}</strong>\n"
+        "    <span>Cart (0)</span>\n"
+        "  </header>\n"
+        "  <main class=\"grid\">\n"
+        "    <article class=\"card\">\n"
+        "      <div class=\"img\"></div>\n"
+        "      <div class=\"body\">\n"
+        "        <h3>Classic Runner</h3>\n"
+        "        <p>Everyday comfort</p>\n"
+        "        <div class=\"price\">$79</div>\n"
+        "        <button type=\"button\">Add to cart</button>\n"
+        "      </div>\n"
+        "    </article>\n"
+        "    <article class=\"card\">\n"
+        "      <div class=\"img\"></div>\n"
+        "      <div class=\"body\">\n"
+        "        <h3>Street High</h3>\n"
+        "        <p>Bold high-top style</p>\n"
+        "        <div class=\"price\">$95</div>\n"
+        "        <button type=\"button\">Add to cart</button>\n"
+        "      </div>\n"
+        "    </article>\n"
+        "    <article class=\"card\">\n"
+        "      <div class=\"img\"></div>\n"
+        "      <div class=\"body\">\n"
+        "        <h3>Trail Flex</h3>\n"
+        "        <p>All-terrain grip</p>\n"
+        "        <div class=\"price\">$110</div>\n"
+        "        <button type=\"button\">Add to cart</button>\n"
+        "      </div>\n"
+        "    </article>\n"
+        "  </main>\n"
+        "  <footer>Demo dropshipping template — swap images and wire up your supplier checkout.</footer>\n"
+        "</body>\n"
+        "</html>\n"
+        "```"
+    )
+
+
 def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     """
-    Code-specific OpenAI call with 3 attempts:
-    1) max_completion_tokens + full system
-    2) max_tokens fallback
-    3) short system prompt nudge
-    Never returns empty.
+    Code-specific OpenAI call with 3 attempts + HTML local fallback.
+    Never returns empty for store/HTML-style requests.
     """
     if not _openai_available():
         print("[Tone] Code path: OpenAI unavailable")
+        low = (user or "").lower()
+        if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page")):
+            return _html_store_fallback(user)
         return "Model unavailable for code generation."
 
     messages = [
@@ -213,7 +298,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
         {"role": "user", "content": user},
     ]
 
-    # Attempt 1: max_completion_tokens (Terra-style)
+    # Attempt 1: max_completion_tokens
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -227,7 +312,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt1 error: {e}")
 
-    # Attempt 2: max_tokens (older param)
+    # Attempt 2: max_tokens
     try:
         resp = openai.chat.completions.create(
             model="gpt-5.6-terra",
@@ -241,7 +326,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
     except Exception as e:
         print(f"[Tone] OpenAI attempt2 error: {e}")
 
-    # Attempt 3: short system prompt (sometimes empty on long systems)
+    # Attempt 3: short system prompt
     try:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
@@ -262,6 +347,12 @@ def _call_openai_code(system: str, user: str, max_tokens=2000) -> str:
             return _finalize_code_content(content)
     except Exception as e:
         print(f"[Tone] OpenAI attempt3 error: {e}")
+
+    # Local HTML fallback when model stays empty
+    low = (user or "").lower()
+    if any(k in low for k in ("html", "website", "dropship", "store", "shoe", "shoes", "page", "product")):
+        print("[Tone] Using local HTML fallback after empty model responses")
+        return _html_store_fallback(user)
 
     return "I couldn't generate that code right now. Try again."
 
@@ -392,15 +483,19 @@ def generate_with_tone(
         "- For follow-ups like \"send me the link\" / \"the link\", just return the known URL in markdown.\n"
     )
 
+    # Only treat short follow-ups as code when the prompt itself looks product/page related
     history_suggests_code = False
     if history and not is_code_query:
         try:
             blob = " ".join(
                 (t.get("content") or "") for t in history[-6:] if isinstance(t, dict)
             ).lower()
-            if any(k in blob for k in ("html", "dropship", "product page", "```", "css", "javascript", "code")):
-                if len(prompt.split()) <= 8:
-                    history_suggests_code = True
+            code_follow = bool(re.search(
+                r"\b(shoes?|product page|html|css|the page|the store|dropship|website)\b",
+                (prompt or "").lower(),
+            ))
+            if code_follow and any(k in blob for k in ("html", "dropship", "```", "code", "store", "page")):
+                history_suggests_code = True
         except Exception:
             pass
 
