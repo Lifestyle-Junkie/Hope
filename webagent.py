@@ -3,6 +3,7 @@ webagent.py
 Gemini Computer Use + Playwright browser agent for Hope.
 Streams screenshots into BROWSE_STATE for the live browser panel.
 State is written to disk so gunicorn workers can share it.
+Uses DuckDuckGo instead of Google to avoid captcha walls.
 """
 from __future__ import annotations
 
@@ -19,6 +20,10 @@ SCREEN_HEIGHT = 800
 MODEL_ID = os.getenv("GEMINI_CU_MODEL", "gemini-2.5-computer-use-preview-10-2025")
 MAX_TURNS = int(os.getenv("WEBAGENT_MAX_TURNS", "12"))
 HEADLESS = os.getenv("WEBAGENT_HEADLESS", "true").lower() != "false"
+
+# Prefer DuckDuckGo — Google often captchas Railway / datacenter IPs
+START_URL = os.getenv("WEBAGENT_START_URL", "https://duckduckgo.com")
+SEARCH_URL = os.getenv("WEBAGENT_SEARCH_URL", "https://duckduckgo.com")
 
 BLOCKED_HOST_PARTS = (
     "accounts.google.com",
@@ -116,6 +121,15 @@ class WebAgent:
                     pass
                 elif fn_name == "navigate":
                     url = args.get("url") or ""
+                    # Soft-redirect Google search → DuckDuckGo to avoid captcha
+                    low = url.lower()
+                    if "google.com/search" in low or low.rstrip("/") in (
+                        "https://www.google.com",
+                        "http://www.google.com",
+                        "https://google.com",
+                        "http://google.com",
+                    ):
+                        url = SEARCH_URL
                     if self._blocked_url(url):
                         result_data = {"error": f"Blocked navigation: {url}"}
                     else:
@@ -125,7 +139,7 @@ class WebAgent:
                 elif fn_name == "go_forward":
                     await self.page.go_forward()
                 elif fn_name == "search":
-                    await self.page.goto("https://www.google.com", wait_until="domcontentloaded")
+                    await self.page.goto(SEARCH_URL, wait_until="domcontentloaded")
                 elif fn_name == "wait_5_seconds":
                     await asyncio.sleep(5)
                 elif fn_name == "click_at":
@@ -183,8 +197,9 @@ class WebAgent:
 
                 await asyncio.sleep(0.8)
 
+                # If we somehow landed on a blocked page, bounce to DuckDuckGo (not Google)
                 if self._blocked_url(self.page.url):
-                    await self.page.goto("https://www.google.com")
+                    await self.page.goto(START_URL, wait_until="domcontentloaded")
                     result_data = {"error": "Left a blocked page"}
             except Exception as e:
                 print(f"[WebAgent] Error {fn_name}: {e}")
@@ -253,11 +268,13 @@ class WebAgent:
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
+                    "Chrome/122.0.0.0 Safari/537.36"
                 ),
+                locale="en-US",
+                timezone_id="America/New_York",
             )
             self.page = await self.context.new_page()
-            await self.page.goto("https://www.google.com", wait_until="domcontentloaded")
+            await self.page.goto(START_URL, wait_until="domcontentloaded")
 
             config = types.GenerateContentConfig(
                 tools=[
@@ -279,8 +296,13 @@ class WebAgent:
                         types.Part(
                             text=(
                                 "You are Hope's web browser. Complete this task, then give a short "
-                                "spoken-friendly summary of what you found. Do not log into accounts "
-                                "or complete purchases.\n\nTASK:\n" + prompt
+                                "spoken-friendly summary of what you found.\n"
+                                "Rules:\n"
+                                "- Do not log into accounts or complete purchases.\n"
+                                "- Prefer opening direct URLs when the user names a site.\n"
+                                "- If you need a search engine, use DuckDuckGo (not Google).\n"
+                                "- Avoid Google if possible — it often blocks this browser.\n\n"
+                                "TASK:\n" + prompt
                             )
                         ),
                         types.Part.from_bytes(data=initial_screenshot, mime_type="image/png"),
