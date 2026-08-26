@@ -104,7 +104,6 @@
       margin-top: 8px;
       display: block;
     }
-
     /* ---------- HTML live preview card ---------- */
     .chat-bubble:has(.html-preview-card) {
       white-space: normal;
@@ -185,7 +184,6 @@
       margin-bottom: 0.4rem;
       white-space: pre-wrap;
     }
-
     .chat-marquee {
       --gap: 1em;
       display: flex;
@@ -419,6 +417,11 @@
       #chat-input { font-size: 16px; padding: 14px; }
       .chat-container { min-height: 54px; }
       .html-preview-card iframe.hp-frame { min-height: 220px; }
+      #browser-panel {
+        width: min(96vw, 420px) !important;
+        right: 2vw !important;
+        bottom: 110px !important;
+      }
     }
     .chat-container.drag-over {
       border-color: var(--neon) !important;
@@ -477,11 +480,148 @@
       background: rgba(0,255,213,.15);
       box-shadow: 0 0 18px var(--neon-dim);
     }
+
+    /* ---------- Live browser panel ---------- */
+    #browser-panel {
+      position: fixed;
+      right: 18px;
+      bottom: 120px;
+      width: min(42vw, 480px);
+      max-height: min(62vh, 520px);
+      z-index: 50;
+      display: none;
+      flex-direction: column;
+      border-radius: 14px;
+      border: 1px solid rgba(0,255,213,0.45);
+      background: rgba(6, 14, 22, 0.94);
+      box-shadow: 0 0 28px var(--neon-dim), 0 12px 40px rgba(0,0,0,0.45);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      overflow: hidden;
+    }
+    #browser-panel.visible { display: flex; }
+    #browser-panel .bp-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(0,255,213,0.18);
+      color: var(--neon);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      user-select: none;
+    }
+    #browser-panel .bp-header .bp-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    #browser-panel .bp-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #555;
+      box-shadow: none;
+      flex-shrink: 0;
+    }
+    #browser-panel.active .bp-dot {
+      background: var(--neon);
+      box-shadow: 0 0 10px var(--neon);
+      animation: bp-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes bp-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    #browser-panel .bp-actions {
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    #browser-panel .bp-actions button {
+      background: transparent;
+      border: 1px solid rgba(0,255,213,0.3);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 0.7rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    #browser-panel .bp-actions button:hover {
+      background: rgba(0,255,213,0.12);
+    }
+    #browser-panel .bp-url {
+      padding: 6px 12px;
+      font-size: 0.72rem;
+      color: rgba(191,254,243,0.75);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #browser-panel .bp-frame-wrap {
+      flex: 1 1 auto;
+      min-height: 180px;
+      background: #0a0f14;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    #browser-panel .bp-frame-wrap img {
+      width: 100%;
+      height: auto;
+      max-height: 340px;
+      object-fit: contain;
+      display: block;
+      background: #111;
+    }
+    #browser-panel .bp-placeholder {
+      color: rgba(191,254,243,0.45);
+      font-size: 0.85rem;
+      padding: 24px;
+      text-align: center;
+    }
+    #browser-panel .bp-log {
+      padding: 8px 12px;
+      font-size: 0.72rem;
+      color: rgba(191,254,243,0.8);
+      border-top: 1px solid rgba(255,255,255,0.06);
+      max-height: 52px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
   </style>
 </head>
 <body>
   <div class="app-title">Hope v2</div>
   <div id="wake-status">Click anywhere to start…</div>
+
+  <!-- Live browser panel -->
+  <div id="browser-panel" aria-live="polite">
+    <div class="bp-header">
+      <div class="bp-title">
+        <span class="bp-dot"></span>
+        <span>Hope is browsing</span>
+      </div>
+      <div class="bp-actions">
+        <button type="button" id="bp-minimize" title="Hide panel">Hide</button>
+      </div>
+    </div>
+    <div class="bp-url" id="bp-url">Waiting…</div>
+    <div class="bp-frame-wrap" id="bp-frame-wrap">
+      <div class="bp-placeholder" id="bp-placeholder">Opening browser…</div>
+      <img id="bp-image" alt="Browser screenshot" style="display:none;" />
+    </div>
+    <div class="bp-log" id="bp-log">—</div>
+  </div>
+
   <main>
     <div id="chat-thread"></div>
     <div class="chat-marquee" aria-hidden="true">
@@ -562,5 +702,148 @@
   <script src="js/media.js"></script>
   <script src="js/voice.js"></script>
   <script src="js/chat.js"></script>
+  <script>
+    /* ---------- Live browser panel ---------- */
+    (function () {
+      const panel = document.getElementById('browser-panel');
+      const img = document.getElementById('bp-image');
+      const placeholder = document.getElementById('bp-placeholder');
+      const logEl = document.getElementById('bp-log');
+      const urlEl = document.getElementById('bp-url');
+      const hideBtn = document.getElementById('bp-minimize');
+      const BACKEND = () => (window.BACKEND_URL || '').replace(/\/$/, '');
+
+      let pollTimer = null;
+      let hideTimer = null;
+      let lastImage = null;
+      let userHidden = false;
+      let wasActive = false;
+
+      const BROWSE_RE = /\b(go to|open|visit|navigate|browse|surf|check (the|this|that) (page|site|website)|read (the|this|that) (page|site|article)|https?:\/\/)/i;
+
+      function showPanel() {
+        if (userHidden) return;
+        panel.classList.add('visible');
+      }
+      function hidePanel() {
+        panel.classList.remove('visible');
+        panel.classList.remove('active');
+      }
+
+      function applyState(state) {
+        if (!state) return;
+        const active = !!state.active;
+        const image = state.image || null;
+        const log = state.log || '';
+        const url = state.url || '';
+
+        if (active) {
+          wasActive = true;
+          userHidden = false;
+          showPanel();
+          panel.classList.add('active');
+          if (hideTimer) {
+            clearTimeout(hideTimer);
+            hideTimer = null;
+          }
+        } else {
+          panel.classList.remove('active');
+          // Keep last frame visible briefly after browse ends
+          if (wasActive && !hideTimer) {
+            hideTimer = setTimeout(() => {
+              wasActive = false;
+              // leave panel visible with last frame unless user hid it
+            }, 8000);
+          }
+        }
+
+        if (url) urlEl.textContent = url;
+        if (log) logEl.textContent = log;
+
+        if (image && image !== lastImage) {
+          lastImage = image;
+          img.src = 'data:image/png;base64,' + image;
+          img.style.display = 'block';
+          placeholder.style.display = 'none';
+          showPanel();
+        } else if (!image && !lastImage) {
+          img.style.display = 'none';
+          placeholder.style.display = 'block';
+          placeholder.textContent = active ? 'Opening browser…' : 'No frame yet';
+        }
+      }
+
+      async function pollOnce() {
+        try {
+          const res = await fetch(BACKEND() + '/browse-frame', { method: 'GET' });
+          if (!res.ok) return;
+          const data = await res.json();
+          applyState(data);
+          // Keep polling while active or shortly after
+          if (data.active || wasActive) {
+            // continue
+          }
+        } catch (e) {
+          // silent — backend may be waking up
+        }
+      }
+
+      function startPolling() {
+        if (pollTimer) return;
+        pollOnce();
+        pollTimer = setInterval(pollOnce, 700);
+      }
+
+      function maybeStartFromText(text) {
+        if (!text) return;
+        if (BROWSE_RE.test(text)) {
+          userHidden = false;
+          wasActive = true;
+          showPanel();
+          panel.classList.add('active');
+          urlEl.textContent = 'Starting…';
+          logEl.textContent = 'Hope is opening the web…';
+          placeholder.style.display = 'block';
+          placeholder.textContent = 'Opening browser…';
+          img.style.display = 'none';
+          lastImage = null;
+          startPolling();
+        }
+      }
+
+      // Expose for chat.js / voice.js if they want to call it
+      window.HopeBrowserPanel = {
+        start: startPolling,
+        show: showPanel,
+        hide: hidePanel,
+        watchText: maybeStartFromText,
+      };
+
+      hideBtn.addEventListener('click', () => {
+        userHidden = true;
+        hidePanel();
+      });
+
+      // Hook send button + Enter without breaking existing handlers
+      const ta = document.getElementById('chat-input');
+      const submitBtn = document.getElementById('submitBtn');
+
+      if (submitBtn) {
+        submitBtn.addEventListener('click', () => {
+          maybeStartFromText(ta && ta.value);
+        }, true);
+      }
+      if (ta) {
+        ta.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            maybeStartFromText(ta.value);
+          }
+        }, true);
+      }
+
+      // Always listen lightly so voice-triggered browses also show the panel
+      startPolling();
+    })();
+  </script>
 </body>
 </html>
