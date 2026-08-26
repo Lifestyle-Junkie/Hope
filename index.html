@@ -421,6 +421,10 @@
         right: 2vw !important;
         bottom: 110px !important;
       }
+      #browser-panel.expanded {
+        width: min(98vw, 96vw) !important;
+        max-height: 72vh !important;
+      }
     }
     .chat-container.drag-over {
       border-color: var(--neon) !important;
@@ -495,8 +499,16 @@
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
       overflow: hidden;
+      transition: width 0.25s ease, max-height 0.25s ease, left 0.25s ease, right 0.25s ease;
     }
     #browser-panel.visible { display: flex; }
+    #browser-panel.expanded {
+      width: min(86vw, 1100px);
+      max-height: min(82vh, 860px);
+      right: 18px;
+      left: auto;
+      bottom: 90px;
+    }
     #browser-panel .bp-header {
       display: flex;
       align-items: center;
@@ -538,6 +550,8 @@
       display: flex;
       gap: 6px;
       flex-shrink: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
     #browser-panel .bp-actions button {
       background: transparent;
@@ -551,6 +565,10 @@
     }
     #browser-panel .bp-actions button:hover {
       background: rgba(0,255,213,0.12);
+    }
+    #browser-panel .bp-actions button.danger {
+      border-color: rgba(255, 90, 90, 0.45);
+      color: #ffb4b4;
     }
     #browser-panel .bp-url {
       padding: 6px 12px;
@@ -570,6 +588,9 @@
       justify-content: center;
       overflow: hidden;
     }
+    #browser-panel.expanded .bp-frame-wrap {
+      min-height: 420px;
+    }
     #browser-panel .bp-frame-wrap img {
       width: 100%;
       height: auto;
@@ -577,6 +598,9 @@
       object-fit: contain;
       display: block;
       background: #111;
+    }
+    #browser-panel.expanded .bp-frame-wrap img {
+      max-height: 680px;
     }
     #browser-panel .bp-placeholder {
       color: rgba(191,254,243,0.45);
@@ -599,7 +623,6 @@
 <body>
   <div class="app-title">Hope v2</div>
   <div id="wake-status">Click anywhere to start…</div>
-
   <div id="browser-panel" aria-live="polite">
     <div class="bp-header">
       <div class="bp-title">
@@ -607,7 +630,9 @@
         <span>Hope is browsing</span>
       </div>
       <div class="bp-actions">
+        <button type="button" id="bp-expand" title="Make panel bigger">Bigger</button>
         <button type="button" id="bp-minimize" title="Hide panel">Hide</button>
+        <button type="button" id="bp-stop" class="danger" title="Stop browsing">Stop</button>
       </div>
     </div>
     <div class="bp-url" id="bp-url">Waiting…</div>
@@ -617,7 +642,6 @@
     </div>
     <div class="bp-log" id="bp-log">—</div>
   </div>
-
   <main>
     <div id="chat-thread"></div>
     <div class="chat-marquee" aria-hidden="true">
@@ -699,16 +723,17 @@
   <script src="js/voice.js"></script>
   <script src="js/chat.js"></script>
   <script>
-    /* ---------- Live browser panel (stale-frame fixed) ---------- */
     (function () {
+      const STOP_KEY = 'hope_browse_off';
       const panel = document.getElementById('browser-panel');
       const img = document.getElementById('bp-image');
       const placeholder = document.getElementById('bp-placeholder');
       const logEl = document.getElementById('bp-log');
       const urlEl = document.getElementById('bp-url');
       const hideBtn = document.getElementById('bp-minimize');
+      const stopBtn = document.getElementById('bp-stop');
+      const expandBtn = document.getElementById('bp-expand');
       const BACKEND = () => (window.BACKEND_URL || '').replace(/\/$/, '');
-
       let pollTimer = null;
       let lastImage = null;
       let lastUpdatedAt = 0;
@@ -717,15 +742,28 @@
 
       const BROWSE_RE = /\b(go to|open|visit|navigate|browse|surf|check (the|this|that) (page|site|website)|read (the|this|that) (page|site|article)|https?:\/\/)/i;
 
+      function isStopped() {
+        return sessionStorage.getItem(STOP_KEY) === '1';
+      }
+      function setStopped(on) {
+        if (on) sessionStorage.setItem(STOP_KEY, '1');
+        else sessionStorage.removeItem(STOP_KEY);
+      }
+
       function showPanel() {
-        if (userHidden) return;
+        if (userHidden || isStopped()) return;
         panel.classList.add('visible');
       }
       function hidePanel() {
         panel.classList.remove('visible');
         panel.classList.remove('active');
       }
-
+      function stopPolling() {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
       function resetFrame(message) {
         lastImage = null;
         lastUpdatedAt = 0;
@@ -736,21 +774,18 @@
       }
 
       function applyState(state) {
-        if (!state) return;
-
+        if (!state || isStopped()) return;
         const active = !!state.active;
         const image = state.image || null;
         const log = state.log || '';
         const url = state.url || '';
         const updatedAt = Number(state.updated_at || 0);
 
-        // New browse session on backend → clear stale Zillow/etc frame
         if (active && !wasActive) {
           userHidden = false;
           resetFrame('Opening browser…');
           showPanel();
         }
-
         if (active) {
           wasActive = true;
           panel.classList.add('active');
@@ -759,10 +794,8 @@
           panel.classList.remove('active');
           if (wasActive) wasActive = false;
         }
-
         if (url) urlEl.textContent = url;
         if (log) logEl.textContent = log;
-
         if (image && (image !== lastImage || updatedAt > lastUpdatedAt)) {
           lastImage = image;
           lastUpdatedAt = updatedAt;
@@ -776,6 +809,7 @@
       }
 
       async function pollOnce() {
+        if (isStopped()) return;
         try {
           const res = await fetch(BACKEND() + '/browse-frame?ts=' + Date.now(), {
             method: 'GET',
@@ -783,21 +817,35 @@
           });
           if (!res.ok) return;
           applyState(await res.json());
-        } catch (e) {
-          // backend waking
-        }
+        } catch (e) {}
       }
 
       function startPolling() {
+        if (isStopped()) return;
         if (pollTimer) return;
         pollOnce();
         pollTimer = setInterval(pollOnce, 600);
       }
 
+      function stopBrowsing() {
+        setStopped(true);
+        userHidden = true;
+        wasActive = false;
+        stopPolling();
+        hidePanel();
+        panel.classList.remove('expanded');
+        if (expandBtn) expandBtn.textContent = 'Bigger';
+        resetFrame('Browsing stopped');
+        urlEl.textContent = 'Stopped';
+        logEl.textContent = 'Panel off until you open a site again';
+        fetch(BACKEND() + '/browse-stop', { method: 'POST' }).catch(() => {});
+      }
+
       function maybeStartFromText(text) {
         if (!text || !BROWSE_RE.test(text)) return;
+        setStopped(false);
         userHidden = false;
-        wasActive = false; // next active=true counts as a fresh session
+        wasActive = false;
         resetFrame('Starting new browse…');
         urlEl.textContent = 'Starting…';
         logEl.textContent = 'Hope is opening the web…';
@@ -810,6 +858,7 @@
         start: startPolling,
         show: showPanel,
         hide: hidePanel,
+        stop: stopBrowsing,
         watchText: maybeStartFromText,
         reset: () => resetFrame('Ready'),
       };
@@ -819,9 +868,15 @@
         hidePanel();
       });
 
+      stopBtn.addEventListener('click', stopBrowsing);
+
+      expandBtn.addEventListener('click', () => {
+        const on = panel.classList.toggle('expanded');
+        expandBtn.textContent = on ? 'Smaller' : 'Bigger';
+      });
+
       const ta = document.getElementById('chat-input');
       const submitBtn = document.getElementById('submitBtn');
-
       if (submitBtn) {
         submitBtn.addEventListener('click', () => {
           maybeStartFromText(ta && ta.value);
@@ -835,7 +890,8 @@
         }, true);
       }
 
-      startPolling();
+      // Do not auto-poll after Stop + reload
+      if (!isStopped()) startPolling();
     })();
   </script>
 </body>
