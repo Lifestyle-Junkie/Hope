@@ -19,8 +19,11 @@ from typing import Optional, Dict, Any
 
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 800
-MODEL_ID = os.getenv("GEMINI_CU_MODEL", "gemini-2.5-computer-use-preview-10-2025")
-FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.0-flash")
+
+# Latest Gemini Flash (Aug 2026)
+MODEL_ID = os.getenv("GEMINI_CU_MODEL", "gemini-3.7-flash")
+FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-3.7-flash")
+
 MAX_TURNS = int(os.getenv("WEBAGENT_MAX_TURNS", "12"))
 HEADLESS = os.getenv("WEBAGENT_HEADLESS", "true").lower() != "false"
 
@@ -112,6 +115,7 @@ def _looks_like_bot_wall(url: str, page_title: str = "") -> bool:
         "challenge-platform",
         "/sorry/",
         "attention required",
+        "robot or human",
     )
     return any(m in blob for m in markers)
 
@@ -155,6 +159,32 @@ def _is_simple_open(prompt: str) -> bool:
     return any(k in p for k in ("go to", "open", "visit", "navigate", "browse"))
 
 
+async def _dismiss_bot_modal(page) -> None:
+    """Best-effort close on interstitials (X / Close / Escape). Cannot pass press-and-hold."""
+    for sel in (
+        'button[aria-label="Close"]',
+        'button[aria-label="close"]',
+        '[aria-label="Close"]',
+        'button:has-text("Close")',
+        'button:has-text("×")',
+        '[class*="close" i]',
+        '[class*="modal-close" i]',
+    ):
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() > 0:
+                await loc.click(timeout=1500)
+                await asyncio.sleep(0.8)
+                break
+        except Exception:
+            pass
+    try:
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
+    except Exception:
+        pass
+
+
 async def _fast_open_url(url: str) -> str:
     from playwright.async_api import async_playwright
 
@@ -183,22 +213,34 @@ async def _fast_open_url(url: str) -> str:
         page = await context.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=25000)
-            await asyncio.sleep(1.0)
-            shot = await page.screenshot(type="png")
-            title = ""
-            try:
-                title = await page.title()
-            except Exception:
-                pass
-            final_url = page.url
+            await asyncio.sleep(1.2)
+
+            async def _shot_and_meta():
+                shot = await page.screenshot(type="png")
+                title = ""
+                try:
+                    title = await page.title()
+                except Exception:
+                    pass
+                return shot, title, page.url
+
+            shot, title, final_url = await _shot_and_meta()
             b64 = base64.b64encode(shot).decode("utf-8")
             _set_browse_state(b64, f"Opened {final_url}", final_url)
 
             if _looks_like_bot_wall(final_url, title):
-                return (
-                    f"Boss, {final_url} is blocking automated access with a security check. "
-                    f"I can't pass captcha / press-and-hold from here.\n\nSource: {final_url}"
-                )
+                print("[WebAgent] Bot wall detected — trying dismiss", flush=True)
+                await _dismiss_bot_modal(page)
+                shot, title, final_url = await _shot_and_meta()
+                b64 = base64.b64encode(shot).decode("utf-8")
+                _set_browse_state(b64, f"Opened {final_url}", final_url)
+
+                if _looks_like_bot_wall(final_url, title):
+                    return (
+                        f"Boss, {final_url} is blocking automated access with a security check "
+                        f"(press-and-hold / captcha). I closed what I could, but I can't pass that "
+                        f"check from this browser.\n\nSource: {final_url}"
+                    )
 
             summary = f"Opened **{title or final_url}**."
             if key:
@@ -565,10 +607,9 @@ class WebAgent:
 
 def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     """Sync wrapper so Flask / liveweb can call this."""
-    # Keep previous screenshot so the panel does not go blank mid-start
     BROWSE_STATE["active"] = True
     BROWSE_STATE["log"] = "Starting browser..."
-    # do NOT clear image or url here
+    # keep last image/url so panel does not go blank
     BROWSE_STATE["updated_at"] = time.time()
     _write_browse_state()
 
