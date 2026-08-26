@@ -1,16 +1,20 @@
 /*
   voice.js
   Wake word + mic + speech recognition + TTS for Hope
-  Continuous conversation: while mic is checked, keep listening after Hope speaks
-  AirPods-friendly: longer post-TTS delay + continuous/interim recognition in command mode
+  Continuous conversation + barge-in (interrupt Hope while she speaks)
 */
 (function () {
   let recognition = null;
+  let interruptRecognition = null;
   let mode = "wake"; // "wake" | "command"
   let restartAttempts = 0;
   const MAX_RESTART_ATTEMPTS = 10;
 
-  // Shared so welcome / chat can coordinate
+  let currentAudio = null;
+  let isSpeaking = false;
+  let interruptEnabled = false;
+  let spokenTextForFilter = "";
+
   window.hopeIsProcessing = false;
 
   function $(id) {
@@ -47,23 +51,167 @@
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }
 
-  async function speakText(text) {
+  function stopSpeaking() {
+    interruptEnabled = false;
+    isSpeaking = false;
+    stopInterruptRecognition();
+    if (currentAudio) {
+      try {
+        currentAudio.onended = null;
+        currentAudio.onerror = null;
+        currentAudio.pause();
+        currentAudio.src = "";
+      } catch (e) {}
+      currentAudio = null;
+    }
+  }
+
+  function stopInterruptRecognition() {
+    if (!interruptRecognition) return;
+    try {
+      interruptRecognition.onend = null;
+      interruptRecognition.onerror = null;
+      interruptRecognition.onresult = null;
+      interruptRecognition.abort();
+    } catch (e) {}
+    interruptRecognition = null;
+  }
+
+  function looksLikeEcho(transcript, spoken) {
+    if (!transcript || !spoken) return false;
+    const a = transcript.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+    const b = spoken.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+    if (!a || a.length < 4) return true;
+    // If user transcript is mostly contained in what Hope is saying, treat as echo
+    if (b.includes(a) && a.length < 40) return true;
+    const aw = a.split(" ").filter(Boolean);
+    const bw = new Set(b.split(" ").filter(Boolean));
+    if (aw.length >= 3) {
+      const overlap = aw.filter((w) => bw.has(w)).length / aw.length;
+      if (overlap > 0.7) return true;
+    }
+    return false;
+  }
+
+  function startInterruptListening(onInterrupt) {
+    stopInterruptRecognition();
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const recog = new SpeechRecognition();
+    interruptRecognition = recog;
+    recog.continuous = true;
+    recog.interimResults = true;
+    recog.lang = "en-US";
+    recog.maxAlternatives = 1;
+
+    recog.onresult = (event) => {
+      if (!interruptEnabled || !isSpeaking) return;
+
+      let finalText = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          finalText += event.results[i][0].transcript;
+        }
+      }
+      finalText = (finalText || "").trim();
+      if (!finalText) return;
+      if (looksLikeEcho(finalText, spokenTextForFilter)) {
+        console.log("[Interrupt] Ignored likely echo:", finalText);
+        return;
+      }
+
+      console.log("[Interrupt] User cut in:", finalText);
+      interruptEnabled = false;
+      stopSpeaking();
+      stopRecognition();
+      onInterrupt(finalText);
+    };
+
+    recog.onerror = (event) => {
+      console.log("[Interrupt] Error:", event.error);
+      // Keep trying while Hope is still speaking
+      if (isSpeaking && interruptEnabled && event.error !== "not-allowed") {
+        setTimeout(() => {
+          if (isSpeaking && interruptEnabled) startInterruptListening(onInterrupt);
+        }, 400);
+      }
+    };
+
+    recog.onend = () => {
+      if (isSpeaking && interruptEnabled) {
+        setTimeout(() => {
+          if (isSpeaking && interruptEnabled) {
+            try {
+              recog.start();
+            } catch (e) {}
+          }
+        }, 250);
+      }
+    };
+
+    try {
+      recog.start();
+    } catch (e) {
+      console.warn("[Interrupt] start failed:", e);
+    }
+  }
+
+  async function speakText(text, { allowInterrupt = true } = {}) {
+    stopSpeaking();
+
     const speakRes = await fetch(`${window.BACKEND_URL}/speak`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
     if (!speakRes.ok) throw new Error("Speak failed");
+
     const audioBlob = await speakRes.blob();
     const audioUrl = URL.createObjectURL(audioBlob);
     const audio = new Audio(audioUrl);
-    await new Promise((resolve, reject) => {
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        resolve();
+    currentAudio = audio;
+    isSpeaking = true;
+    spokenTextForFilter = text || "";
+
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (payload) => {
+        if (settled) return;
+        settled = true;
+        interruptEnabled = false;
+        isSpeaking = false;
+        stopInterruptRecognition();
+        try {
+          URL.revokeObjectURL(audioUrl);
+        } catch (e) {}
+        if (currentAudio === audio) currentAudio = null;
+        resolve(payload);
       };
-      audio.onerror = reject;
-      audio.play().catch(reject);
+
+      audio.onended = () => finish({ interrupted: false });
+      audio.onerror = () => finish({ interrupted: false, error: true });
+
+      audio
+        .play()
+        .then(() => {
+          // Small grace period so Hope's first words don't false-trigger
+          if (allowInterrupt && isMicOn()) {
+            setTimeout(() => {
+              if (!isSpeaking || currentAudio !== audio) return;
+              interruptEnabled = true;
+              setStatus("Speaking… (you can interrupt)", true);
+              startInterruptListening((userText) => {
+                finish({ interrupted: true, transcript: userText });
+              });
+            }, 450);
+          }
+        })
+        .catch((err) => {
+          finish({ interrupted: false, error: true });
+          reject(err);
+        });
     });
   }
   window.speakText = speakText;
@@ -94,8 +242,6 @@
     recognition = null;
   }
 
-  // After Hope finishes: keep talking if mic is on, otherwise wake word
-  // Longer delay helps AirPods switch from speaker → mic
   function resumeAfterHope() {
     if (isMicOn()) {
       setStatus("Get ready…", true);
@@ -198,7 +344,6 @@
     recognition = createRecognition();
     if (!recognition) return;
 
-    // Stronger pickup for continuous talk + AirPods
     recognition.continuous = true;
     recognition.interimResults = true;
 
@@ -213,7 +358,7 @@
       if (!transcript) return;
 
       console.log("[Command] Heard:", transcript);
-      stopRecognition(); // stop before thinking / speaking
+      stopRecognition();
       if (ta) {
         ta.value = transcript;
         autoresize();
@@ -260,11 +405,14 @@
   window.startCommandMode = startCommandMode;
 
   async function handleVoiceCommand(text) {
-    if (window.hopeIsProcessing) return;
+    if (window.hopeIsProcessing) {
+      // If user interrupts, force cut-over to the new utterance
+      stopSpeaking();
+    }
     window.hopeIsProcessing = true;
     setStatus("Thinking…");
 
-    const { chatThread, micLabel } = getEls();
+    const { chatThread, micLabel, ta } = getEls();
     if (micLabel) micLabel.classList.remove("listening-active");
 
     if (!chatThread) {
@@ -306,9 +454,22 @@
 
     try {
       setStatus("Speaking…", true);
-      await speakText(reply);
+      const result = await speakText(reply, { allowInterrupt: true });
+
+      // User interrupted mid-sentence → handle the new direction
+      if (result && result.interrupted && result.transcript) {
+        window.hopeIsProcessing = false;
+        if (ta) {
+          ta.value = result.transcript;
+          autoresize();
+        }
+        setStatus("Interrupted — following you…", true);
+        await handleVoiceCommand(result.transcript);
+        return;
+      }
     } catch (err) {
       console.error("TTS error:", err);
+      stopSpeaking();
     }
 
     window.hopeIsProcessing = false;
@@ -325,6 +486,7 @@
         startCommandMode();
       } else {
         mode = "wake";
+        stopSpeaking();
         stopRecognition();
         startWakeWordMode();
       }
@@ -333,7 +495,7 @@
 
   function initVoice() {
     wireMic();
-    console.log("[Voice] Ready (continuous mic + AirPods delay)");
+    console.log("[Voice] Ready (continuous + interrupt)");
   }
 
   if (document.readyState === "loading") {
