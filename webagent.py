@@ -2,13 +2,16 @@
 webagent.py
 Gemini Computer Use + Playwright browser agent for Hope.
 Streams screenshots into BROWSE_STATE for the live browser panel.
+State is written to disk so gunicorn workers can share it.
 """
 from __future__ import annotations
 
 import os
 import time
+import json
 import asyncio
 import base64
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 SCREEN_WIDTH = 1280
@@ -26,14 +29,22 @@ BLOCKED_HOST_PARTS = (
     "stripe.com",
 )
 
-# Live panel state (polled by frontend)
+# Shared across gunicorn workers via disk
+_BROWSE_STATE_PATH = Path(os.getenv("HOPE_BROWSE_STATE", "/tmp/hope_browse_state.json"))
+
 BROWSE_STATE: Dict[str, Any] = {
     "active": False,
-    "image": None,      # base64 PNG (no data: prefix)
+    "image": None,  # base64 PNG (no data: prefix)
     "log": "",
     "url": "",
     "updated_at": 0.0,
 }
+
+def _write_browse_state():
+    try:
+        _BROWSE_STATE_PATH.write_text(json.dumps(BROWSE_STATE), encoding="utf-8")
+    except Exception as e:
+        print(f"[WebAgent] state write failed: {e}")
 
 def _set_browse_state(image_b64: Optional[str] = None, log: str = "", url: str = ""):
     if image_b64 is not None:
@@ -43,8 +54,16 @@ def _set_browse_state(image_b64: Optional[str] = None, log: str = "", url: str =
     if url:
         BROWSE_STATE["url"] = url
     BROWSE_STATE["updated_at"] = time.time()
+    _write_browse_state()
 
 def get_browse_state() -> Dict[str, Any]:
+    try:
+        if _BROWSE_STATE_PATH.exists():
+            data = json.loads(_BROWSE_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        print(f"[WebAgent] state read failed: {e}")
     return dict(BROWSE_STATE)
 
 def _gemini_key() -> str:
@@ -336,6 +355,7 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     BROWSE_STATE["log"] = "Starting browser..."
     BROWSE_STATE["url"] = ""
     BROWSE_STATE["updated_at"] = time.time()
+    _write_browse_state()
 
     async def _run():
         agent = WebAgent()
@@ -358,3 +378,4 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
         BROWSE_STATE["active"] = False
         BROWSE_STATE["log"] = BROWSE_STATE.get("log") or "Browser closed"
         BROWSE_STATE["updated_at"] = time.time()
+        _write_browse_state()
