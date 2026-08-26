@@ -4,6 +4,7 @@ Hope v2 API server
 - sanitize.py / memory.py / links.py / market.py
 - ElevenLabs + Discord
 - /browse-frame for live browser panel
+- browse_mode: Computer Use only when the globe icon is on
 """
 from __future__ import annotations
 import os
@@ -129,6 +130,12 @@ def _concise_trim(text: str) -> str:
     if len(first) > 10:
         return first
     return text[:160]
+def _as_bool(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    if val is None:
+        return False
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
     if request.method == "OPTIONS":
@@ -143,7 +150,11 @@ def ask():
     previous_fact_client = data.get("previous_fact") or None
     image_data = data.get("image") or None
     personality = (data.get("personality") or "hope").lower().strip()
-    print(f"[Ask] Incoming: {user_prompt!r} concise={concise} personality={personality}")
+    browse_mode = _as_bool(data.get("browse_mode") or data.get("use_browser"))
+    print(
+        f"[Ask] Incoming: {user_prompt!r} concise={concise} "
+        f"personality={personality} browse_mode={browse_mode}"
+    )
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
     vision_description = None
@@ -295,7 +306,15 @@ def ask():
         })
     liveweb_raw = None
     liveweb_analyzed = None
-    if liveweb and hasattr(liveweb, "needs_live_data") and liveweb.needs_live_data(user_prompt):
+    needs_live = False
+    if liveweb and hasattr(liveweb, "needs_live_data"):
+        try:
+            needs_live = bool(liveweb.needs_live_data(user_prompt, browse_mode=browse_mode))
+        except TypeError:
+            needs_live = bool(browse_mode)
+            if not browse_mode:
+                needs_live = bool(liveweb.needs_live_data(user_prompt))
+    if liveweb and needs_live:
         search_query = user_prompt
         if "die" in user_prompt.lower() or "death" in user_prompt.lower() or "killer" in user_prompt.lower():
             if chosen_context_person and (pronoun_detected or vague_followup_detected):
@@ -306,9 +325,12 @@ def ask():
                     .replace("they", chosen_context_person)
                 )
             search_query += " death date"
-        print(f"[LiveWeb] Performing live search for: {search_query}")
+        print(f"[LiveWeb] live search browse_mode={browse_mode} query={search_query!r}")
         try:
-            raw, analyzed = liveweb.perform_live_search(search_query)
+            try:
+                raw, analyzed = liveweb.perform_live_search(search_query, browse_mode=browse_mode)
+            except TypeError:
+                raw, analyzed = liveweb.perform_live_search(search_query)
             liveweb_raw, liveweb_analyzed = raw, sanitize_reply(analyzed or "")
             if liveweb_analyzed:
                 print(f"[LiveWeb] Analyzed (trunc): {liveweb_analyzed[:180]}{'...' if len(liveweb_analyzed) > 180 else ''}")
@@ -381,6 +403,7 @@ def ask():
         "liveweb_raw": liveweb_raw,
         "liveweb_analyzed": liveweb_analyzed,
         "vision_note": vision_description if vision_description else None,
+        "browse_mode": browse_mode,
         "memory": {
             "last_person": new_entity,
             "topic_overlap": topic_overlap,
@@ -515,7 +538,6 @@ def health():
     return jsonify({"status": "ok"})
 @app.route("/browse-frame", methods=["GET", "OPTIONS"])
 def browse_frame():
-    """Live browser panel — latest screenshot + log from webagent."""
     if request.method == "OPTIONS":
         return ("", 200)
     try:
@@ -529,6 +551,18 @@ def browse_frame():
             "url": "",
             "updated_at": 0,
         })
+@app.route("/browse-stop", methods=["POST", "OPTIONS"])
+def browse_stop():
+    if request.method == "OPTIONS":
+        return ("", 200)
+    try:
+        from webagent import stop_browse
+        stop_browse()
+        print("[Browse] Stop requested")
+        return jsonify({"ok": True, "stopped": True})
+    except Exception as e:
+        print(f"[Browse] Stop failed: {e}")
+        return jsonify({"ok": False, "stopped": False, "error": str(e)})
 @app.route("/clear-memory", methods=["POST", "OPTIONS"])
 def clear_memory():
     if request.method == "OPTIONS":
