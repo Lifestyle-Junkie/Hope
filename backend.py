@@ -3,6 +3,7 @@ backend.py
 Hope v2 API server
 - sanitize.py / memory.py / links.py / market.py
 - ElevenLabs + Discord
+- /browse-frame for live browser panel
 """
 from __future__ import annotations
 import os
@@ -14,7 +15,6 @@ from typing import Optional, Dict, Any, List
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
-
 from sanitize import sanitize_reply
 from memory import (
     WEB_MEMORY_KEY,
@@ -32,7 +32,6 @@ from links import (
     link_request_reply,
     prefer_site_url_from_prompt,
 )
-
 try:
     print(f"[Debug] Flask version: {importlib.metadata.version('flask')}")
 except Exception:
@@ -43,8 +42,6 @@ try:
 except Exception:
     openai = None  # type: ignore
     print("[Debug] OpenAI import failed.")
-
-
 def safe_import(name: str):
     try:
         m = __import__(name)
@@ -53,22 +50,19 @@ def safe_import(name: str):
     except Exception as e:
         print(f"[Error] Import {name} failed: {e}")
         return None
-
-
 tone = safe_import("tone")
 emailer = safe_import("emailer")
 image_mod = safe_import("image")
 liveweb = safe_import("liveweb") or safe_import("Liveweb")
 market = safe_import("market")
-
 print("📂 Working directory:", os.getcwd())
 for fn in [
     "tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py",
     "discord_bot.py", "market.py", "sanitize.py", "memory.py", "links.py",
+    "webagent.py",
 ]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
-
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
@@ -77,13 +71,10 @@ if not OPENAI_AVAILABLE:
 else:
     openai.api_key = OPENAI_API_KEY
     print("🔐 OpenAI enabled.")
-
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = "DAQ2lZdypaQsApLOpVPq"
-
 app = Flask(__name__)
 CORS(app)
-
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
 VAGUE_FOLLOWUP_RE = re.compile(
     r"\b(who was (he|she|that)|what did (he|she|they)|who was the killer|what did he represent|"
@@ -96,8 +87,6 @@ VAGUE_FOLLOWUP_RE = re.compile(
 NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares?|1k|thousand)\b", re.IGNORECASE)
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
-
-
 def _extract_entity_from_text(text: str) -> Optional[str]:
     if not text:
         return None
@@ -111,8 +100,6 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
         if c.lower() not in STOPWORDS and len(c) > 2:
             return c
     return None
-
-
 def _is_unverified_death_line(text: str) -> bool:
     if not text:
         return False
@@ -121,12 +108,8 @@ def _is_unverified_death_line(text: str) -> bool:
         or "no reliable" in text.lower()
         or "unconfirmed" in text.lower()
     )
-
-
 def error_response(msg: str, status=500):
     return jsonify({"error": msg}), status
-
-
 def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Optional[str]:
     previous_fact = sanitize_reply(previous_fact) if previous_fact else None
     liveweb_fact = sanitize_reply(liveweb_fact) if liveweb_fact else None
@@ -139,8 +122,6 @@ def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Op
             return previous_fact
         return f"{previous_fact} | {liveweb_fact}"
     return previous_fact or liveweb_fact
-
-
 def _concise_trim(text: str) -> str:
     if not text:
         return text
@@ -148,8 +129,6 @@ def _concise_trim(text: str) -> str:
     if len(first) > 10:
         return first
     return text[:160]
-
-
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
     if request.method == "OPTIONS":
@@ -158,7 +137,6 @@ def ask():
         data = request.get_json(force=True) or {}
     except Exception:
         return error_response("Invalid JSON", 400)
-
     user_prompt = (data.get("message") or "").strip()
     concise = bool(data.get("concise", True))
     explicit_context = data.get("context") or None
@@ -166,22 +144,18 @@ def ask():
     image_data = data.get("image") or None
     personality = (data.get("personality") or "hope").lower().strip()
     print(f"[Ask] Incoming: {user_prompt!r} concise={concise} personality={personality}")
-
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
-
     vision_description = None
     if image_data and image_mod and hasattr(image_mod, "process_image_upload"):
         try:
             vision_description = image_mod.process_image_upload(image_data)
         except Exception as e:
             print(f"[Image] Error: {e}")
-
     if personality == "god":
         session_id = f"discord-{(request.remote_addr or 'anon')}"
     else:
         session_id = WEB_MEMORY_KEY
-
     session_data = get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
     last_fact_mem = sanitize_reply(session_data.get("last_fact") or "")
@@ -193,7 +167,6 @@ def ask():
         {"role": h.get("role", "user"), "content": sanitize_reply(h.get("content") or "")}
         for h in history
     ]
-
     new_topic = topic_of(user_prompt)
     topic_overlap = same_topic(last_topic, new_topic)
     pronoun_detected = PRONOUN_RE.search(user_prompt)
@@ -202,7 +175,6 @@ def ask():
     link_followup = is_link_followup(user_prompt)
     word_count = len(user_prompt.split())
     is_short_message = word_count <= 12
-
     reuse_context = False
     if (pronoun_detected or vague_followup_detected or number_followup
             or topic_overlap or is_short_message or link_followup):
@@ -211,15 +183,12 @@ def ask():
         reuse_context = True
     if last_fact_mem and is_short_message:
         reuse_context = True
-
     chosen_context_person = explicit_context if explicit_context else (last_person if reuse_context else None)
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
-
     print(
         f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | "
         f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
-
     link_req = link_request_reply(user_prompt)
     if link_req:
         reply, url = link_req
@@ -252,7 +221,6 @@ def ask():
                 "history_length": len(new_history),
             },
         })
-
     if link_followup:
         url = last_url or extract_url_from_text(chosen_previous_fact) or extract_url_from_text(last_fact_mem)
         if url:
@@ -287,7 +255,6 @@ def ask():
                     "history_length": len(new_history),
                 },
             })
-
     market_result = None
     if market and hasattr(market, "quote_reply_for_prompt"):
         market_result = market.quote_reply_for_prompt(
@@ -326,7 +293,6 @@ def ask():
                 "history_length": len(new_history),
             },
         })
-
     liveweb_raw = None
     liveweb_analyzed = None
     if liveweb and hasattr(liveweb, "needs_live_data") and liveweb.needs_live_data(user_prompt):
@@ -348,12 +314,10 @@ def ask():
                 print(f"[LiveWeb] Analyzed (trunc): {liveweb_analyzed[:180]}{'...' if len(liveweb_analyzed) > 180 else ''}")
         except Exception as e:
             print(f"[LiveWeb] Error: {e}")
-
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
     effective_prompt = user_prompt
     if vision_description:
         effective_prompt += f"\n\nImage context: {vision_description}"
-
     reply = None
     if tone and hasattr(tone, "generate_with_tone") and OPENAI_AVAILABLE:
         try:
@@ -368,15 +332,12 @@ def ask():
         except Exception as e:
             print(f"[Tone] Error: {e}")
             reply = None
-
     if not reply:
         reply = liveweb_analyzed if liveweb_analyzed else "No data available."
-
     reply = sanitize_reply(reply)
     if concise:
         reply = _concise_trim(reply)
         reply = sanitize_reply(reply)
-
     if last_topic and new_topic and not topic_overlap:
         new_entity = _extract_entity_from_text(reply) or _extract_entity_from_text(liveweb_analyzed or "")
     else:
@@ -386,7 +347,6 @@ def ask():
             or _extract_entity_from_text(liveweb_analyzed or "")
             or chosen_context_person
         )
-
     store_fact = None
     if reply and not _is_unverified_death_line(reply):
         store_fact = reply[:400]
@@ -394,7 +354,6 @@ def ask():
         store_fact = liveweb_analyzed[:300]
     elif chained_fact and not _is_unverified_death_line(chained_fact):
         store_fact = sanitize_reply(chained_fact)[:300]
-
     found_url = (
         extract_url_from_text(reply)
         or extract_url_from_text(liveweb_analyzed)
@@ -403,7 +362,6 @@ def ask():
         or None
     )
     found_url = prefer_site_url_from_prompt(user_prompt, found_url)
-
     new_history = history + [
         {"role": "user", "content": user_prompt},
         {"role": "assistant", "content": reply},
@@ -417,7 +375,6 @@ def ask():
         last_ticker=last_ticker or None,
         last_url=found_url,
     )
-
     return jsonify({
         "reply": reply,
         "context_used": bool(chosen_context_person or chosen_previous_fact or link_followup),
@@ -433,8 +390,6 @@ def ask():
             "history_length": len(new_history),
         },
     })
-
-
 @app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
 def welcome():
     if request.method == "OPTIONS":
@@ -470,8 +425,6 @@ def welcome():
         "reply": reply,
         "memory": {"last_topic": last_topic, "has_history": bool(history)},
     })
-
-
 @app.route("/quote", methods=["GET", "OPTIONS"])
 def quote():
     if request.method == "OPTIONS":
@@ -495,8 +448,6 @@ def quote():
         "market_state": q.get("market_state"),
         "line": line,
     })
-
-
 @app.route("/speak", methods=["POST", "OPTIONS"])
 def speak():
     if request.method == "OPTIONS":
@@ -536,8 +487,6 @@ def speak():
     except Exception as e:
         print(f"[Speak] Error: {e}")
         return error_response(f"TTS failed: {str(e)}", 500)
-
-
 @app.route("/send-email", methods=["POST"])
 def send_email_route():
     if not emailer:
@@ -561,13 +510,25 @@ def send_email_route():
             print(f"[Email] Error: {e}")
             return error_response("Internal email error", 500)
     return error_response("send_email function not found", 500)
-
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
-
-
+@app.route("/browse-frame", methods=["GET", "OPTIONS"])
+def browse_frame():
+    """Live browser panel — latest screenshot + log from webagent."""
+    if request.method == "OPTIONS":
+        return ("", 200)
+    try:
+        from webagent import get_browse_state
+        return jsonify(get_browse_state())
+    except Exception as e:
+        return jsonify({
+            "active": False,
+            "image": None,
+            "log": f"browse state unavailable: {e}",
+            "url": "",
+            "updated_at": 0,
+        })
 @app.route("/clear-memory", methods=["POST", "OPTIONS"])
 def clear_memory():
     if request.method == "OPTIONS":
@@ -575,17 +536,12 @@ def clear_memory():
     clear_web_memory()
     print("[Memory] Cleared WEB_MEMORY_KEY")
     return jsonify({"ok": True, "cleared": WEB_MEMORY_KEY})
-
-
 _discord_started = False
-
-
 def _start_discord_background():
     global _discord_started
     if _discord_started:
         return
     _discord_started = True
-
     def run_discord():
         try:
             from discord_bot import start_discord_bot
@@ -593,14 +549,10 @@ def _start_discord_background():
             start_discord_bot()
         except Exception as e:
             print(f"[Discord] Failed to start: {e}")
-
     t = threading.Thread(target=run_discord, daemon=True)
     t.start()
     print("🤖 Discord bot thread started (gunicorn mode)")
-
-
 _start_discord_background()
-
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
