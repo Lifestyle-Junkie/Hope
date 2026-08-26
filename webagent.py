@@ -1,14 +1,15 @@
 """
 webagent.py
 Gemini Computer Use + Playwright browser agent for Hope.
-Used when the user wants Hope to actually surf a site (click/type/scroll).
+Streams screenshots into BROWSE_STATE for the live browser panel.
 """
 from __future__ import annotations
 
 import os
 import time
 import asyncio
-from typing import Optional, Callable, Awaitable
+import base64
+from typing import Optional, Dict, Any
 
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 800
@@ -16,7 +17,6 @@ MODEL_ID = os.getenv("GEMINI_CU_MODEL", "gemini-2.5-computer-use-preview-10-2025
 MAX_TURNS = int(os.getenv("WEBAGENT_MAX_TURNS", "12"))
 HEADLESS = os.getenv("WEBAGENT_HEADLESS", "true").lower() != "false"
 
-# Block the riskiest actions on a hosted bot
 BLOCKED_HOST_PARTS = (
     "accounts.google.com",
     "login",
@@ -26,6 +26,26 @@ BLOCKED_HOST_PARTS = (
     "stripe.com",
 )
 
+# Live panel state (polled by frontend)
+BROWSE_STATE: Dict[str, Any] = {
+    "active": False,
+    "image": None,      # base64 PNG (no data: prefix)
+    "log": "",
+    "url": "",
+    "updated_at": 0.0,
+}
+
+def _set_browse_state(image_b64: Optional[str] = None, log: str = "", url: str = ""):
+    if image_b64 is not None:
+        BROWSE_STATE["image"] = image_b64
+    if log:
+        BROWSE_STATE["log"] = log
+    if url:
+        BROWSE_STATE["url"] = url
+    BROWSE_STATE["updated_at"] = time.time()
+
+def get_browse_state() -> Dict[str, Any]:
+    return dict(BROWSE_STATE)
 
 def _gemini_key() -> str:
     return (
@@ -34,14 +54,11 @@ def _gemini_key() -> str:
         or ""
     ).strip()
 
-
 def denormalize_x(x: int, width: int) -> int:
     return int((int(x) / 1000) * width)
 
-
 def denormalize_y(y: int, height: int) -> int:
     return int((int(y) / 1000) * height)
-
 
 class WebAgent:
     def __init__(self):
@@ -56,7 +73,6 @@ class WebAgent:
 
     async def execute_function_calls(self, function_calls):
         results = []
-
         for call in function_calls:
             call_id = getattr(call, "id", None)
             fn_name = call.name
@@ -69,7 +85,6 @@ class WebAgent:
                 if decision.get("decision") == "require_confirmation":
                     explanation = decision.get("explanation") or ""
                     print(f"[WebAgent] Safety: {explanation}")
-                    # Do not auto-ack login / payment / purchase flows
                     low = explanation.lower()
                     if any(w in low for w in ("password", "login", "purchase", "pay", "credit card")):
                         results.append((call_id, fn_name, {"error": "Blocked safety-sensitive action"}))
@@ -94,12 +109,10 @@ class WebAgent:
                     await self.page.goto("https://www.google.com", wait_until="domcontentloaded")
                 elif fn_name == "wait_5_seconds":
                     await asyncio.sleep(5)
-
                 elif fn_name == "click_at":
                     x = denormalize_x(args["x"], SCREEN_WIDTH)
                     y = denormalize_y(args["y"], SCREEN_HEIGHT)
                     await self.page.mouse.click(x, y)
-
                 elif fn_name == "type_text_at":
                     x = denormalize_x(args["x"], SCREEN_WIDTH)
                     y = denormalize_y(args["y"], SCREEN_HEIGHT)
@@ -113,12 +126,10 @@ class WebAgent:
                     await self.page.keyboard.type(text, delay=20)
                     if press_enter:
                         await self.page.keyboard.press("Enter")
-
                 elif fn_name == "hover_at":
                     x = denormalize_x(args["x"], SCREEN_WIDTH)
                     y = denormalize_y(args["y"], SCREEN_HEIGHT)
                     await self.page.mouse.move(x, y)
-
                 elif fn_name == "drag_and_drop":
                     start_x = denormalize_x(args["x"], SCREEN_WIDTH)
                     start_y = denormalize_y(args["y"], SCREEN_HEIGHT)
@@ -128,10 +139,8 @@ class WebAgent:
                     await self.page.mouse.down()
                     await self.page.mouse.move(end_x, end_y)
                     await self.page.mouse.up()
-
                 elif fn_name == "key_combination":
                     await self.page.keyboard.press(args.get("keys") or "")
-
                 elif fn_name in ("scroll_document", "scroll_at"):
                     magnitude = int(args.get("magnitude", 800))
                     direction = args.get("direction", "down")
@@ -154,10 +163,10 @@ class WebAgent:
                     result_data = {"warning": f"unimplemented:{fn_name}"}
 
                 await asyncio.sleep(0.8)
+
                 if self._blocked_url(self.page.url):
                     await self.page.goto("https://www.google.com")
                     result_data = {"error": "Left a blocked page"}
-
             except Exception as e:
                 print(f"[WebAgent] Error {fn_name}: {e}")
                 result_data = {"error": str(e)}
@@ -165,7 +174,6 @@ class WebAgent:
             if requires_acknowledgement:
                 result_data["safety_acknowledgement"] = True
             results.append((call_id, fn_name, result_data))
-
         return results
 
     async def get_function_responses(self, results):
@@ -206,8 +214,18 @@ class WebAgent:
         self.client = genai.Client(api_key=key)
         final_response = "I opened the web, boss, but didn’t get a clean summary."
         last_url = ""
-
         print(f"[WebAgent] Goal: {prompt}")
+
+        async def _emit(image_bytes: Optional[bytes], log: str, url: str = ""):
+            b64 = base64.b64encode(image_bytes).decode("utf-8") if image_bytes else None
+            _set_browse_state(b64, log, url)
+            if update_callback:
+                try:
+                    maybe = update_callback(b64, log, url)
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
+                except Exception as e:
+                    print(f"[WebAgent] update_callback error: {e}")
 
         async with async_playwright() as p:
             self.browser = await p.chromium.launch(headless=HEADLESS)
@@ -233,6 +251,8 @@ class WebAgent:
             )
 
             initial_screenshot = await self.page.screenshot(type="png")
+            await _emit(initial_screenshot, "Browser opened", self.page.url)
+
             chat_history = [
                 types.Content(
                     role="user",
@@ -260,6 +280,7 @@ class WebAgent:
                 except Exception as e:
                     print(f"[WebAgent] API error: {e}")
                     final_response = f"Browser agent error, sir: {e}"
+                    await _emit(None, f"Error: {e}")
                     break
 
                 if not getattr(response, "candidates", None):
@@ -282,11 +303,19 @@ class WebAgent:
                 ]
                 if not function_calls:
                     print("[WebAgent] Done")
+                    try:
+                        shot = await self.page.screenshot(type="png")
+                        await _emit(shot, "Task finished", self.page.url)
+                    except Exception:
+                        await _emit(None, "Task finished", last_url)
                     break
 
                 results = await self.execute_function_calls(function_calls)
-                function_responses, _shot = await self.get_function_responses(results)
+                function_responses, shot = await self.get_function_responses(results)
                 last_url = self.page.url
+                actions_log = ", ".join([r[1] for r in results])
+                await _emit(shot, f"Turn {turn + 1}: {actions_log}", last_url)
+
                 response_parts = [types.Part(function_response=fr) for fr in function_responses]
                 chat_history.append(types.Content(role="user", parts=response_parts))
 
@@ -300,9 +329,14 @@ class WebAgent:
             return f"{final_response}\n\nSource: {last_url}"
         return final_response
 
-
 def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     """Sync wrapper so Flask / liveweb can call this."""
+    BROWSE_STATE["active"] = True
+    BROWSE_STATE["image"] = None
+    BROWSE_STATE["log"] = "Starting browser..."
+    BROWSE_STATE["url"] = ""
+    BROWSE_STATE["updated_at"] = time.time()
+
     async def _run():
         agent = WebAgent()
         return await agent.run_task(prompt)
@@ -312,7 +346,6 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     except asyncio.TimeoutError:
         return "That page took too long to finish browsing, boss. Try a more specific site."
     except RuntimeError:
-        # Already inside an event loop
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(asyncio.wait_for(_run(), timeout=timeout_sec))
@@ -321,3 +354,7 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     except Exception as e:
         print(f"[WebAgent] browse_sync error: {e}")
         return f"Couldn’t surf that right now, sir: {e}"
+    finally:
+        BROWSE_STATE["active"] = False
+        BROWSE_STATE["log"] = BROWSE_STATE.get("log") or "Browser closed"
+        BROWSE_STATE["updated_at"] = time.time()
