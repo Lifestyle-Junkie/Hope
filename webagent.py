@@ -4,10 +4,12 @@ Gemini Computer Use + Playwright browser agent for Hope.
 Streams screenshots into BROWSE_STATE for the live browser panel.
 State is written to disk so gunicorn workers can share it.
 Uses DuckDuckGo instead of Google to avoid captcha walls.
+Fast path: simple "go to URL" skips multi-turn Computer Use.
 """
 from __future__ import annotations
 
 import os
+import re
 import time
 import json
 import asyncio
@@ -18,6 +20,7 @@ from typing import Optional, Dict, Any
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 800
 MODEL_ID = os.getenv("GEMINI_CU_MODEL", "gemini-2.5-computer-use-preview-10-2025")
+FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.0-flash")
 MAX_TURNS = int(os.getenv("WEBAGENT_MAX_TURNS", "12"))
 HEADLESS = os.getenv("WEBAGENT_HEADLESS", "true").lower() != "false"
 
@@ -33,6 +36,8 @@ BLOCKED_HOST_PARTS = (
     "paypal.com",
     "stripe.com",
 )
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 
 # Shared across gunicorn workers via disk
 _BROWSE_STATE_PATH = Path(os.getenv("HOPE_BROWSE_STATE", "/tmp/hope_browse_state.json"))
@@ -106,6 +111,119 @@ def _looks_like_bot_wall(url: str, page_title: str = "") -> bool:
     )
     return any(m in blob for m in markers)
 
+def _extract_direct_url(prompt: str) -> Optional[str]:
+    """If the user mainly wants a single URL opened, return it."""
+    m = _URL_RE.search(prompt or "")
+    if m:
+        return m.group(0).rstrip(".,);]")
+
+    m2 = re.search(
+        r"\b(?:go to|open|visit|navigate to)\s+([a-z0-9.-]+\.[a-z]{2,})(?:\s|$|/)",
+        prompt or "",
+        re.I,
+    )
+    if not m2:
+        return None
+
+    host = m2.group(1).lower().rstrip(".")
+    # common typos
+    typo_map = {
+        "amaon.com": "amazon.com",
+        "amazn.com": "amazon.com",
+        "amazom.com": "amazon.com",
+        "googel.com": "google.com",
+        "youtub.com": "youtube.com",
+    }
+    host = typo_map.get(host, host)
+    return "https://" + host
+
+def _is_simple_open(prompt: str) -> bool:
+    """True when we can skip the multi-turn Computer Use agent."""
+    p = (prompt or "").lower()
+    if not _extract_direct_url(prompt):
+        return False
+    hard = (
+        "search", "find", "click", "fill", "login", "compare",
+        "how many", "scroll", "then ", " and then", "extract",
+        "look for", "find me",
+    )
+    if any(h in p for h in hard):
+        return False
+    return any(k in p for k in ("go to", "open", "visit", "navigate", "browse"))
+
+async def _fast_open_url(url: str) -> str:
+    """Open one URL, screenshot, short summary — much faster than full CU."""
+    from playwright.async_api import async_playwright
+
+    key = _gemini_key()
+    print(f"[WebAgent] FAST OPEN: {url}")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        context = await browser.new_context(
+            viewport={"width": SCREEN_WIDTH, "height": SCREEN_HEIGHT},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            await asyncio.sleep(1.0)
+            shot = await page.screenshot(type="png")
+            title = ""
+            try:
+                title = await page.title()
+            except Exception:
+                pass
+            final_url = page.url
+            b64 = base64.b64encode(shot).decode("utf-8")
+            _set_browse_state(b64, f"Opened {final_url}", final_url)
+
+            if _looks_like_bot_wall(final_url, title):
+                return (
+                    f"Boss, {final_url} is blocking automated access with a security check. "
+                    f"I can't pass captcha / press-and-hold from here.\n\nSource: {final_url}"
+                )
+
+            summary = f"Opened **{title or final_url}**."
+            if key:
+                try:
+                    from google import genai
+
+                    client = genai.Client(api_key=key)
+                    resp = client.models.generate_content(
+                        model=FAST_MODEL,
+                        contents=(
+                            "One short spoken sentence for an assistant named Hope. "
+                            f"User asked to open a page. Title: {title}. URL: {final_url}. "
+                            "Do not invent details you can't see."
+                        ),
+                    )
+                    text = (getattr(resp, "text", None) or "").strip()
+                    if text:
+                        summary = text
+                except Exception as e:
+                    print(f"[WebAgent] fast summary error: {e}")
+
+            return f"{summary}\n\nSource: {final_url}"
+        finally:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
 class WebAgent:
     def __init__(self):
         self.client = None
@@ -143,7 +261,6 @@ class WebAgent:
                     pass
                 elif fn_name == "navigate":
                     url = args.get("url") or ""
-                    # Soft-redirect Google → DuckDuckGo to avoid captcha
                     low = url.lower()
                     if "google.com/search" in low or low.rstrip("/") in (
                         "https://www.google.com",
@@ -219,7 +336,6 @@ class WebAgent:
 
                 await asyncio.sleep(0.8)
 
-                # Bounce off login/pay walls — not Google
                 if self._blocked_url(self.page.url):
                     await self.page.goto(START_URL, wait_until="domcontentloaded")
                     result_data = {"error": "Left a blocked page"}
@@ -398,7 +514,6 @@ class WebAgent:
                 last_url = self.page.url
                 actions_log = ", ".join([r[1] for r in results])
 
-                # Detect bot wall mid-run
                 title = ""
                 try:
                     title = await self.page.title()
@@ -453,19 +568,27 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     _write_browse_state()
     print(f"[WebAgent] browse_sync START: {prompt[:160]}")
 
+    use_fast = _is_simple_open(prompt)
+
     async def _run():
+        if use_fast:
+            url = _extract_direct_url(prompt)
+            if url:
+                return await _fast_open_url(url)
         agent = WebAgent()
         return await agent.run_task(prompt)
 
     try:
-        return asyncio.run(asyncio.wait_for(_run(), timeout=timeout_sec))
+        t = 35 if use_fast else timeout_sec
+        return asyncio.run(asyncio.wait_for(_run(), timeout=t))
     except asyncio.TimeoutError:
         print("[WebAgent] browse_sync TIMEOUT")
         return "That page took too long to finish browsing, boss. Try a more specific site."
     except RuntimeError:
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(asyncio.wait_for(_run(), timeout=timeout_sec))
+            t = 35 if use_fast else timeout_sec
+            return loop.run_until_complete(asyncio.wait_for(_run(), timeout=t))
         finally:
             loop.close()
     except Exception as e:
