@@ -24,7 +24,6 @@ FAST_MODEL = os.getenv("GEMINI_FAST_MODEL", "gemini-2.0-flash")
 MAX_TURNS = int(os.getenv("WEBAGENT_MAX_TURNS", "12"))
 HEADLESS = os.getenv("WEBAGENT_HEADLESS", "true").lower() != "false"
 
-# Prefer DuckDuckGo — Google often captchas Railway / datacenter IPs
 START_URL = os.getenv("WEBAGENT_START_URL", "https://duckduckgo.com")
 SEARCH_URL = os.getenv("WEBAGENT_SEARCH_URL", "https://duckduckgo.com")
 
@@ -39,22 +38,23 @@ BLOCKED_HOST_PARTS = (
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 
-# Shared across gunicorn workers via disk
 _BROWSE_STATE_PATH = Path(os.getenv("HOPE_BROWSE_STATE", "/tmp/hope_browse_state.json"))
 
 BROWSE_STATE: Dict[str, Any] = {
     "active": False,
-    "image": None,  # base64 PNG (no data: prefix)
+    "image": None,
     "log": "",
     "url": "",
     "updated_at": 0.0,
 }
 
+
 def _write_browse_state():
     try:
         _BROWSE_STATE_PATH.write_text(json.dumps(BROWSE_STATE), encoding="utf-8")
     except Exception as e:
-        print(f"[WebAgent] state write failed: {e}")
+        print(f"[WebAgent] state write failed: {e}", flush=True)
+
 
 def _set_browse_state(image_b64: Optional[str] = None, log: str = "", url: str = ""):
     if image_b64 is not None:
@@ -66,6 +66,7 @@ def _set_browse_state(image_b64: Optional[str] = None, log: str = "", url: str =
     BROWSE_STATE["updated_at"] = time.time()
     _write_browse_state()
 
+
 def get_browse_state() -> Dict[str, Any]:
     try:
         if _BROWSE_STATE_PATH.exists():
@@ -73,8 +74,9 @@ def get_browse_state() -> Dict[str, Any]:
             if isinstance(data, dict):
                 return data
     except Exception as e:
-        print(f"[WebAgent] state read failed: {e}")
+        print(f"[WebAgent] state read failed: {e}", flush=True)
     return dict(BROWSE_STATE)
+
 
 def _gemini_key() -> str:
     return (
@@ -83,14 +85,16 @@ def _gemini_key() -> str:
         or ""
     ).strip()
 
+
 def denormalize_x(x: int, width: int) -> int:
     return int((int(x) / 1000) * width)
+
 
 def denormalize_y(y: int, height: int) -> int:
     return int((int(y) / 1000) * height)
 
+
 def _looks_like_bot_wall(url: str, page_title: str = "") -> bool:
-    """Detect captcha / press-and-hold / bot-check pages."""
     blob = f"{url} {page_title}".lower()
     markers = (
         "captcha",
@@ -111,8 +115,8 @@ def _looks_like_bot_wall(url: str, page_title: str = "") -> bool:
     )
     return any(m in blob for m in markers)
 
+
 def _extract_direct_url(prompt: str) -> Optional[str]:
-    """If the user mainly wants a single URL opened, return it."""
     m = _URL_RE.search(prompt or "")
     if m:
         return m.group(0).rstrip(".,);]")
@@ -126,7 +130,6 @@ def _extract_direct_url(prompt: str) -> Optional[str]:
         return None
 
     host = m2.group(1).lower().rstrip(".")
-    # common typos
     typo_map = {
         "amaon.com": "amazon.com",
         "amazn.com": "amazon.com",
@@ -137,8 +140,8 @@ def _extract_direct_url(prompt: str) -> Optional[str]:
     host = typo_map.get(host, host)
     return "https://" + host
 
+
 def _is_simple_open(prompt: str) -> bool:
-    """True when we can skip the multi-turn Computer Use agent."""
     p = (prompt or "").lower()
     if not _extract_direct_url(prompt):
         return False
@@ -151,12 +154,12 @@ def _is_simple_open(prompt: str) -> bool:
         return False
     return any(k in p for k in ("go to", "open", "visit", "navigate", "browse"))
 
+
 async def _fast_open_url(url: str) -> str:
-    """Open one URL, screenshot, short summary — much faster than full CU."""
     from playwright.async_api import async_playwright
 
     key = _gemini_key()
-    print(f"[WebAgent] FAST OPEN: {url}")
+    print(f"[WebAgent] FAST OPEN: {url}", flush=True)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -215,7 +218,7 @@ async def _fast_open_url(url: str) -> str:
                     if text:
                         summary = text
                 except Exception as e:
-                    print(f"[WebAgent] fast summary error: {e}")
+                    print(f"[WebAgent] fast summary error: {e}", flush=True)
 
             return f"{summary}\n\nSource: {final_url}"
         finally:
@@ -223,6 +226,7 @@ async def _fast_open_url(url: str) -> str:
                 await browser.close()
             except Exception:
                 pass
+
 
 class WebAgent:
     def __init__(self):
@@ -241,14 +245,14 @@ class WebAgent:
             call_id = getattr(call, "id", None)
             fn_name = call.name
             args = dict(call.args or {})
-            print(f"[WebAgent] Action: {fn_name} {args}")
+            print(f"[WebAgent] Action: {fn_name} {args}", flush=True)
 
             requires_acknowledgement = False
             if "safety_decision" in args:
                 decision = args.get("safety_decision") or {}
                 if decision.get("decision") == "require_confirmation":
                     explanation = decision.get("explanation") or ""
-                    print(f"[WebAgent] Safety: {explanation}")
+                    print(f"[WebAgent] Safety: {explanation}", flush=True)
                     low = explanation.lower()
                     if any(w in low for w in ("password", "login", "purchase", "pay", "credit card")):
                         results.append((call_id, fn_name, {"error": "Blocked safety-sensitive action"}))
@@ -331,7 +335,7 @@ class WebAgent:
                         dx = -magnitude
                     await self.page.mouse.wheel(dx, dy)
                 else:
-                    print(f"[WebAgent] Unimplemented: {fn_name}")
+                    print(f"[WebAgent] Unimplemented: {fn_name}", flush=True)
                     result_data = {"warning": f"unimplemented:{fn_name}"}
 
                 await asyncio.sleep(0.8)
@@ -340,7 +344,7 @@ class WebAgent:
                     await self.page.goto(START_URL, wait_until="domcontentloaded")
                     result_data = {"error": "Left a blocked page"}
             except Exception as e:
-                print(f"[WebAgent] Error {fn_name}: {e}")
+                print(f"[WebAgent] Error {fn_name}: {e}", flush=True)
                 result_data = {"error": str(e)}
 
             if requires_acknowledgement:
@@ -387,7 +391,7 @@ class WebAgent:
         final_response = "I opened the web, boss, but didn’t get a clean summary."
         last_url = ""
         hit_bot_wall = False
-        print(f"[WebAgent] Goal: {prompt}")
+        print(f"[WebAgent] Goal: {prompt}", flush=True)
 
         async def _emit(image_bytes: Optional[bytes], log: str, url: str = ""):
             b64 = base64.b64encode(image_bytes).decode("utf-8") if image_bytes else None
@@ -398,7 +402,7 @@ class WebAgent:
                     if asyncio.iscoroutine(maybe):
                         await maybe
                 except Exception as e:
-                    print(f"[WebAgent] update_callback error: {e}")
+                    print(f"[WebAgent] update_callback error: {e}", flush=True)
 
         async with async_playwright() as p:
             self.browser = await p.chromium.launch(
@@ -460,7 +464,7 @@ class WebAgent:
             ]
 
             for turn in range(MAX_TURNS):
-                print(f"[WebAgent] Turn {turn + 1}")
+                print(f"[WebAgent] Turn {turn + 1}", flush=True)
                 try:
                     response = await self.client.aio.models.generate_content(
                         model=MODEL_ID,
@@ -468,7 +472,7 @@ class WebAgent:
                         config=config,
                     )
                 except Exception as e:
-                    print(f"[WebAgent] API error: {e}")
+                    print(f"[WebAgent] API error: {e}", flush=True)
                     final_response = f"Browser agent error, sir: {e}"
                     await _emit(None, f"Error: {e}")
                     break
@@ -492,7 +496,7 @@ class WebAgent:
                     if getattr(part, "function_call", None)
                 ]
                 if not function_calls:
-                    print("[WebAgent] Done")
+                    print("[WebAgent] Done", flush=True)
                     try:
                         shot = await self.page.screenshot(type="png")
                         title = ""
@@ -527,7 +531,7 @@ class WebAgent:
                         f"(captcha / press-and-hold). I can't complete that verification from here. "
                         f"Open it on your side, or try a different site."
                     )
-                    print("[WebAgent] Bot wall detected — stopping early")
+                    print("[WebAgent] Bot wall detected — stopping early", flush=True)
                     break
 
                 await _emit(shot, f"Turn {turn + 1}: {actions_log}", last_url)
@@ -543,7 +547,7 @@ class WebAgent:
             try:
                 await self.browser.close()
             except Exception as e:
-                print(f"[WebAgent] browser.close error: {e}")
+                print(f"[WebAgent] browser.close error: {e}", flush=True)
 
         if hit_bot_wall and last_url:
             return (
@@ -558,15 +562,17 @@ class WebAgent:
             return f"{final_response}\n\nSource: {last_url}"
         return final_response
 
+
 def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     """Sync wrapper so Flask / liveweb can call this."""
+    # Keep previous screenshot so the panel does not go blank mid-start
     BROWSE_STATE["active"] = True
-    BROWSE_STATE["image"] = None
     BROWSE_STATE["log"] = "Starting browser..."
-    BROWSE_STATE["url"] = ""
+    # do NOT clear image or url here
     BROWSE_STATE["updated_at"] = time.time()
     _write_browse_state()
-    print(f"[WebAgent] browse_sync START: {prompt[:160]}")
+
+    print(f"[WebAgent] browse_sync START: {prompt[:160]}", flush=True)
 
     use_fast = _is_simple_open(prompt)
 
@@ -582,7 +588,7 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
         t = 35 if use_fast else timeout_sec
         return asyncio.run(asyncio.wait_for(_run(), timeout=t))
     except asyncio.TimeoutError:
-        print("[WebAgent] browse_sync TIMEOUT")
+        print("[WebAgent] browse_sync TIMEOUT", flush=True)
         return "That page took too long to finish browsing, boss. Try a more specific site."
     except RuntimeError:
         loop = asyncio.new_event_loop()
@@ -592,11 +598,11 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
         finally:
             loop.close()
     except Exception as e:
-        print(f"[WebAgent] browse_sync error: {e}")
+        print(f"[WebAgent] browse_sync error: {e}", flush=True)
         return f"Couldn’t surf that right now, sir: {e}"
     finally:
         BROWSE_STATE["active"] = False
         BROWSE_STATE["log"] = BROWSE_STATE.get("log") or "Browser closed"
         BROWSE_STATE["updated_at"] = time.time()
         _write_browse_state()
-        print("[WebAgent] browse_sync END")
+        print("[WebAgent] browse_sync END", flush=True)
