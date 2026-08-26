@@ -11,3 +11,5 @@ davey
 ddgs
 google-genai
 playwright
+jellyfish
+Pillow
