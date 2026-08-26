@@ -9,3 +9,5 @@ yt-dlp
 PyNaCl
 davey
 ddgs
+google-genai
+playwright
