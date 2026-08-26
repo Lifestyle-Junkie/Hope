@@ -3,18 +3,22 @@ typing-animation.js
 Frontend chat helper
 - FIXED: strip mangled target=_blank debris so links don't get a trailing "
 - NEW: live HTML preview card when reply contains ```html or a full HTML document
+- NEW: browse_mode flag so Railway only uses Computer Use when the globe is on
 */
 let CONCISE_MODE = false;
 let backendMemory = {
   last_person: null,
   topic: null
 };
-
 function setConciseMode(on) {
   CONCISE_MODE = !!on;
   console.log("[Client] CONCISE_MODE =", CONCISE_MODE);
 }
-
+function isBrowseMode() {
+  const el = document.getElementById("search");
+  if (el) return !!el.checked;
+  return !!window.HOPE_BROWSE_MODE;
+}
 (function injectLinkStyles() {
   if (document.getElementById("hope-link-styles")) return;
   const style = document.createElement("style");
@@ -35,7 +39,6 @@ function setConciseMode(on) {
   `;
   document.head.appendChild(style);
 })();
-
 function simulateTypingEffect(text, element, speed = 18, done) {
   element.innerHTML = "";
   let i = 0;
@@ -53,7 +56,6 @@ function simulateTypingEffect(text, element, speed = 18, done) {
   }
   step();
 }
-
 function stripToPlain(s) {
   if (!s) return "";
   let text = String(s);
@@ -90,7 +92,6 @@ function stripToPlain(s) {
     .replace(/\s+/g, " ")
     .trim();
 }
-
 function plainForTyping(s) {
   if (!s) return "";
   return stripToPlain(s)
@@ -101,7 +102,6 @@ function plainForTyping(s) {
     .replace(/\s+/g, " ")
     .trim();
 }
-
 function mdToHTML(s) {
   if (!s) return "";
   let text = stripToPlain(s);
@@ -148,7 +148,6 @@ function mdToHTML(s) {
   html = html.replace(/\n/g, "<br>");
   return html;
 }
-
 function renderReplyHTML(element, reply) {
   element.innerHTML = mdToHTML(reply);
   const hasAnchor = element.querySelector("a");
@@ -159,13 +158,9 @@ function renderReplyHTML(element, reply) {
     }
   }
 }
-
-/* ---------- HTML preview ---------- */
 function extractHtmlFence(text) {
   if (!text) return null;
   const raw = String(text);
-
-  // Prefer fenced ```html ... ```
   const fence = raw.match(/```html\s*([\s\S]*?)```/i);
   if (fence) {
     return {
@@ -174,8 +169,6 @@ function extractHtmlFence(text) {
       rest: raw.slice(fence.index + fence[0].length).trim()
     };
   }
-
-  // Any fence that clearly contains a full HTML doc
   const anyFence = raw.match(/```[a-zA-Z]*\s*([\s\S]*?)```/);
   if (anyFence && /<!DOCTYPE\s+html|<html[\s>]/i.test(anyFence[1])) {
     return {
@@ -184,60 +177,45 @@ function extractHtmlFence(text) {
       rest: raw.slice(anyFence.index + anyFence[0].length).trim()
     };
   }
-
-  // Unfenced full document
   if (/<!DOCTYPE\s+html|<html[\s>]/i.test(raw)) {
     return { html: raw.trim(), intro: "", rest: "" };
   }
-
   return null;
 }
-
 function renderHtmlPreviewCard(container, htmlSource, introText) {
   container.innerHTML = "";
   container.style.whiteSpace = "normal";
-
   if (introText) {
     const intro = document.createElement("div");
     intro.className = "hp-intro";
     intro.textContent = introText;
     container.appendChild(intro);
   }
-
   const card = document.createElement("div");
   card.className = "html-preview-card";
-
   const header = document.createElement("div");
   header.className = "hp-header";
-
   const title = document.createElement("span");
   title.textContent = "HTML";
   header.appendChild(title);
-
   const actions = document.createElement("div");
   actions.className = "hp-actions";
-
   const btnPreview = document.createElement("button");
   btnPreview.type = "button";
   btnPreview.textContent = "Preview";
-
   const btnCode = document.createElement("button");
   btnCode.type = "button";
   btnCode.textContent = "Code";
-
   const btnCopy = document.createElement("button");
   btnCopy.type = "button";
   btnCopy.textContent = "Copy";
-
   actions.appendChild(btnPreview);
   actions.appendChild(btnCode);
   actions.appendChild(btnCopy);
   header.appendChild(actions);
   card.appendChild(header);
-
   const frameWrap = document.createElement("div");
   frameWrap.className = "hp-frame-wrap";
-
   const iframe = document.createElement("iframe");
   iframe.className = "hp-frame";
   iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
@@ -245,12 +223,10 @@ function renderHtmlPreviewCard(container, htmlSource, introText) {
   iframe.srcdoc = htmlSource;
   frameWrap.appendChild(iframe);
   card.appendChild(frameWrap);
-
   const pre = document.createElement("pre");
   pre.className = "hp-code";
   pre.textContent = htmlSource;
   card.appendChild(pre);
-
   btnPreview.addEventListener("click", () => card.classList.remove("show-code"));
   btnCode.addEventListener("click", () => card.classList.add("show-code"));
   btnCopy.addEventListener("click", async () => {
@@ -267,17 +243,14 @@ function renderHtmlPreviewCard(container, htmlSource, introText) {
       }, 1200);
     }
   });
-
   container.appendChild(card);
   return card;
 }
-
 async function simulateChatResponse(userText, chatThread, speed = 22, imageData = null) {
   const userBubble = document.createElement("div");
   userBubble.className = "chat-bubble user";
   userBubble.setAttribute("role", "user");
   userBubble.textContent = userText || "[image]";
-
   let validImageData = imageData;
   if (imageData) {
     if (
@@ -301,10 +274,8 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
       validImageData = null;
     }
   }
-
   chatThread.appendChild(userBubble);
   userBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-
   const aiBubble = document.createElement("div");
   aiBubble.className = "chat-bubble";
   aiBubble.setAttribute("aria-live", "polite");
@@ -312,13 +283,12 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
   aiBubble.innerHTML = "<span class='dot'>.</span><span class='dot'>.</span><span class='dot'>.</span>";
   chatThread.appendChild(aiBubble);
   aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
-
   const payload = {
     message: userText,
-    concise: CONCISE_MODE
+    concise: CONCISE_MODE,
+    browse_mode: isBrowseMode()
   };
   if (validImageData) payload.image = validImageData;
-
   let data;
   try {
     const res = await fetch(`${window.BACKEND_URL}/ask`, {
@@ -336,7 +306,6 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
     console.error("[Client] Fetch error:", e);
     return;
   }
-
   let reply = data.reply || data.liveweb_analyzed || "No response available.";
   if (userText && reply.includes(userText)) {
     reply =
@@ -344,12 +313,10 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
       data.liveweb_analyzed ||
       "Sorry, I couldn't process that.";
   }
-
   const contextUsed = data.context_used;
   const memory = data.memory || {};
   if (memory.last_person) backendMemory.last_person = memory.last_person;
   if (memory.topic) backendMemory.topic = memory.topic;
-
   if (contextUsed) {
     const ctxBadge = document.createElement("div");
     ctxBadge.className = "chat-bubble context-badge";
@@ -360,8 +327,6 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
     }</em>`;
     chatThread.insertBefore(ctxBadge, aiBubble);
   }
-
-  // Live HTML preview when the reply is (or contains) a page
   const htmlPart = extractHtmlFence(reply);
   if (htmlPart && htmlPart.html) {
     renderHtmlPreviewCard(
@@ -383,7 +348,6 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
       aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
     });
   }
-
   if (
     data.liveweb_analyzed &&
     data.liveweb_analyzed.startsWith("**Note:**") &&
@@ -398,7 +362,6 @@ async function simulateChatResponse(userText, chatThread, speed = 22, imageData 
     noteBubble.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 }
-
 window.simulateChatResponse = simulateChatResponse;
 window.setConciseMode = setConciseMode;
 window.extractHtmlFence = extractHtmlFence;
