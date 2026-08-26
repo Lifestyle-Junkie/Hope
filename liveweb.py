@@ -1,6 +1,7 @@
 """
 liveweb.py
-Live search + guarded factual extraction.
+Live search + guarded factual extraction + optional real browser surfing.
+
 Key points:
 - Death / injury claims require >=1 distinct reliable domains or are flagged unverified.
 - Website / "official site" queries return a clickable markdown link when possible.
@@ -8,14 +9,18 @@ Key points:
   (backend/tone should reuse previous context instead).
 - Code / HTML / "write me a website" requests do NOT trigger live search
   (tone should generate code instead of searching templates).
+- Browse intents ("go to", "open", "visit", "surf this page") use webagent.py
+  (Gemini Computer Use + Playwright) when available.
 - Never fabricate; returns **Note:** lines when evidence insufficient.
 - Provides (raw_text, analyzed_text). analyzed_text is short + bolded entities.
 - Caching layer to reduce repeated external calls.
 - Basic spell correction for names in death queries.
+
 Install:
   pip install ddgs
 Optional:
   pip install jellyfish
+  pip install google-genai playwright   # for real browser surfing
 """
 from __future__ import annotations
 import re
@@ -79,6 +84,19 @@ CODE_INTENT_RE = re.compile(
     re.IGNORECASE
 )
 
+# Real browser surfing (Computer Use / Playwright) — not a quick snippet search
+BROWSE_RE = re.compile(
+    r"\b("
+    r"go to|open|visit|navigate|browse|surf|"
+    r"look (this|that|it) up on the (site|page|website)|"
+    r"on (the )?(site|page|website)|"
+    r"click|fill (out|in)|scroll (down|up|to)|"
+    r"read (the|this|that) (page|site|article)|"
+    r"check (the|this|that) (page|site|website)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 DATE_PATTERN = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
     r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
@@ -87,7 +105,6 @@ DATE_PATTERN = re.compile(
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 
-# Bare "website" / "homepage" removed — those alone were searching for HTML template articles
 LIVE_KEYWORDS = {
     "when", "date", "release", "latest", "recent", "today", "this week",
     "breaking", "update", "news", "launched", "announced", "died", "death",
@@ -108,42 +125,76 @@ SKIP_HOST_PARTS = {
 }
 
 
+# ---------------- Browser agent (webagent.py) ----------------
+def should_browse(query: str) -> bool:
+    """True when the user wants Hope to actually open/control a page."""
+    q = (query or "").strip()
+    if not q:
+        return False
+    # Never treat code generation as browsing
+    if CODE_INTENT_RE.search(q) and not BROWSE_RE.search(q):
+        return False
+    if LINK_FOLLOWUP_ONLY_RE.match(q):
+        return False
+    if BROWSE_RE.search(q):
+        return True
+    # URL + action intent
+    if re.search(r"https?://", q) and re.search(
+        r"\b(what|find|get|read|tell|summarize|check|open|go)\b", q, re.I
+    ):
+        return True
+    return False
+
+
+def browse_and_summarize(query: str) -> str:
+    """
+    Run Gemini Computer Use + Playwright via webagent.py.
+    Returns a spoken-friendly summary string, or "" on failure/unavailable.
+    """
+    try:
+        from webagent import browse_sync
+    except Exception as e:
+        print(f"[LiveWeb] webagent import failed: {e}")
+        return ""
+    try:
+        print(f"[LiveWeb] Using Computer Use browser for: {query}")
+        result = browse_sync(query)
+        return (result or "").strip()
+    except Exception as e:
+        print(f"[LiveWeb] browse_and_summarize error: {e}")
+        return ""
+
+
 # ---------------- Public API ----------------
 def needs_live_data(query: str) -> bool:
     q = (query or "").strip()
     if not q:
         return False
-
     # Never live-search when user wants code/HTML written in chat
-    if CODE_INTENT_RE.search(q):
+    if CODE_INTENT_RE.search(q) and not should_browse(q):
         return False
-
     # Never live-search pure "send me the link" style follow-ups
     if LINK_FOLLOWUP_ONLY_RE.match(q):
         return False
-
+    # Real browser jobs still count as live
+    if should_browse(q):
+        return True
     low = q.lower()
-
     if DEATH_PATTERN.search(low):
         return True
-
     # Only true site lookups (with a target), not bare "link" / "website"
     if SITE_PATTERN.search(q):
         return True
-
     if any(k in low for k in LIVE_KEYWORDS):
         return True
-
     if q.endswith("?") and re.search(r"\b[A-Z][a-z]+\b", q):
         return True
-
     return False
 
 
 def correct_name_spelling(name: str) -> str:
     if not _SPELL_AVAILABLE or not name:
         return name
-
     corrections = {
         "kirl": "kirk",
         "charlie kirl": "charlie kirk"
@@ -152,7 +203,6 @@ def correct_name_spelling(name: str) -> str:
     for wrong, right in corrections.items():
         if wrong in low_name:
             return re.sub(re.escape(wrong), right, name, count=1, flags=re.IGNORECASE)
-
     if jellyfish:
         if jellyfish.jaro_winkler_similarity(low_name, "kirk") > 0.8:
             parts = name.split()
@@ -165,9 +215,21 @@ def correct_name_spelling(name: str) -> str:
 def perform_live_search(query: str, max_results: int = 8) -> Tuple[Optional[str], Optional[str]]:
     """
     Returns: (raw_text, analyzed_text)
+
+    Browse intents go through webagent first.
+    Everything else uses DuckDuckGo snippet search.
     """
     if not needs_live_data(query):
         return None, None
+
+    # -------- Real browser surfing (Gemini Computer Use) --------
+    if should_browse(query):
+        browsed = browse_and_summarize(query)
+        if browsed:
+            # raw + analyzed both carry the agent summary so tone can use it
+            return browsed, browsed
+        # Fall through to normal search if agent missing / failed
+        print("[LiveWeb] Browser agent unavailable — falling back to snippet search.")
 
     corrected_query = query
     entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
@@ -270,7 +332,6 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     """Pick the most likely official site result."""
     if not results:
         return None
-
     q = re.sub(r"[^a-z0-9\s]", " ", (query or "").lower())
     stop = {
         "what", "is", "the", "site", "website", "url", "link", "for", "official",
@@ -279,7 +340,6 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     }
     tokens = [t for t in q.split() if t and t not in stop]
     brand = tokens[0] if tokens else ""
-
     scored = []
     for r in results:
         href = _normalize_url(r.get("href") or "")
@@ -289,7 +349,6 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
         score = 0
         title = (r.get("title") or "").lower()
         body = (r.get("body") or "").lower()
-
         if any(x in host for x in SKIP_HOST_PARTS):
             score -= 40
         if brand and brand in host:
@@ -305,9 +364,7 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
             score += 8
         elif path.count("/") >= 3:
             score -= 5
-
         scored.append((score, {**r, "href": href}))
-
     if not scored:
         return None
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -497,10 +554,13 @@ if __name__ == "__main__":
         "write me a html code for a dropshipping website",
         "write the code out for a website",
         "no write one in chat",
+        "go to home-assistant.io and tell me what it can do",
+        "open https://example.com and summarize the page",
     ]
     print(f"[Info] DDG available: {_DDG_AVAILABLE}; {_DDG_IMPORT_ERR or ''}")
     for t in tests:
         print("\nQuery:", t)
+        print("  should_browse:", should_browse(t))
         if needs_live_data(t):
             raw, analyzed = perform_live_search(t)
             print("RAW:", (raw[:200] + "..." if raw and len(raw) > 200 else raw))
