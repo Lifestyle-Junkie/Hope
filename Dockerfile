@@ -34,5 +34,6 @@ RUN playwright install chromium
 COPY . .
 
 ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
 # 2 workers so /browse-frame can answer while /ask is browsing
 CMD gunicorn backend:app -b 0.0.0.0:$PORT --workers 2 --timeout 120
