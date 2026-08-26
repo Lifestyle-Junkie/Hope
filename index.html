@@ -381,6 +381,10 @@
       background: var(--bar-bg);
       box-shadow: 0 0 12px var(--neon-dim);
     }
+    #search:checked + label {
+      background: rgba(0,255,213,.18);
+      box-shadow: 0 0 16px var(--neon-dim);
+    }
     .right-buttons {
       display: flex;
       gap: 1rem;
@@ -588,9 +592,7 @@
       justify-content: center;
       overflow: hidden;
     }
-    #browser-panel.expanded .bp-frame-wrap {
-      min-height: 420px;
-    }
+    #browser-panel.expanded .bp-frame-wrap { min-height: 420px; }
     #browser-panel .bp-frame-wrap img {
       width: 100%;
       height: auto;
@@ -599,9 +601,7 @@
       display: block;
       background: #111;
     }
-    #browser-panel.expanded .bp-frame-wrap img {
-      max-height: 680px;
-    }
+    #browser-panel.expanded .bp-frame-wrap img { max-height: 680px; }
     #browser-panel .bp-placeholder {
       color: rgba(191,254,243,0.45);
       font-size: 0.85rem;
@@ -637,10 +637,10 @@
     </div>
     <div class="bp-url" id="bp-url">Waiting…</div>
     <div class="bp-frame-wrap" id="bp-frame-wrap">
-      <div class="bp-placeholder" id="bp-placeholder">Opening browser…</div>
+      <div class="bp-placeholder" id="bp-placeholder">Turn on the globe to browse</div>
       <img id="bp-image" alt="Browser screenshot" style="display:none;" />
     </div>
-    <div class="bp-log" id="bp-log">—</div>
+    <div class="bp-log" id="bp-log">Browse mode off</div>
   </div>
   <main>
     <div id="chat-thread"></div>
@@ -683,7 +683,7 @@
             <div class="button-bar">
               <div class="left-buttons">
                 <input id="search" type="checkbox" />
-                <label for="search" title="Search mode">
+                <label for="search" title="Browse mode — tap to use the live browser">
                   <svg viewBox="0 0 16 16" fill="var(--neon)" height="20" width="20" xmlns="http://www.w3.org/2000/svg">
                     <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8m7.5-6.923c-.67.204-1.335.82-1.887 1.855q-.215.403-.395.872c.705.157 1.472.257 2.282.287zM4.249 3.539q.214-.577.481-1.078a7 7 0 0 1 .597-.933A7 7 0 0 0 3.051 3.05q.544.277 1.198.49zM3.509 7.5c.036-1.07.188-2.087.436-3.008a9 9 0 0 1-1.565-.667A6.96 6.96 0 0 0 1.018 7.5zm1.4-2.741a12.3 12.3 0 0 0-.4 2.741H7.5V5.091c-.91-.03-1.783-.145-2.591-.332M8.5 5.09V7.5h2.99a12.3 12.3 0 0 0-.399-2.741c-.808.187-1.681.301-2.591.332zM4.51 8.5c.035.987.176 1.914.399 2.741A13.6 13.6 0 0 1 7.5 10.91V8.5zm3.99 0v2.409c.91.03 1.783.145 2.591.332.223-.827.364-1.754.4-2.741zm-3.282 3.696q.18.469.395.872c.552 1.035 1.218 1.65 1.887 1.855V11.91c-.81.03-1.577.13-2.282.287zm.11 2.276a7 7 0 0 1-.598-.933 9 9 0 0 1-.481-1.079 8.4 8.4 0 0 0-1.198.49 7 7 0 0 0 2.276 1.522zm-1.383-2.964A13.4 13.4 0 0 1 3.508 8.5h-2.49a6.96 6.96 0 0 0 1.362 3.675c.47-.258.995-.482 1.565-.667m6.728 2.964a7 7 0 0 0 2.275-1.521 8.4 8.4 0 0 0-1.197-.49 9 9 0 0 1-.481 1.078 7 7 0 0 1-.597.933M8.5 11.909v3.014c.67-.204 1.335-.82 1.887-1.855q.216-.403.395-.872A12.6 12.6 0 0 0 8.5 11.91zm3.555-.401c.57.185 1.095.409 1.565.667A6.96 6.96 0 0 0 14.982 8.5h-2.49a13.4 13.4 0 0 1-.437 3.008M14.982 7.5a6.96 6.96 0 0 0-1.362-3.675c-.47.258-.995.482-1.565.667.248.92.4 1.938.437 3.008zM11.27 2.461q.266.502.482 1.078a8.4 8.4 0 0 0 1.196-.49 7 7 0 0 0-2.275-1.52c.218.283.418.597.597.932m-.488 1.343a8 8 0 0 0-.395-.872C9.835 1.897 9.17 1.282 8.5 1.077V4.09c.81-.03 1.577-.13 2.282-.287z"/>
                   </svg>
@@ -716,6 +716,7 @@
   </main>
   <script>
     window.BACKEND_URL = 'https://hope-production-7e9d.up.railway.app';
+    window.HOPE_BROWSE_MODE = false;
   </script>
   <script src="typing-animation.js"></script>
   <script src="js/md.js"></script>
@@ -733,6 +734,7 @@
       const hideBtn = document.getElementById('bp-minimize');
       const stopBtn = document.getElementById('bp-stop');
       const expandBtn = document.getElementById('bp-expand');
+      const searchToggle = document.getElementById('search');
       const BACKEND = () => (window.BACKEND_URL || '').replace(/\/$/, '');
       let pollTimer = null;
       let lastImage = null;
@@ -740,8 +742,12 @@
       let userHidden = false;
       let wasActive = false;
 
-      const BROWSE_RE = /\b(go to|open|visit|navigate|browse|surf|check (the|this|that) (page|site|website)|read (the|this|that) (page|site|article)|https?:\/\/)/i;
-
+      function browseModeOn() {
+        return !!(searchToggle && searchToggle.checked);
+      }
+      function syncFlag() {
+        window.HOPE_BROWSE_MODE = browseModeOn();
+      }
       function isStopped() {
         return sessionStorage.getItem(STOP_KEY) === '1';
       }
@@ -749,9 +755,8 @@
         if (on) sessionStorage.setItem(STOP_KEY, '1');
         else sessionStorage.removeItem(STOP_KEY);
       }
-
       function showPanel() {
-        if (userHidden || isStopped()) return;
+        if (userHidden || isStopped() || !browseModeOn()) return;
         panel.classList.add('visible');
       }
       function hidePanel() {
@@ -772,15 +777,13 @@
         placeholder.style.display = 'block';
         placeholder.textContent = message || 'Opening browser…';
       }
-
       function applyState(state) {
-        if (!state || isStopped()) return;
+        if (!state || isStopped() || !browseModeOn()) return;
         const active = !!state.active;
         const image = state.image || null;
         const log = state.log || '';
         const url = state.url || '';
         const updatedAt = Number(state.updated_at || 0);
-
         if (active && !wasActive) {
           userHidden = false;
           resetFrame('Opening browser…');
@@ -807,9 +810,8 @@
           resetFrame('Opening browser…');
         }
       }
-
       async function pollOnce() {
-        if (isStopped()) return;
+        if (isStopped() || !browseModeOn()) return;
         try {
           const res = await fetch(BACKEND() + '/browse-frame?ts=' + Date.now(), {
             method: 'GET',
@@ -819,39 +821,47 @@
           applyState(await res.json());
         } catch (e) {}
       }
-
       function startPolling() {
-        if (isStopped()) return;
+        if (isStopped() || !browseModeOn()) return;
         if (pollTimer) return;
         pollOnce();
         pollTimer = setInterval(pollOnce, 600);
       }
-
+      function enterBrowseMode() {
+        setStopped(false);
+        userHidden = false;
+        wasActive = false;
+        syncFlag();
+        resetFrame('Browse mode on — ask Hope to open a site');
+        urlEl.textContent = 'Browse mode';
+        logEl.textContent = 'Live browser armed';
+        showPanel();
+        panel.classList.add('active');
+        startPolling();
+      }
+      function exitBrowseMode() {
+        syncFlag();
+        stopPolling();
+        hidePanel();
+        panel.classList.remove('expanded');
+        if (expandBtn) expandBtn.textContent = 'Bigger';
+        urlEl.textContent = 'Waiting…';
+        logEl.textContent = 'Browse mode off';
+      }
       function stopBrowsing() {
         setStopped(true);
         userHidden = true;
         wasActive = false;
+        if (searchToggle) searchToggle.checked = false;
+        syncFlag();
         stopPolling();
         hidePanel();
         panel.classList.remove('expanded');
         if (expandBtn) expandBtn.textContent = 'Bigger';
         resetFrame('Browsing stopped');
         urlEl.textContent = 'Stopped';
-        logEl.textContent = 'Panel off until you open a site again';
+        logEl.textContent = 'Turn on the globe to browse again';
         fetch(BACKEND() + '/browse-stop', { method: 'POST' }).catch(() => {});
-      }
-
-      function maybeStartFromText(text) {
-        if (!text || !BROWSE_RE.test(text)) return;
-        setStopped(false);
-        userHidden = false;
-        wasActive = false;
-        resetFrame('Starting new browse…');
-        urlEl.textContent = 'Starting…';
-        logEl.textContent = 'Hope is opening the web…';
-        showPanel();
-        panel.classList.add('active');
-        startPolling();
       }
 
       window.HopeBrowserPanel = {
@@ -859,39 +869,30 @@
         show: showPanel,
         hide: hidePanel,
         stop: stopBrowsing,
-        watchText: maybeStartFromText,
-        reset: () => resetFrame('Ready'),
+        watchText: function () {},
+        isBrowseMode: browseModeOn,
+        reset: function () { resetFrame('Ready'); }
       };
 
-      hideBtn.addEventListener('click', () => {
+      if (searchToggle) {
+        searchToggle.addEventListener('change', function () {
+          if (searchToggle.checked) enterBrowseMode();
+          else exitBrowseMode();
+        });
+      }
+      hideBtn.addEventListener('click', function () {
         userHidden = true;
         hidePanel();
       });
-
-      stopBtn.addEventListener('click', stopBrowsing);
-
-      expandBtn.addEventListener('click', () => {
-        const on = panel.classList.toggle('expanded');
-        expandBtn.textContent = on ? 'Smaller' : 'Bigger';
-      });
-
-      const ta = document.getElementById('chat-input');
-      const submitBtn = document.getElementById('submitBtn');
-      if (submitBtn) {
-        submitBtn.addEventListener('click', () => {
-          maybeStartFromText(ta && ta.value);
-        }, true);
+      if (stopBtn) stopBtn.addEventListener('click', stopBrowsing);
+      if (expandBtn) {
+        expandBtn.addEventListener('click', function () {
+          const on = panel.classList.toggle('expanded');
+          expandBtn.textContent = on ? 'Smaller' : 'Bigger';
+        });
       }
-      if (ta) {
-        ta.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            maybeStartFromText(ta.value);
-          }
-        }, true);
-      }
-
-      // Do not auto-poll after Stop + reload
-      if (!isStopped()) startPolling();
+      syncFlag();
+      if (browseModeOn() && !isStopped()) startPolling();
     })();
   </script>
 </body>
