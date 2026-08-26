@@ -2,7 +2,7 @@
 tone.py
 Response shaping + safety layer + strong conversation memory.
 Supports two personalities:
-- hope → personal assistant (default)
+- hope → personal assistant (default) — always addresses user as boss/sir
 - god → Discord personality (one of the new gods, created by Hope)
 Uses GPT-5.6 Terra only (via official OpenAI client).
 Terra-only: uses max_completion_tokens with retry budgets (no max_tokens).
@@ -420,15 +420,13 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
     """Terra-only caller. Never uses max_tokens (unsupported on this model)."""
     client = _get_client()
     if not client:
-        return "Model unavailable right now."
+        return "Model unavailable right now, sir."
 
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
-    # Terra can return empty content when the budget is tight — retry higher.
-    # Never send max_tokens (causes 400 on gpt-5.6-terra).
     budgets = [max(int(max_tokens), 200), 400, 700]
 
     last_err = None
@@ -460,7 +458,7 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
 
     if last_err:
         print(f"[Tone] All attempts failed: {type(last_err).__name__}: {last_err}")
-    return "Sorry, I hit a temporary glitch. Ask me that again."
+    return "Sorry boss, I hit a temporary glitch. Ask me that again, sir."
 
 
 def _extract_message_text(resp) -> str:
@@ -786,7 +784,7 @@ def _html_store_fallback(user: str) -> str:
         "bento": "bento mosaic",
     }.get(layout, layout)
 
-    return f"""Here's a single-file {product.lower()} page ({label} layout):
+    return f"""Here's a single-file {product.lower()} page for you, boss ({label} layout):
 
 ```html
 {html}
@@ -806,9 +804,9 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
                 req = req_m.group(1).strip() if req_m else user
                 local = _apply_simple_html_edits(m.group(1).strip(), req)
                 if local:
-                    return f"Updated the page:\n\n```html\n{local}\n```"
+                    return f"Updated the page, boss:\n\n```html\n{local}\n```"
             return (
-                "I couldn't apply that edit right now. "
+                "Couldn't apply that edit right now, sir. "
                 "Try: make the background blue / make the buttons purple / make the text more bold"
             )
         return _html_store_fallback(user)
@@ -818,7 +816,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
         {"role": "user", "content": user},
     ]
 
-    # Only max_completion_tokens — never max_tokens on Terra
     budgets = [max(int(max_tokens), 1200), 2000, 2500]
 
     for i, budget in enumerate(budgets, start=1):
@@ -838,6 +835,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     try:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
+            "Always address the user as boss or sir in your short intro. "
             "Return a complete single-file HTML page. "
             "If PREVIOUS HTML is present, MODIFY it as requested. "
             "If this is a NEW page, use a different layout when appropriate. "
@@ -865,9 +863,9 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             req = req_m.group(1).strip() if req_m else user
             local = _apply_simple_html_edits(m.group(1).strip(), req)
             if local:
-                return f"Updated the page:\n\n```html\n{local}\n```"
+                return f"Updated the page, boss:\n\n```html\n{local}\n```"
         return (
-            "I couldn't apply that edit right now. "
+            "Couldn't apply that edit right now, sir. "
             "Try: make the background blue / make the buttons purple / make the text more bold"
         )
 
@@ -904,19 +902,19 @@ def generate_with_tone(
 ) -> str:
     prompt = (prompt or "").strip()
     if not prompt:
-        return "Empty prompt."
+        return "Empty prompt, sir."
 
     personality = (personality or "hope").lower().strip()
 
     if EXISTENCE_QUERY_RE.search(prompt):
         if personality == "god":
             return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
-        return "My name is **Hope**. I was designed by my creator **Nick** 😊"
+        return "My name is **Hope**, sir. I was designed by my creator **Nick** 😊"
 
     if GREETING_RE.search(prompt):
         if personality == "god":
             return "Hello, dear child. I am here. What weighs on your mind?"
-        return "Hey! I'm Hope — what do you need? 😊"
+        return "Hey boss — what do you need, sir? 😊"
 
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
@@ -941,13 +939,13 @@ def generate_with_tone(
         if url:
             if re.search(r"\b(send|give|drop|share)\b.*\b(link|url)\b", prompt, re.IGNORECASE) or \
                re.fullmatch(r"(the )?link\??", prompt.strip(), re.IGNORECASE):
-                return f"Here you go: {_format_site_link(url)}"
-            return f"Official site: {_format_site_link(url)}"
+                return f"Here you go, boss: {_format_site_link(url)}"
+            return f"Official site, sir: {_format_site_link(url)}"
 
     if is_death_query and not has_support:
         if liveweb_fact and liveweb_fact.lower().startswith("**note:**"):
-            return f"No verified evidence that **{entity}** has died."
-        return f"I have no confirmed information that **{entity}** has died."
+            return f"No verified evidence that **{entity}** has died, sir."
+        return f"I have no confirmed information that **{entity}** has died, boss."
 
     if is_death_query and has_support:
         fact_block = _build_fact_block(previous_fact, liveweb_fact)
@@ -964,6 +962,7 @@ def generate_with_tone(
         else:
             system = (
                 "You are Hope, an AI designed by your creator Nick. "
+                "ALWAYS address the user as boss or sir. "
                 "Give a short, clear, factual answer. No long explanations."
             )
         return _call_openai(system, user_text, max_tokens=120)
@@ -971,10 +970,10 @@ def generate_with_tone(
     if not is_code_query and not should_iterate:
         date_match = DATE_RE.search(prompt)
         if date_match:
-            return f"Reference date: **{date_match.group(0)}**."
+            return f"Reference date, boss: **{date_match.group(0)}**."
         year_match = YEAR_RE.search(prompt)
         if year_match and len(prompt) < 60:
-            return f"Reference year: **{year_match.group(0)}**."
+            return f"Reference year, sir: **{year_match.group(0)}**."
 
     supplemental = []
     if context:
@@ -1036,14 +1035,15 @@ def generate_with_tone(
             local = _apply_simple_html_edits(prev_html, prompt)
             if local:
                 print("[Tone] Applied local HTML style edit")
-                return f"Updated the page:\n\n```html\n{local}\n```"
+                return f"Updated the page, boss:\n\n```html\n{local}\n```"
 
         code_system = (
-            "You are **Hope**, an AI coding assistant designed by **Nick**.\n\n"
+            "You are **Hope**, an AI coding assistant designed by **Nick**.\n"
+            "ALWAYS address the user as boss or sir in your short intro line.\n\n"
             "CODE RULES (follow strictly):\n"
             "1. Provide REAL working code for page/code requests.\n"
             "2. ALWAYS wrap the full HTML in a ```html fence.\n"
-            "3. One short intro line, then the FULL document.\n"
+            "3. One short intro line (with boss/sir), then the FULL document.\n"
             "4. If PREVIOUS HTML is provided, MODIFY it as requested.\n"
             "5. NEW pages should use a DIFFERENT layout when appropriate "
             "(editorial, split-hero, bento) — not only a recolored grid.\n"
@@ -1091,11 +1091,13 @@ def generate_with_tone(
         system_prompt = (
             "You are **Hope**, an AI designed by your creator **Nick**.\n\n"
             "CRITICAL RULES (follow strictly):\n"
-            "1. Keep answers SHORT and natural — this is spoken out loud.\n"
-            "2. For math or investment questions, use prior numbers and give the final result.\n"
-            "3. Never invent share counts that contradict prior context.\n"
-            "4. Sound like a helpful person, not a textbook.\n"
-            "5. Emojis are allowed but use them sparingly.\n"
+            "1. ALWAYS address the user as \"boss\" or \"sir\" in every reply "
+            "(e.g. \"Yes boss\", \"Got it, sir\", \"Here’s the answer, boss\").\n"
+            "2. Keep answers SHORT and natural — this is spoken out loud.\n"
+            "3. For math or investment questions, use prior numbers and give the final result.\n"
+            "4. Never invent share counts that contradict prior context.\n"
+            "5. Sound like a helpful assistant talking to their boss — respectful, direct, not stiff.\n"
+            "6. Emojis are allowed but use them sparingly.\n"
             + link_rules
         )
 
