@@ -10,13 +10,18 @@
     return document.getElementById(id);
   }
 
+  function isBrowseMode() {
+    const el = $("search");
+    if (el) return !!el.checked;
+    return !!window.HOPE_BROWSE_MODE;
+  }
+
   function autoresize() {
     const ta = $("chat-input");
     if (!ta) return;
     ta.style.height = "auto";
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }
-
   window.autoresize = autoresize;
 
   function addHopeBubble(text) {
@@ -29,7 +34,6 @@
     aiBubble.scrollIntoView({ behavior: "smooth", block: "end" });
     return aiBubble;
   }
-
   window.addHopeBubble = addHopeBubble;
 
   async function playWelcome() {
@@ -37,7 +41,6 @@
     welcomePlayed = true;
     window.hopeIsProcessing = true;
     if (window.setStatus) window.setStatus("Welcome…", true);
-
     let reply = "Welcome back. Want today's briefing, or just ask me something?";
     try {
       const res = await fetch(`${window.BACKEND_URL}/welcome`, { method: "GET" });
@@ -48,7 +51,6 @@
     } catch (e) {
       console.error("Welcome error:", e);
     }
-
     addHopeBubble(reply);
     try {
       if (window.setStatus) window.setStatus("Speaking…", true);
@@ -56,7 +58,6 @@
     } catch (e) {
       console.error("Welcome speak error:", e);
     }
-
     window.hopeIsProcessing = false;
     if (window.setStatus) window.setStatus('Listening for “Hope”…');
     if (window.startWakeWordMode) window.startWakeWordMode();
@@ -85,11 +86,12 @@
     const ta = $("chat-input");
     const chatThread = $("chat-thread");
     if (!ta || !chatThread) return;
-
     const text = ta.value.trim();
     if (!text) return;
     ta.value = "";
     autoresize();
+
+    window.HOPE_BROWSE_MODE = isBrowseMode();
 
     if (window.simulateChatResponse) {
       await window.simulateChatResponse(text, chatThread, 35);
@@ -110,7 +112,11 @@
       const res = await fetch(`${window.BACKEND_URL}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({
+          message: text,
+          concise: !!window.CONCISE_MODE,
+          browse_mode: isBrowseMode(),
+        }),
       });
       const data = await res.json();
       aiBubble.innerHTML = (window.mdToHTML || ((s) => s))(
@@ -124,7 +130,6 @@
   function initChat() {
     const ta = $("chat-input");
     const submitBtn = $("submitBtn");
-
     if (ta) {
       ["input", "change"].forEach((ev) => ta.addEventListener(ev, autoresize));
       ta.addEventListener("keydown", (e) => {
@@ -134,11 +139,9 @@
         }
       });
     }
-
     if (submitBtn) {
       submitBtn.addEventListener("click", handleSubmit);
     }
-
     document.querySelectorAll(".chat-marquee li").forEach((li) => {
       li.addEventListener("click", () => {
         if (!ta) return;
@@ -147,17 +150,14 @@
         ta.focus();
       });
     });
-
     document.body.addEventListener("click", unlockAudio, { once: true });
     document.body.addEventListener("touchstart", unlockAudio, { once: true });
-
     window.addEventListener("DOMContentLoaded", () => {
       document.body.classList.add("ready");
     });
     if (document.readyState !== "loading") {
       document.body.classList.add("ready");
     }
-
     console.log("[Chat] Ready");
   }
 
