@@ -9,7 +9,7 @@ import time
 import html
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse
-# ---------------- Package Import ----------------
+
 _DDG_IMPORT_ERR = None
 try:
     from ddgs import DDGS
@@ -28,7 +28,7 @@ try:
 except ImportError:
     _SPELL_AVAILABLE = False
     print("[LiveWeb] Install jellyfish for better name correction.")
-# ---------------- Patterns ----------------
+
 DEATH_PATTERN = re.compile(
     r"\b(how did|cause of death|what (?:killed|happened to)|did .* die|when did .* die|"
     r"die|died|death|killed|assassinated|passed away|dead|deceased|shot)\b",
@@ -57,7 +57,8 @@ CODE_INTENT_RE = re.compile(
 )
 BROWSE_RE = re.compile(
     r"\b("
-    r"go to|open|visit|navigate|browse|surf|"
+    r"go to|visit|navigate|browse|surf|"
+    r"open (?!source\b)|"
     r"look (this|that|it) up on the (site|page|website)|"
     r"on (the )?(site|page|website)|"
     r"click|fill (out|in)|scroll (down|up|to)|"
@@ -89,9 +90,8 @@ SKIP_HOST_PARTS = {
     "facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.",
     "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest."
 }
-# ---------------- Browser agent ----------------
+
 def should_browse(query: str, browse_mode: bool = False) -> bool:
-    """Computer Use only when the globe (browse_mode) is on."""
     if not browse_mode:
         return False
     q = (query or "").strip()
@@ -107,7 +107,8 @@ def should_browse(query: str, browse_mode: bool = False) -> bool:
         r"\b(what|find|get|read|tell|summarize|check|open|go)\b", q, re.I
     ):
         return True
-    return True  # globe on = user asked to use the live browser
+    return True
+
 def browse_and_summarize(query: str) -> str:
     try:
         from webagent import browse_sync
@@ -121,7 +122,7 @@ def browse_and_summarize(query: str) -> str:
     except Exception as e:
         print(f"[LiveWeb] browse_and_summarize error: {e}")
         return ""
-# ---------------- Public API ----------------
+
 def needs_live_data(query: str, browse_mode: bool = False) -> bool:
     q = (query or "").strip()
     if not q:
@@ -139,8 +140,8 @@ def needs_live_data(query: str, browse_mode: bool = False) -> bool:
         return True
     if any(k in low for k in LIVE_KEYWORDS):
         return True
-    # Do NOT treat every "Are there open source smart rings?" as live search
     return False
+
 def correct_name_spelling(name: str) -> str:
     if not _SPELL_AVAILABLE or not name:
         return name
@@ -159,6 +160,7 @@ def correct_name_spelling(name: str) -> str:
                 parts[-1] = "Kirk"
                 return " ".join(parts)
     return name
+
 def perform_live_search(
     query: str,
     max_results: int = 8,
@@ -192,6 +194,7 @@ def perform_live_search(
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
     return raw_text, analyzed
+
 def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
     out: List[dict] = []
     try:
@@ -224,6 +227,7 @@ def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
     except Exception as e:
         print(f"[LiveWeb] Search error: {e}")
     return out
+
 def _domain_ok(url: str) -> bool:
     if not url:
         return False
@@ -236,6 +240,7 @@ def _domain_ok(url: str) -> bool:
     except Exception as e:
         print(f"[LiveWeb] URL parse error for '{url}': {e}")
         return False
+
 def _normalize_url(url: str) -> str:
     if not url:
         return ""
@@ -243,6 +248,7 @@ def _normalize_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url.lstrip("/")
     return url
+
 def _pretty_domain(url: str) -> str:
     try:
         host = urlparse(url).netloc.lower()
@@ -251,6 +257,7 @@ def _pretty_domain(url: str) -> str:
         return host or url
     except Exception:
         return url
+
 def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     if not results:
         return None
@@ -294,6 +301,7 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     if best_score < 10:
         return None
     return best
+
 def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> str:
     death_re = re.compile(r"\b(die|died|death|killed|assassinated|shot)\b", re.IGNORECASE)
     entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
@@ -326,13 +334,16 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
     if len(merged) > char_limit:
         merged = merged[:char_limit].rsplit(" ", 1)[0] + "..."
     return merged
+
 def _clean_text(text: str) -> str:
     t = html.unescape(text or "")
     t = re.sub(r"\s+", " ", t)
     return t.strip(" -")
+
 def _extract_dates(text: str) -> List[str]:
     dates = DATE_PATTERN.findall(text or "")
     return list(dict.fromkeys(dates))
+
 def _extract_proper_nouns(text: str, max_items: int = 6) -> List[str]:
     matches = NOUN_PATTERN.findall(text or "")
     out = []
@@ -344,17 +355,21 @@ def _extract_proper_nouns(text: str, max_items: int = 6) -> List[str]:
         if m not in out:
             out.append(m)
     return out[:max_items]
+
 def _shorten(txt: str, limit: int) -> str:
     if len(txt) <= limit:
         return txt
     return txt[:limit].rsplit(" ", 1)[0] + "..."
+
 def _split_sentences(text: str) -> List[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text or "") if s.strip()]
+
 def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
     for s in _split_sentences(text):
         if keyword.lower() in s.lower():
             return s
     return None
+
 def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     q_low = (query or "").lower()
     is_death = bool(DEATH_PATTERN.search(q_low))
@@ -415,10 +430,13 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         return bold_once("No meaningful summary derived.")
     summary = _shorten(" ".join(sents), 420)
     return bold_once(summary)
+
 def safe_note(msg: str) -> str:
     return f"**Note:** {msg}"
+
 _cache: dict = {}
 _CACHE_TTL = 90
+
 def cached_perform_live_search(
     query: str,
     max_results: int = 8,
@@ -432,6 +450,7 @@ def cached_perform_live_search(
     raw, analyzed = perform_live_search(query, max_results=max_results, browse_mode=browse_mode)
     _cache[key] = {"time": now, "raw": raw, "analyzed": analyzed}
     return raw, analyzed
+
 if __name__ == "__main__":
     tests = [
         "are there opensource smart rings",
