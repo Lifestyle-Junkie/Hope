@@ -84,6 +84,28 @@ def denormalize_x(x: int, width: int) -> int:
 def denormalize_y(y: int, height: int) -> int:
     return int((int(y) / 1000) * height)
 
+def _looks_like_bot_wall(url: str, page_title: str = "") -> bool:
+    """Detect captcha / press-and-hold / bot-check pages."""
+    blob = f"{url} {page_title}".lower()
+    markers = (
+        "captcha",
+        "recaptcha",
+        "press & hold",
+        "press and hold",
+        "i'm not a robot",
+        "not a robot",
+        "unusual traffic",
+        "verify you are human",
+        "security check",
+        "bot detection",
+        "access denied",
+        "cf-browser-verification",
+        "challenge-platform",
+        "/sorry/",
+        "attention required",
+    )
+    return any(m in blob for m in markers)
+
 class WebAgent:
     def __init__(self):
         self.client = None
@@ -121,7 +143,7 @@ class WebAgent:
                     pass
                 elif fn_name == "navigate":
                     url = args.get("url") or ""
-                    # Soft-redirect Google search → DuckDuckGo to avoid captcha
+                    # Soft-redirect Google → DuckDuckGo to avoid captcha
                     low = url.lower()
                     if "google.com/search" in low or low.rstrip("/") in (
                         "https://www.google.com",
@@ -197,7 +219,7 @@ class WebAgent:
 
                 await asyncio.sleep(0.8)
 
-                # If we somehow landed on a blocked page, bounce to DuckDuckGo (not Google)
+                # Bounce off login/pay walls — not Google
                 if self._blocked_url(self.page.url):
                     await self.page.goto(START_URL, wait_until="domcontentloaded")
                     result_data = {"error": "Left a blocked page"}
@@ -248,6 +270,7 @@ class WebAgent:
         self.client = genai.Client(api_key=key)
         final_response = "I opened the web, boss, but didn’t get a clean summary."
         last_url = ""
+        hit_bot_wall = False
         print(f"[WebAgent] Goal: {prompt}")
 
         async def _emit(image_bytes: Optional[bytes], log: str, url: str = ""):
@@ -262,7 +285,14 @@ class WebAgent:
                     print(f"[WebAgent] update_callback error: {e}")
 
         async with async_playwright() as p:
-            self.browser = await p.chromium.launch(headless=HEADLESS)
+            self.browser = await p.chromium.launch(
+                headless=HEADLESS,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
             self.context = await self.browser.new_context(
                 viewport={"width": SCREEN_WIDTH, "height": SCREEN_HEIGHT},
                 user_agent=(
@@ -301,7 +331,10 @@ class WebAgent:
                                 "- Do not log into accounts or complete purchases.\n"
                                 "- Prefer opening direct URLs when the user names a site.\n"
                                 "- If you need a search engine, use DuckDuckGo (not Google).\n"
-                                "- Avoid Google if possible — it often blocks this browser.\n\n"
+                                "- Avoid Google if possible — it often blocks this browser.\n"
+                                "- If you hit a captcha, press-and-hold, or 'verify you are human' page, "
+                                "STOP and say the site is blocking automated access. "
+                                "Do NOT pretend you reached the real content.\n\n"
                                 "TASK:\n" + prompt
                             )
                         ),
@@ -346,7 +379,16 @@ class WebAgent:
                     print("[WebAgent] Done")
                     try:
                         shot = await self.page.screenshot(type="png")
-                        await _emit(shot, "Task finished", self.page.url)
+                        title = ""
+                        try:
+                            title = await self.page.title()
+                        except Exception:
+                            pass
+                        if _looks_like_bot_wall(self.page.url, title):
+                            hit_bot_wall = True
+                            await _emit(shot, "Blocked by site security check", self.page.url)
+                        else:
+                            await _emit(shot, "Task finished", self.page.url)
                     except Exception:
                         await _emit(None, "Task finished", last_url)
                     break
@@ -355,6 +397,24 @@ class WebAgent:
                 function_responses, shot = await self.get_function_responses(results)
                 last_url = self.page.url
                 actions_log = ", ".join([r[1] for r in results])
+
+                # Detect bot wall mid-run
+                title = ""
+                try:
+                    title = await self.page.title()
+                except Exception:
+                    pass
+                if _looks_like_bot_wall(last_url, title):
+                    hit_bot_wall = True
+                    await _emit(shot, "Blocked by site security check", last_url)
+                    final_response = (
+                        f"Boss, {last_url} is blocking automated access with a security check "
+                        f"(captcha / press-and-hold). I can't complete that verification from here. "
+                        f"Open it on your side, or try a different site."
+                    )
+                    print("[WebAgent] Bot wall detected — stopping early")
+                    break
+
                 await _emit(shot, f"Turn {turn + 1}: {actions_log}", last_url)
 
                 response_parts = [types.Part(function_response=fr) for fr in function_responses]
@@ -364,8 +424,21 @@ class WebAgent:
                 last_url = self.page.url
             except Exception:
                 pass
-            await self.browser.close()
 
+            try:
+                await self.browser.close()
+            except Exception as e:
+                print(f"[WebAgent] browser.close error: {e}")
+
+        if hit_bot_wall and last_url:
+            return (
+                f"{final_response}\n\nSource: {last_url}"
+                if "blocking" in final_response.lower() or "captcha" in final_response.lower()
+                else (
+                    f"Boss, that site is blocking automated access with a security check. "
+                    f"I can't pass captcha / press-and-hold from this browser.\n\nSource: {last_url}"
+                )
+            )
         if last_url:
             return f"{final_response}\n\nSource: {last_url}"
         return final_response
@@ -378,6 +451,7 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     BROWSE_STATE["url"] = ""
     BROWSE_STATE["updated_at"] = time.time()
     _write_browse_state()
+    print(f"[WebAgent] browse_sync START: {prompt[:160]}")
 
     async def _run():
         agent = WebAgent()
@@ -386,6 +460,7 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
     try:
         return asyncio.run(asyncio.wait_for(_run(), timeout=timeout_sec))
     except asyncio.TimeoutError:
+        print("[WebAgent] browse_sync TIMEOUT")
         return "That page took too long to finish browsing, boss. Try a more specific site."
     except RuntimeError:
         loop = asyncio.new_event_loop()
@@ -401,3 +476,4 @@ def browse_sync(prompt: str, timeout_sec: int = 90) -> str:
         BROWSE_STATE["log"] = BROWSE_STATE.get("log") or "Browser closed"
         BROWSE_STATE["updated_at"] = time.time()
         _write_browse_state()
+        print("[WebAgent] browse_sync END")
