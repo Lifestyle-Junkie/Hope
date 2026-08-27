@@ -386,11 +386,11 @@
       else if (S.asleep) statusState.textContent = "idle";
       else if (window.HOPE_BROWSE_MODE) statusState.textContent = "browse";
       else statusState.textContent = "online";
-      dock.classList.toggle("hide", inside || S.music || S.browse);
-      playerEl.classList.toggle("on", S.music); playerEl.classList.toggle("hide", inside);
-      browsePanel.classList.toggle("on", S.browse); browsePanel.classList.toggle("hide", inside);
+      dock.classList.toggle("hide", inside || S.music || S.browse || S.asleep);
+      playerEl.classList.toggle("on", S.music); playerEl.classList.toggle("hide", inside || S.asleep);
+      browsePanel.classList.toggle("on", S.browse); browsePanel.classList.toggle("hide", inside || S.asleep);
       pulsebar.classList.toggle("talk", !!speak); pulsebar.classList.toggle("hide", inside);
-      if (inside) settingsEl.classList.remove("on");
+      if (inside || S.asleep) settingsEl.classList.remove("on");
     }
     function frame(now) {
       const t = now * 0.001; const dt = Math.min(0.05, t - S.t || 0.016); S.t = t;
