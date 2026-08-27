@@ -6,95 +6,33 @@
   <title>Hope</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body {
-      height: 100%;
-      background: #05060a;
-      overflow: hidden;
-      font-family: "Segoe UI", "SF Pro Display", system-ui, sans-serif;
-      color: #e8f6ff;
-      user-select: none;
-    }
+    html, body { height: 100%; background: #05060a; overflow: hidden; font-family: "Segoe UI", "SF Pro Display", system-ui, sans-serif; color: #e8f6ff; user-select: none; }
     canvas#net { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
     .ui { position: fixed; inset: 0; z-index: 4; pointer-events: none; display: grid; place-items: center; }
-    .chat {
-      width: min(420px, 86vw); height: min(520px, 70vh);
-      pointer-events: auto; display: flex; flex-direction: column;
-      border-radius: 22px; background: rgba(8, 14, 26, 0.82);
-      border: 1px solid rgba(120, 200, 255, 0.28);
-      box-shadow: 0 0 40px rgba(40, 140, 255, 0.18), inset 0 0 40px rgba(30, 80, 160, 0.12);
-      backdrop-filter: blur(14px); opacity: 0; transform: scale(0.82);
-      transition: opacity 0.35s ease, transform 0.35s ease; overflow: hidden;
-      user-select: text;
-    }
+    .chat { width: min(420px, 86vw); height: min(520px, 70vh); pointer-events: auto; display: flex; flex-direction: column; border-radius: 22px; background: rgba(8, 14, 26, 0.82); border: 1px solid rgba(120, 200, 255, 0.28); box-shadow: 0 0 40px rgba(40, 140, 255, 0.18), inset 0 0 40px rgba(30, 80, 160, 0.12); backdrop-filter: blur(14px); opacity: 0; transform: scale(0.82); transition: opacity 0.35s ease, transform 0.35s ease; overflow: hidden; user-select: text; }
     .chat.on { opacity: 1; transform: scale(1); }
-    .chat header {
-      display: flex; align-items: center; gap: 10px; padding: 14px 16px;
-      border-bottom: 1px solid rgba(120, 200, 255, 0.15);
-      font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; color: #bfe9ff;
-    }
-    .chat header button {
-      margin-left: auto; background: transparent; border: 1px solid rgba(140, 210, 255, 0.3);
-      color: #d7f3ff; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 11px;
-    }
+    .chat header { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid rgba(120, 200, 255, 0.15); font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; color: #bfe9ff; }
+    .chat header button { margin-left: auto; background: transparent; border: 1px solid rgba(140, 210, 255, 0.3); color: #d7f3ff; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 11px; }
     .msgs { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
-    .bubble, .chat-bubble {
-      max-width: 82%; padding: 9px 12px; border-radius: 14px; font-size: 14px; line-height: 1.4;
-      user-select: text; align-self: flex-start; background: rgba(40, 90, 160, 0.45);
-      border: 1px solid rgba(120, 200, 255, 0.2); white-space: pre-wrap; word-break: break-word;
-      pointer-events: auto; position: relative; z-index: 2;
-    }
-    .bubble.me, .chat-bubble.user {
-      align-self: flex-end; background: rgba(180, 230, 255, 0.16);
-      border: 1px solid rgba(180, 230, 255, 0.25);
-    }
-    .chat-bubble a, .bubble a {
-      color: #79d2ff !important;
-      text-decoration: underline !important;
-      cursor: pointer !important;
-      pointer-events: auto !important;
-      position: relative;
-      z-index: 20;
-      word-break: break-all;
-    }
+    .bubble, .chat-bubble { max-width: 82%; padding: 9px 12px; border-radius: 14px; font-size: 14px; line-height: 1.4; user-select: text; align-self: flex-start; background: rgba(40, 90, 160, 0.45); border: 1px solid rgba(120, 200, 255, 0.2); white-space: pre-wrap; word-break: break-word; pointer-events: auto; position: relative; z-index: 2; }
+    .bubble.me, .chat-bubble.user { align-self: flex-end; background: rgba(180, 230, 255, 0.16); border: 1px solid rgba(180, 230, 255, 0.25); }
+    .chat-bubble a, .bubble a { color: #79d2ff !important; text-decoration: underline !important; cursor: pointer !important; pointer-events: auto !important; position: relative; z-index: 20; word-break: break-all; }
     .chat-bubble img { max-width: 180px; border-radius: 10px; display: block; margin-top: 6px; }
     form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid rgba(120, 200, 255, 0.15); align-items: flex-end; }
-    form textarea, form input {
-      flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(140, 210, 255, 0.25);
-      color: #eef9ff; border-radius: 12px; padding: 10px 12px; outline: none; font-size: 14px;
-      font-family: inherit; resize: none; max-height: 120px;
-    }
+    form textarea, form input { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(140, 210, 255, 0.25); color: #eef9ff; border-radius: 12px; padding: 10px 12px; outline: none; font-size: 14px; font-family: inherit; resize: none; max-height: 120px; }
     form button { background: #79d2ff; color: #041018; border: 0; border-radius: 12px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
     .preview-row { display: none; padding: 0 12px 8px; align-items: center; gap: 8px; }
     .preview-row.on { display: flex; }
     .preview-row img { width: 48px; height: 48px; object-fit: cover; border-radius: 8px; }
     .preview-row button { background: transparent; border: 1px solid rgba(140,210,255,.3); color: #d7f3ff; border-radius: 999px; padding: 2px 8px; cursor: pointer; }
-    .dock {
-      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 6;
-      display: flex; gap: 10px; pointer-events: auto;
-      transition: opacity 0.45s ease, transform 0.45s ease;
-    }
+    .dock { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 6; display: flex; gap: 10px; pointer-events: auto; transition: opacity 0.45s ease, transform 0.45s ease; }
     .dock.hide { opacity: 0; pointer-events: none; transform: translate(-50%, 10px); }
     .d3wrapper { position: relative; width: 38px; height: 34px; transform-style: preserve-3d; perspective: 80px; display: flex; align-items: center; justify-content: center; }
-    .d3wrapper .cover {
-      background: #05070e; height: 34px; width: 38px; border-radius: 7px; transform: rotateX(13deg);
-      position: absolute; z-index: 1; display: flex; align-items: center; justify-content: center;
-      padding-bottom: 5px; box-shadow: 0 1px 1px 1px rgba(150, 220, 255, 0.35);
-    }
-    .d3wrapper .button {
-      cursor: pointer; border: none; border-bottom: 1px solid rgba(180, 230, 255, 0.55);
-      background: linear-gradient(180deg, #1a2a3d 0%, #0c1522 100%);
-      box-shadow: 0 3px 0 0.2px #061018; height: 30px; width: 34px; border-radius: 6px;
-      transform: rotateX(13deg); z-index: 2; position: absolute; transition: 80ms;
-      color: #bfe9ff; display: grid; place-items: center;
-    }
-    .d3wrapper .button:active, .d3wrapper .button.on {
-      box-shadow: 0 3px 0 0.2px transparent; transform: translateY(3px) rotateX(13deg); color: #e8f7ff;
-    }
+    .d3wrapper .cover { background: #05070e; height: 34px; width: 38px; border-radius: 7px; transform: rotateX(13deg); position: absolute; z-index: 1; display: flex; align-items: center; justify-content: center; padding-bottom: 5px; box-shadow: 0 1px 1px 1px rgba(150, 220, 255, 0.35); }
+    .d3wrapper .button { cursor: pointer; border: none; border-bottom: 1px solid rgba(180, 230, 255, 0.55); background: linear-gradient(180deg, #1a2a3d 0%, #0c1522 100%); box-shadow: 0 3px 0 0.2px #061018; height: 30px; width: 34px; border-radius: 6px; transform: rotateX(13deg); z-index: 2; position: absolute; transition: 80ms; color: #bfe9ff; display: grid; place-items: center; }
+    .d3wrapper .button:active, .d3wrapper .button.on { box-shadow: 0 3px 0 0.2px transparent; transform: translateY(3px) rotateX(13deg); color: #e8f7ff; }
     .d3wrapper svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-    .player, .browse-panel {
-      position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(12px);
-      z-index: 7; opacity: 0; pointer-events: none; transition: opacity 0.35s ease, transform 0.35s ease;
-    }
+    .player, .browse-panel { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(12px); z-index: 7; opacity: 0; pointer-events: none; transition: opacity 0.35s ease, transform 0.35s ease; }
     .player.on, .browse-panel.on { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
     .player.hide, .browse-panel.hide { opacity: 0; pointer-events: none; }
     .card { position: relative; width: 260px; height: 130px; background: #0b1018; border: 1px solid rgba(120, 200, 255, 0.18); border-radius: 10px; padding: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
@@ -128,21 +66,12 @@
     .line-4 { animation: playing 1s ease-in-out infinite; }
     .line-5 { animation: playing 1s ease-in-out infinite; animation-delay: .4s; }
     @keyframes playing { 0%,100% { transform: scaleY(0.1); } 33% { transform: scaleY(0.6); } 66% { transform: scaleY(0.9); } }
-    .settings {
-      position: fixed; right: 18px; bottom: 70px; z-index: 8; width: 230px; padding: 12px 14px;
-      border-radius: 14px; background: rgba(8, 14, 24, 0.88); border: 1px solid rgba(120, 200, 255, 0.22);
-      backdrop-filter: blur(12px); opacity: 0; pointer-events: none; transform: translateY(8px);
-      transition: opacity 0.3s ease, transform 0.3s ease;
-    }
+    .settings { position: fixed; right: 18px; bottom: 70px; z-index: 8; width: 230px; padding: 12px 14px; border-radius: 14px; background: rgba(8, 14, 24, 0.88); border: 1px solid rgba(120, 200, 255, 0.22); backdrop-filter: blur(12px); opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity 0.3s ease, transform 0.3s ease; }
     .settings.on { opacity: 1; pointer-events: auto; transform: translateY(0); }
     .settings h3 { font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: #bfe9ff; margin-bottom: 10px; }
     .settings label { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #d7eef8; padding: 6px 0; }
     .settings input { accent-color: #79d2ff; }
-    .pulsebar {
-      position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
-      z-index: 6; width: min(720px, 86vw); height: 56px; pointer-events: none;
-      opacity: 0.9; transition: opacity 0.35s ease;
-    }
+    .pulsebar { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 6; width: min(720px, 86vw); height: 56px; pointer-events: none; opacity: 0.9; transition: opacity 0.35s ease; }
     .pulsebar.hide { opacity: 0; }
     .pulsebar svg { width: 100%; height: 100%; overflow: hidden; }
     .pulsebar .track { fill: none; stroke: #79d2ff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 6px rgba(121,210,255,0.45)); }
@@ -155,16 +84,8 @@
     .pulsebar .scroll { animation: none; }
     .pulsebar.talk .scroll { animation: pulseTalk 1.2s linear infinite; }
     @keyframes pulseTalk { from { transform: translateX(0); } to { transform: translateX(-400px); } }
-    .status {
-      position: fixed; top: 16px; left: 16px; z-index: 8; pointer-events: none;
-      display: flex; align-items: center; gap: 8px;
-      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: #bfe9ff;
-    }
-    .status .dot {
-      width: 8px; height: 8px; border-radius: 50%; background: #4ad0ff;
-      box-shadow: 0 0 8px rgba(74,208,255,0.9);
-      animation: liveDot 1.6s ease-in-out infinite;
-    }
+    .status { position: fixed; top: 16px; left: 16px; z-index: 8; pointer-events: none; display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: #bfe9ff; }
+    .status .dot { width: 8px; height: 8px; border-radius: 50%; background: #4ad0ff; box-shadow: 0 0 8px rgba(74,208,255,0.9); animation: liveDot 1.6s ease-in-out infinite; }
     .status .state { letter-spacing: 0.12em; color: #8fd8ff; font-size: 10px; }
     body.asleep .status { color: #ffd8b0; }
     body.asleep .status .dot { background: #ff8a3a; box-shadow: 0 0 8px rgba(255,138,58,0.9); }
@@ -174,63 +95,21 @@
     body.listening .status .state { color: #8fffc4; }
     #btnMic.listening { color: #4aff9a !important; box-shadow: 0 0 12px rgba(74,255,154,0.65); }
     #btnMic.listening svg { animation: micPulse 1s ease-in-out infinite; }
-    @keyframes micPulse {
-      0%,100% { transform: scale(1); opacity: 1; }
-      50% { transform: scale(1.15); opacity: 0.7; }
-    }
+    @keyframes micPulse { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.15); opacity: 0.7; } }
     @keyframes liveDot { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.72); opacity: 0.7; } }
     @media (max-width: 720px) { .dock, .player, .browse-panel { bottom: 16px; } .pulsebar { top: 10px; height: 44px; } }
   </style>
 </head>
 <body>
   <canvas id="net"></canvas>
-  <div class="status" id="status">
-    <span class="dot"></span>
-    <span class="lbl">HOPE</span>
-    <span class="state" id="statusState">online</span>
-  </div>
-  <div class="pulsebar" id="pulsebar">
-    <svg viewBox="0 0 800 80" preserveAspectRatio="none">
-      <g class="flat">
-        <path class="track" d="M16 40 H784"/>
-        <circle class="dots" cx="16" cy="40" r="3.2"/>
-        <circle class="dots" cx="784" cy="40" r="3.2"/>
-      </g>
-      <g class="wave">
-        <g class="scroll">
-          <path class="track" d="M0 40 H80 L110 22 L140 40 H190 L215 58 L250 40 H280 L300 28 L318 40 L340 8 L355 72 L372 40 H400
-            M400 40 H480 L510 22 L540 40 H590 L615 58 L650 40 H680 L700 28 L718 40 L740 8 L755 72 L772 40 H800
-            M800 40 H880 L910 22 L940 40 H990 L1015 58 L1050 40 H1080 L1100 28 L1118 40 L1140 8 L1155 72 L1172 40 H1200"/>
-        </g>
-      </g>
-    </svg>
-  </div>
+  <div class="status" id="status"><span class="dot"></span><span class="lbl">HOPE</span><span class="state" id="statusState">online</span></div>
+  <div class="pulsebar" id="pulsebar"><svg viewBox="0 0 800 80" preserveAspectRatio="none"><g class="flat"><path class="track" d="M16 40 H784"/><circle class="dots" cx="16" cy="40" r="3.2"/><circle class="dots" cx="784" cy="40" r="3.2"/></g><g class="wave"><g class="scroll"><path class="track" d="M0 40 H80 L110 22 L140 40 H190 L215 58 L250 40 H280 L300 28 L318 40 L340 8 L355 72 L372 40 H400 M400 40 H480 L510 22 L540 40 H590 L615 58 L650 40 H680 L700 28 L718 40 L740 8 L755 72 L772 40 H800 M800 40 H880 L910 22 L940 40 H990 L1015 58 L1050 40 H1080 L1100 28 L1118 40 L1140 8 L1155 72 L1172 40 H1200"/></g></g></svg></div>
   <nav class="dock" id="dock">
-    <div class="d3wrapper"><div class="cover">
-      <button type="button" class="button" id="btnBrowser" title="Browse mode">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>
-      </button>
-    </div></div>
-    <div class="d3wrapper"><div class="cover">
-      <button type="button" class="button" id="btnMic" title="Microphone">
-        <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><path d="M12 17v4"/></svg>
-      </button>
-    </div></div>
-    <div class="d3wrapper"><div class="cover">
-      <button type="button" class="button" id="btnMusic" title="Music">
-        <svg viewBox="0 0 24 24"><circle cx="8" cy="17" r="2.4"/><circle cx="17" cy="15" r="2.4"/><path d="M10.4 17V7.5l8.6-1.5V15"/></svg>
-      </button>
-    </div></div>
-    <div class="d3wrapper"><div class="cover">
-      <button type="button" class="button" id="btnChat" title="Chat">
-        <svg viewBox="0 0 24 24"><path d="M5 6.5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6.2L8 20.8V17.5H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z"/></svg>
-      </button>
-    </div></div>
-    <div class="d3wrapper"><div class="cover">
-      <button type="button" class="button" id="btnSettings" title="Settings">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.7 7.7 0 0 0 .05-2l1.95-1.15-2-3.46-2.25.75a8 8 0 0 0-1.73-1L15 3h-6l-.42 3.14a8 8 0 0 0-1.73 1l-2.25-.75-2 3.46L4.55 11a7.7 7.7 0 0 0 0 2l-1.95 1.15 2 3.46 2.25-.75a8 8 0 0 0 1.73 1L9 21h6l.42-3.14a8 8 0 0 0 1.73-1l2.25.75 2-3.46L19.4 13z"/></svg>
-      </button>
-    </div></div>
+    <div class="d3wrapper"><div class="cover"><button type="button" class="button" id="btnBrowser" title="Browse mode"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg></button></div></div>
+    <div class="d3wrapper"><div class="cover"><button type="button" class="button" id="btnMic" title="Microphone"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0"/><path d="M12 17v4"/></svg></button></div></div>
+    <div class="d3wrapper"><div class="cover"><button type="button" class="button" id="btnMusic" title="Music"><svg viewBox="0 0 24 24"><circle cx="8" cy="17" r="2.4"/><circle cx="17" cy="15" r="2.4"/><path d="M10.4 17V7.5l8.6-1.5V15"/></svg></button></div></div>
+    <div class="d3wrapper"><div class="cover"><button type="button" class="button" id="btnChat" title="Chat"><svg viewBox="0 0 24 24"><path d="M5 6.5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6.2L8 20.8V17.5H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z"/></svg></button></div></div>
+    <div class="d3wrapper"><div class="cover"><button type="button" class="button" id="btnSettings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.7 7.7 0 0 0 .05-2l1.95-1.15-2-3.46-2.25.75a8 8 0 0 0-1.73-1L15 3h-6l-.42 3.14a8 8 0 0 0-1.73 1l-2.25-.75-2 3.46L4.55 11a7.7 7.7 0 0 0 0 2l-1.95 1.15 2 3.46 2.25-.75a8 8 0 0 0 1.73 1L9 21h6l.42-3.14a8 8 0 0 0 1.73-1l2.25.75 2-3.46L19.4 13z"/></svg></button></div></div>
   </nav>
   <div class="settings" id="settings">
     <button type="button" class="close-player" id="closeSettings">×</button>
@@ -242,110 +121,69 @@
     <label>Listen for “Hope” <input type="checkbox" id="setWake" checked /></label>
     <label>Browse mode <input type="checkbox" id="search" /></label>
   </div>
-  <div class="player" id="player">
-    <div class="card">
-      <button type="button" class="close-player" id="closePlayer">×</button>
-      <div class="top">
-        <div class="pfp"><div class="playing"><div class="greenline line-1"></div><div class="greenline line-2"></div><div class="greenline line-3"></div><div class="greenline line-4"></div><div class="greenline line-5"></div></div></div>
-        <div class="texts"><p class="title-1">Hope Radio</p><p class="title-2">Coming soon</p></div>
-      </div>
-      <div class="controls">
-        <svg class="volume_button" width="20" height="16" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M11.26 3.691A1.2 1.2 0 0 1 12 4.8v14.4a1.199 1.199 0 0 1-2.048.848L5.503 15.6H2.4a1.2 1.2 0 0 1-1.2-1.2V9.6a1.2 1.2 0 0 1 1.2-1.2h3.103l4.449-4.448a1.2 1.2 0 0 1 1.308-.26Z" clip-rule="evenodd"></path></svg>
-        <div class="volume"><div class="slider"><div class="green"></div></div><div class="circle"></div></div>
-        <div class="air"></div>
-      </div>
-      <div class="time"><div class="elapsed"></div></div>
-      <p class="timetext time_now">0:00</p>
-      <p class="timetext time_full">0:00</p>
-    </div>
-  </div>
-  <div class="browse-panel" id="browsePanel">
-    <div class="card">
-      <button type="button" class="close-player" id="closeBrowse">×</button>
-      <div class="title-1" style="margin:4px 0 8px">Live browser</div>
-      <img id="browseImg" alt="browser frame" />
-      <div class="blog" id="browseLog">Globe on. Hope will open pages when you ask.</div>
-    </div>
-  </div>
-  <div class="ui">
-    <div class="chat" id="chat">
-      <header><span>Inside the orb</span><button type="button" id="exit">Fly out</button></header>
-      <div class="msgs" id="msgs"></div>
-      <div class="preview-row" id="imgPreview">
-        <img id="imgThumb" alt="preview" />
-        <button type="button" id="removeImage">Remove</button>
-      </div>
-      <form id="form">
-        <textarea id="input" rows="1" placeholder="Say something…"></textarea>
-        <button type="submit">Send</button>
-      </form>
-    </div>
-  </div>
+  <div class="player" id="player"><div class="card"><button type="button" class="close-player" id="closePlayer">×</button><div class="top"><div class="pfp"><div class="playing"><div class="greenline line-1"></div><div class="greenline line-2"></div><div class="greenline line-3"></div><div class="greenline line-4"></div><div class="greenline line-5"></div></div></div><div class="texts"><p class="title-1">Hope Radio</p><p class="title-2">Coming soon</p></div></div><div class="controls"><svg class="volume_button" width="20" height="16" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M11.26 3.691A1.2 1.2 0 0 1 12 4.8v14.4a1.199 1.199 0 0 1-2.048.848L5.503 15.6H2.4a1.2 1.2 0 0 1-1.2-1.2V9.6a1.2 1.2 0 0 1 1.2-1.2h3.103l4.449-4.448a1.2 1.2 0 0 1 1.308-.26Z" clip-rule="evenodd"></path></svg><div class="volume"><div class="slider"><div class="green"></div></div><div class="circle"></div></div><div class="air"></div></div><div class="time"><div class="elapsed"></div></div><p class="timetext time_now">0:00</p><p class="timetext time_full">0:00</p></div></div>
+  <div class="browse-panel" id="browsePanel"><div class="card"><button type="button" class="close-player" id="closeBrowse">×</button><div class="title-1" style="margin:4px 0 8px">Live browser</div><img id="browseImg" alt="browser frame" /><div class="blog" id="browseLog">Globe on. Hope will open pages when you ask.</div></div></div>
+  <div class="ui"><div class="chat" id="chat"><header><span>Inside the orb</span><button type="button" id="exit">Fly out</button></header><div class="msgs" id="msgs"></div><div class="preview-row" id="imgPreview"><img id="imgThumb" alt="preview" /><button type="button" id="removeImage">Remove</button></div><form id="form"><textarea id="input" rows="1" placeholder="Say something…"></textarea><button type="submit">Send</button></form></div></div>
   <script>
     window.BACKEND_URL = window.BACKEND_URL || "https://hope-production-7e9d.up.railway.app";
     window.HOPE_BROWSE_MODE = false;
     window.CONCISE_MODE = true;
   </script>
-  <script src="js/typing-animation.js"></script>
   <script>
   (function () {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     const WAKE = /\b(hey\s+)?(hope|hoped|hopes)\b/i;
     let wakeRec = null, talkRec = null, wakeOn = true, talkOn = false;
-    let restartingWake = false, restartingTalk = false, lastWakeAt = 0;
-
+    let restartingWake = false, restartingTalk = false, lastWakeAt = 0, micReady = false;
     function paint() {
       window.hopeListenLabel = talkOn ? "listening" : (wakeOn ? "wake" : "");
       document.body.classList.toggle("listening", talkOn);
       const btn = document.getElementById("btnMic");
-      if (btn) {
-        btn.classList.toggle("on", talkOn);
-        btn.classList.toggle("listening", talkOn);
-      }
+      if (btn) { btn.classList.toggle("on", talkOn); btn.classList.toggle("listening", talkOn); }
       const state = document.getElementById("statusState");
       if (state) state.textContent = talkOn ? "listening" : (wakeOn ? "wake" : "online");
     }
-
+    async function ensureMic() {
+      if (micReady) return true;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        micReady = true;
+        return true;
+      } catch (_) {
+        const state = document.getElementById("statusState");
+        if (state) state.textContent = "mic blocked";
+        return false;
+      }
+    }
     function stopSpeech() {
       document.querySelectorAll("audio").forEach((a) => { try { a.pause(); a.currentTime = 0; } catch (_) {} });
       window.hopeIsSpeaking = false;
       if (window.NeuralOrb) window.NeuralOrb.idle();
     }
-
     function cleanHeard(text) {
       return String(text || "").replace(/^(hey\s+)?(hope|hoped|hopes)[,.\s]*/i, "").trim();
     }
-
     async function sendHeard(raw) {
       if (window.hopeIsSpeaking) return;
       const text = String(raw || "").trim();
-      if (!text) return;
-      if (/welcome back/i.test(text)) return;
-      stopSpeech();
+      if (!text || /welcome back|i'm ready when you are/i.test(text)) return;
       if (window.sendToHope) await window.sendToHope(text);
-      if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake();
     }
-
     function makeRec() {
       if (!SpeechRecognition) return null;
       const rec = new SpeechRecognition();
-      rec.lang = "en-US";
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.maxAlternatives = 3;
+      rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 3;
       return rec;
     }
-
     function stopWake() {
       if (wakeRec) { try { wakeRec.onend = null; wakeRec.abort(); } catch (_) {} wakeRec = null; }
     }
-
-    function startWake() {
+    async function startWake() {
       wakeOn = true;
       if (!SpeechRecognition || talkOn || window.hopeIsSpeaking) return;
-      if (document.getElementById("setWake") && !document.getElementById("setWake").checked) {
-        wakeOn = false; paint(); return;
-      }
+      if (document.getElementById("setWake") && !document.getElementById("setWake").checked) { wakeOn = false; paint(); return; }
+      if (!(await ensureMic())) return;
       stopWake();
       wakeRec = makeRec();
       wakeRec.onstart = paint;
@@ -354,59 +192,52 @@
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
         said = said.trim();
-        if (!WAKE.test(said)) return;
-        if (Date.now() - lastWakeAt < 1500) return;
+        if (!WAKE.test(said) || Date.now() - lastWakeAt < 1500) return;
         lastWakeAt = Date.now();
         const rest = cleanHeard(said);
         if (rest) sendHeard(rest);
       };
-      wakeRec.onerror = () => {};
+      wakeRec.onerror = (e) => { if (e && e.error === "not-allowed") { const s = document.getElementById("statusState"); if (s) s.textContent = "mic blocked"; } };
       wakeRec.onend = () => {
         if (!wakeOn || talkOn || window.hopeIsSpeaking || restartingWake) return;
         restartingWake = true;
-        setTimeout(() => { restartingWake = false; if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 250);
+        setTimeout(() => { restartingWake = false; if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 300);
       };
-      try { wakeRec.start(); paint(); } catch (_) {
-        setTimeout(() => { if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 400);
-      }
+      try { wakeRec.start(); paint(); } catch (_) { setTimeout(() => { if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 400); }
     }
-
     function stopTalk() {
       talkOn = false;
       if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} talkRec = null; }
       paint();
       if (wakeOn && !window.hopeIsSpeaking) startWake();
     }
-
-    function startTalk() {
-      if (!SpeechRecognition) return;
-      talkOn = true;
-      stopWake();
+    async function startTalk() {
+      if (!SpeechRecognition) { const s = document.getElementById("statusState"); if (s) s.textContent = "no mic api"; return; }
+      if (!(await ensureMic())) return;
+      talkOn = true; stopWake();
       if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} }
       talkRec = makeRec();
       talkRec.onstart = paint;
       talkRec.onresult = (e) => {
         if (window.hopeIsSpeaking) return;
         let said = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) said += e.results[i][0].transcript + " ";
-        }
+        for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript + " ";
         said = said.trim();
         if (said && !/welcome back/i.test(said)) sendHeard(said);
       };
       talkRec.onend = () => {
         if (!talkOn || restartingTalk) return;
         restartingTalk = true;
-        setTimeout(() => { restartingTalk = false; if (talkOn) startTalk(); }, 250);
+        setTimeout(() => { restartingTalk = false; if (talkOn) startTalk(); }, 300);
       };
       try { talkRec.start(); paint(); } catch (_) {}
     }
-
     window.startWakeWordMode = startWake;
     window.pauseWake = stopWake;
     window.stopWakeWordMode = function () { wakeOn = false; stopWake(); if (!talkOn) paint(); };
     window.toggleMic = function () { talkOn ? stopTalk() : startTalk(); };
     window.startListening = window.toggleMic;
+    window.ensureMic = ensureMic;
   })();
   </script>
   <script>
@@ -419,21 +250,11 @@
     window.chatThread = msgsEl;
     const SURFACE = 168, CORE = 28;
     const nodes = [], edges = [], pulses = [], dust = [];
-    for (let i = 0; i < 90; i++) {
-      dust.push({ x: Math.random(), y: Math.random(), z: 0.25 + Math.random() * 0.75, s: 0.4 + Math.random() * 1.6, vx: (Math.random() - 0.5) * 0.00022, vy: (Math.random() - 0.5) * 0.00018, p: Math.random() * Math.PI * 2 });
-    }
-    function fibSphere(i, n) {
-      const y = 1 - (i / (n - 1)) * 2;
-      const r = Math.sqrt(Math.max(0, 1 - y * y));
-      const theta = 2.399963229728653 * i;
-      return { x: Math.cos(theta) * r, y, z: Math.sin(theta) * r };
-    }
+    for (let i = 0; i < 90; i++) dust.push({ x: Math.random(), y: Math.random(), z: 0.25 + Math.random() * 0.75, s: 0.4 + Math.random() * 1.6, vx: (Math.random() - 0.5) * 0.00022, vy: (Math.random() - 0.5) * 0.00018, p: Math.random() * Math.PI * 2 });
+    function fibSphere(i, n) { const y = 1 - (i / (n - 1)) * 2; const r = Math.sqrt(Math.max(0, 1 - y * y)); const theta = 2.399963229728653 * i; return { x: Math.cos(theta) * r, y, z: Math.sin(theta) * r }; }
     function samplePath(points, count) {
       const seg = []; let total = 0;
-      for (let i = 1; i < points.length; i++) {
-        const d = Math.hypot(points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]);
-        seg.push(d); total += d;
-      }
+      for (let i = 1; i < points.length; i++) { const d = Math.hypot(points[i][0] - points[i-1][0], points[i][1] - points[i-1][1]); seg.push(d); total += d; }
       const out = [];
       for (let i = 0; i < count; i++) {
         let t = (i / count) * total;
@@ -449,98 +270,36 @@
       return out;
     }
     function shift(pts, ox, s) { return pts.map((p) => ({ x: p.x * s + ox, y: p.y * s, z: p.z * s })); }
-    function letterH(n) {
-      const left = samplePath([[-0.55,-0.8],[-0.55,0.8]], Math.floor(n*0.38));
-      const right = samplePath([[0.55,-0.8],[0.55,0.8]], Math.floor(n*0.38));
-      return left.concat(right, samplePath([[-0.55,0],[0.55,0]], n-left.length-right.length));
-    }
-    function letterO(n) {
-      const pts = [];
-      for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2;
-        pts.push({ x: Math.cos(a)*0.58, y: Math.sin(a)*0.78, z: (Math.random()-0.5)*0.06 });
-      }
-      return pts;
-    }
-    function letterP(n) {
-      const stem = samplePath([[-0.5,-0.8],[-0.5,0.8]], Math.floor(n*0.42));
-      const bowl = [];
-      for (let i = 0; i < n-stem.length; i++) {
-        const a = -Math.PI/2 + (i / Math.max(1, n-stem.length-1)) * Math.PI;
-        bowl.push({ x: -0.5+Math.cos(a)*0.62, y: 0.36+Math.sin(a)*0.42, z: (Math.random()-0.5)*0.06 });
-      }
-      return stem.concat(bowl);
-    }
-    function letterE(n) {
-      const stem = samplePath([[-0.55,-0.8],[-0.55,0.8]], Math.floor(n*0.4));
-      const top = samplePath([[-0.55,0.8],[0.58,0.8]], Math.floor(n*0.2));
-      const mid = samplePath([[-0.55,0.05],[0.38,0.05]], Math.floor(n*0.2));
-      return stem.concat(top, mid, samplePath([[-0.55,-0.8],[0.58,-0.8]], n-stem.length-top.length-mid.length));
-    }
+    function letterH(n) { const left = samplePath([[-0.55,-0.8],[-0.55,0.8]], Math.floor(n*0.38)); const right = samplePath([[0.55,-0.8],[0.55,0.8]], Math.floor(n*0.38)); return left.concat(right, samplePath([[-0.55,0],[0.55,0]], n-left.length-right.length)); }
+    function letterO(n) { const pts = []; for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; pts.push({ x: Math.cos(a)*0.58, y: Math.sin(a)*0.78, z: (Math.random()-0.5)*0.06 }); } return pts; }
+    function letterP(n) { const stem = samplePath([[-0.5,-0.8],[-0.5,0.8]], Math.floor(n*0.42)); const bowl = []; for (let i = 0; i < n-stem.length; i++) { const a = -Math.PI/2 + (i / Math.max(1, n-stem.length-1)) * Math.PI; bowl.push({ x: -0.5+Math.cos(a)*0.62, y: 0.36+Math.sin(a)*0.42, z: (Math.random()-0.5)*0.06 }); } return stem.concat(bowl); }
+    function letterE(n) { const stem = samplePath([[-0.55,-0.8],[-0.55,0.8]], Math.floor(n*0.4)); const top = samplePath([[-0.55,0.8],[0.58,0.8]], Math.floor(n*0.2)); const mid = samplePath([[-0.55,0.05],[0.38,0.05]], Math.floor(n*0.2)); return stem.concat(top, mid, samplePath([[-0.55,-0.8],[0.58,-0.8]], n-stem.length-top.length-mid.length)); }
     const total = SURFACE + CORE;
     const hopeForm = [].concat(shift(letterH(48),-1.08,0.62), shift(letterO(48),-0.36,0.62), shift(letterP(48),0.36,0.62), shift(letterE(52),1.08,0.62));
     while (hopeForm.length < total) hopeForm.push(hopeForm[hopeForm.length % 42]);
-    for (let i = 0; i < SURFACE; i++) {
-      const p = fibSphere(i, SURFACE);
-      nodes.push({ x:p.x,y:p.y,z:p.z,layer:1,sx:p.x,sy:p.y,sz:p.z,px:p.x,py:p.y,pz:p.z,tx:p.x,ty:p.y,tz:p.z,phase:Math.random()*Math.PI*2,fire:Math.random()*0.3,surface:true });
-    }
-    for (let i = 0; i < CORE; i++) {
-      const p = fibSphere(i, CORE);
-      nodes.push({ x:p.x,y:p.y,z:p.z,layer:0.34,sx:p.x*0.34,sy:p.y*0.34,sz:p.z*0.34,px:p.x*0.34,py:p.y*0.34,pz:p.z*0.34,tx:p.x*0.34,ty:p.y*0.34,tz:p.z*0.34,phase:Math.random()*Math.PI*2,fire:Math.random()*0.3,surface:false });
-    }
-    function setForm(name) {
-      if (name === "orb") { nodes.forEach((n) => { n.tx=n.sx; n.ty=n.sy; n.tz=n.sz; }); S.form="orb"; return; }
-      nodes.forEach((n, i) => { const p = hopeForm[i % hopeForm.length]; n.tx=p.x; n.ty=p.y; n.tz=p.z; });
-      S.form = name;
-    }
+    for (let i = 0; i < SURFACE; i++) { const p = fibSphere(i, SURFACE); nodes.push({ x:p.x,y:p.y,z:p.z,layer:1,sx:p.x,sy:p.y,sz:p.z,px:p.x,py:p.y,pz:p.z,tx:p.x,ty:p.y,tz:p.z,phase:Math.random()*Math.PI*2,fire:Math.random()*0.3,surface:true }); }
+    for (let i = 0; i < CORE; i++) { const p = fibSphere(i, CORE); nodes.push({ x:p.x,y:p.y,z:p.z,layer:0.34,sx:p.x*0.34,sy:p.y*0.34,sz:p.z*0.34,px:p.x*0.34,py:p.y*0.34,pz:p.z*0.34,tx:p.x*0.34,ty:p.y*0.34,tz:p.z*0.34,phase:Math.random()*Math.PI*2,fire:Math.random()*0.3,surface:false }); }
+    function setForm(name) { if (name === "orb") { nodes.forEach((n) => { n.tx=n.sx; n.ty=n.sy; n.tz=n.sz; }); S.form="orb"; return; } nodes.forEach((n, i) => { const p = hopeForm[i % hopeForm.length]; n.tx=p.x; n.ty=p.y; n.tz=p.z; }); S.form = name; }
     function pos(n) { return [n.x*n.layer, n.y*n.layer, n.z*n.layer]; }
     function dist3(a, b) { const A=pos(a), B=pos(b); return Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]); }
-    for (let i = 0; i < nodes.length; i++) {
-      const near = [];
-      for (let j = 0; j < nodes.length; j++) {
-        if (i === j || nodes[i].surface !== nodes[j].surface) continue;
-        near.push({ j, d: dist3(nodes[i], nodes[j]) });
-      }
-      near.sort((a,b) => a.d - b.d);
-      const links = nodes[i].surface ? 5 : 3;
-      for (let k = 0; k < links && k < near.length; k++) if (i < near[k].j) edges.push({ a:i, b:near[k].j, seed:Math.random() });
-    }
+    for (let i = 0; i < nodes.length; i++) { const near = []; for (let j = 0; j < nodes.length; j++) { if (i === j || nodes[i].surface !== nodes[j].surface) continue; near.push({ j, d: dist3(nodes[i], nodes[j]) }); } near.sort((a,b) => a.d - b.d); const links = nodes[i].surface ? 5 : 3; for (let k = 0; k < links && k < near.length; k++) if (i < near[k].j) edges.push({ a:i, b:near[k].j, seed:Math.random() }); }
     const S = { t:0, scale:1, targetScale:1, talk:0, targetTalk:0, ox:0, oy:0, tox:0, toy:0, rotY:0, rotX:0.28, mode:"idle", pulse:0, enter:0, targetEnter:0, inside:false, form:"orb", face:0, music:false, hopeOn:true, warm:0, browse:false, asleep:false };
     function resize() { const dpr = Math.min(devicePixelRatio||1, 2); canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr; }
     addEventListener("resize", resize); resize();
-    function rot(p, ax, ay) {
-      let y = p.y*Math.cos(ax) - p.z*Math.sin(ax);
-      let z = p.y*Math.sin(ax) + p.z*Math.cos(ax);
-      let x = p.x*Math.cos(ay) + z*Math.sin(ay);
-      z = -p.x*Math.sin(ay) + z*Math.cos(ay);
-      return { x, y, z };
-    }
-    function project(p, radius) {
-      const persp = 1.65 / (2.2 + p.z);
-      return { x: innerWidth*0.5 + (p.x + S.ox*0.25*(1-S.enter))*radius*persp, y: innerHeight*0.5 - (p.y + S.oy*0.25*(1-S.enter))*radius*persp, z:p.z, a:0.18+(p.z+1)*0.45 };
-    }
-    function spawnPulses(count) {
-      for (let i = 0; i < count; i++) pulses.push({ e: edges[(Math.random()*edges.length)|0], t:0, speed:0.014+Math.random()*0.024 });
-    }
+    function rot(p, ax, ay) { let y = p.y*Math.cos(ax) - p.z*Math.sin(ax); let z = p.y*Math.sin(ax) + p.z*Math.cos(ax); let x = p.x*Math.cos(ay) + z*Math.sin(ay); z = -p.x*Math.sin(ay) + z*Math.cos(ay); return { x, y, z }; }
+    function project(p, radius) { const persp = 1.65 / (2.2 + p.z); return { x: innerWidth*0.5 + (p.x + S.ox*0.25*(1-S.enter))*radius*persp, y: innerHeight*0.5 - (p.y + S.oy*0.25*(1-S.enter))*radius*persp, z:p.z, a:0.18+(p.z+1)*0.45 }; }
+    function spawnPulses(count) { for (let i = 0; i < count; i++) pulses.push({ e: edges[(Math.random()*edges.length)|0], t:0, speed:0.014+Math.random()*0.024 }); }
     function draw() {
       const dpr = Math.min(devicePixelRatio||1, 2);
       ctx.setTransform(dpr,0,0,dpr,0,0);
       ctx.fillStyle = "#05060a"; ctx.fillRect(0,0,innerWidth,innerHeight);
-      const w = S.warm;
-      const mix = (a, b) => Math.round(a + (b - a) * w);
+      const w = S.warm; const mix = (a, b) => Math.round(a + (b - a) * w);
       const C = { dust: `${mix(190,255)},${mix(230,180)},${mix(255,120)}`, dustFade: `${mix(40,180)},${mix(120,80)},${mix(255,30)}`, glow: `${mix(40,255)},${mix(140,110)},${mix(255,40)}`, line: `${mix(110,255)},${mix(210,150)},${mix(255,80)}`, mid: `${mix(90,255)},${mix(210,140)},${mix(255,70)}`, core: `${mix(235,255)},${mix(250,220)},${mix(255,180)}` };
       for (const d of dust) {
-        d.x += d.vx + Math.sin(S.t * 0.15 + d.p) * 0.00005;
-        d.y += d.vy + Math.cos(S.t * 0.12 + d.p) * 0.00004;
-        if (d.x < -0.02) d.x = 1.02; if (d.x > 1.02) d.x = -0.02;
-        if (d.y < -0.02) d.y = 1.02; if (d.y > 1.02) d.y = -0.02;
-        const px = d.x * innerWidth, py = d.y * innerHeight;
-        const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(S.t * 1.4 + d.p));
-        const r = d.s * (0.7 + d.z);
-        const a = (0.12 + d.z * 0.28) * tw;
-        const g = ctx.createRadialGradient(px, py, 0, px, py, r * 4);
-        g.addColorStop(0, `rgba(${C.dust},${a})`);
-        g.addColorStop(1, `rgba(${C.dustFade},0)`);
+        d.x += d.vx + Math.sin(S.t * 0.15 + d.p) * 0.00005; d.y += d.vy + Math.cos(S.t * 0.12 + d.p) * 0.00004;
+        if (d.x < -0.02) d.x = 1.02; if (d.x > 1.02) d.x = -0.02; if (d.y < -0.02) d.y = 1.02; if (d.y > 1.02) d.y = -0.02;
+        const px = d.x * innerWidth, py = d.y * innerHeight, tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(S.t * 1.4 + d.p)), r = d.s * (0.7 + d.z), a = (0.12 + d.z * 0.28) * tw;
+        const g = ctx.createRadialGradient(px, py, 0, px, py, r * 4); g.addColorStop(0, `rgba(${C.dust},${a})`); g.addColorStop(1, `rgba(${C.dustFade},0)`);
         ctx.fillStyle = g; ctx.beginPath(); ctx.arc(px, py, r * 4, 0, Math.PI * 2); ctx.fill();
       }
       const breath = 1 + Math.sin(S.t*2.1)*0.03 + S.pulse*0.05;
@@ -550,49 +309,15 @@
       const g0 = ctx.createRadialGradient(innerWidth*0.5, innerHeight*0.5, 0, innerWidth*0.5, innerHeight*0.5, glowR*1.7);
       g0.addColorStop(0, `rgba(${C.glow},${0.08+S.enter*0.08})`); g0.addColorStop(1,"rgba(5,6,10,0)");
       ctx.fillStyle = g0; ctx.beginPath(); ctx.arc(innerWidth*0.5, innerHeight*0.5, glowR*1.7, 0, Math.PI*2); ctx.fill();
-      const projected = nodes.map((n) => {
-        const wobble = 1 + Math.sin(S.t*2.4 + n.phase)*0.012*(S.form==="orb"?1:0.2);
-        return project(rot({ x:n.px*wobble, y:n.py*wobble, z:n.pz*wobble }, S.rotX*S.face, S.rotY*S.face), radius);
-      });
+      const projected = nodes.map((n) => { const wobble = 1 + Math.sin(S.t*2.4 + n.phase)*0.012*(S.form==="orb"?1:0.2); return project(rot({ x:n.px*wobble, y:n.py*wobble, z:n.pz*wobble }, S.rotX*S.face, S.rotY*S.face), radius); });
       ctx.lineCap = "round";
-      for (const e of edges) {
-        const A = projected[e.a], B = projected[e.b];
-        const depth = (A.a+B.a)*0.5;
-        const pulse = 0.2 + 0.8*Math.abs(Math.sin(S.t*1.6 + e.seed*9));
-        const alpha = (0.06 + depth*0.22 + S.talk*0.12) * (0.55 + pulse*0.45);
-        ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y);
-        ctx.strokeStyle = `rgba(${C.line},${alpha})`; ctx.lineWidth = 0.6 + depth*1.1; ctx.stroke();
-      }
-      for (const p of pulses) {
-        p.t += p.speed * (1 + S.talk); if (p.t > 1) continue;
-        const A = projected[p.e.a], B = projected[p.e.b];
-        const x = A.x+(B.x-A.x)*p.t, y = A.y+(B.y-A.y)*p.t, r = 6+S.talk*5;
-        const g = ctx.createRadialGradient(x,y,0,x,y,r);
-        g.addColorStop(0, `rgba(${C.core},0.95)`); g.addColorStop(1, `rgba(${C.glow},0)`);
-        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-      }
+      for (const e of edges) { const A = projected[e.a], B = projected[e.b]; const depth = (A.a+B.a)*0.5; const pulse = 0.2 + 0.8*Math.abs(Math.sin(S.t*1.6 + e.seed*9)); const alpha = (0.06 + depth*0.22 + S.talk*0.12) * (0.55 + pulse*0.45); ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.strokeStyle = `rgba(${C.line},${alpha})`; ctx.lineWidth = 0.6 + depth*1.1; ctx.stroke(); }
+      for (const p of pulses) { p.t += p.speed * (1 + S.talk); if (p.t > 1) continue; const A = projected[p.e.a], B = projected[p.e.b]; const x = A.x+(B.x-A.x)*p.t, y = A.y+(B.y-A.y)*p.t, r = 6+S.talk*5; const g = ctx.createRadialGradient(x,y,0,x,y,r); g.addColorStop(0, `rgba(${C.core},0.95)`); g.addColorStop(1, `rgba(${C.glow},0)`); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill(); }
       for (let i = pulses.length-1; i >= 0; i--) if (pulses[i].t > 1) pulses.splice(i,1);
-      for (let i = 0; i < projected.length; i++) {
-        const p = projected[i];
-        const beat = 0.5 + 0.5*Math.sin(S.t*3.2 + nodes[i].phase);
-        nodes[i].fire = Math.max(0, Math.min(1, nodes[i].fire*0.94 + beat*0.02 + S.talk*0.08));
-        const size = (2 + nodes[i].fire*2.2 + beat*0.7) * (0.65 + p.a);
-        const g = ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,size*3.2);
-        g.addColorStop(0, `rgba(${C.core},${0.9*p.a})`);
-        g.addColorStop(0.3, `rgba(${C.mid},${0.5*p.a})`);
-        g.addColorStop(1, `rgba(${C.glow},0)`);
-        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x,p.y,size*3.2,0,Math.PI*2); ctx.fill();
-      }
+      for (let i = 0; i < projected.length; i++) { const p = projected[i]; const beat = 0.5 + 0.5*Math.sin(S.t*3.2 + nodes[i].phase); nodes[i].fire = Math.max(0, Math.min(1, nodes[i].fire*0.94 + beat*0.02 + S.talk*0.08)); const size = (2 + nodes[i].fire*2.2 + beat*0.7) * (0.65 + p.a); const g = ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,size*3.2); g.addColorStop(0, `rgba(${C.core},${0.9*p.a})`); g.addColorStop(0.3, `rgba(${C.mid},${0.5*p.a})`); g.addColorStop(1, `rgba(${C.glow},0)`); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x,p.y,size*3.2,0,Math.PI*2); ctx.fill(); }
     }
-    const HOPE_EVERY = 120, HOPE_HOLD = 5;
-    let hopeClock = HOPE_EVERY - 2;
-    setForm("orb");
-    function tickSpell(dt) {
-      if (!S.hopeOn || S.mode !== "idle" || S.targetEnter > 0.15) { if (S.form !== "orb") setForm("orb"); return; }
-      hopeClock += dt;
-      if (S.form === "orb" && hopeClock >= HOPE_EVERY) { setForm("HOPE"); hopeClock = 0; }
-      else if (S.form === "HOPE" && hopeClock >= HOPE_HOLD) { setForm("orb"); hopeClock = 0; }
-    }
+    const HOPE_EVERY = 120, HOPE_HOLD = 5; let hopeClock = HOPE_EVERY - 2; setForm("orb");
+    function tickSpell(dt) { if (!S.hopeOn || S.mode !== "idle" || S.targetEnter > 0.15) { if (S.form !== "orb") setForm("orb"); return; } hopeClock += dt; if (S.form === "orb" && hopeClock >= HOPE_EVERY) { setForm("HOPE"); hopeClock = 0; } else if (S.form === "HOPE" && hopeClock >= HOPE_HOLD) { setForm("orb"); hopeClock = 0; } }
     const dock = document.getElementById("dock");
     const playerEl = document.getElementById("player");
     const settingsEl = document.getElementById("settings");
@@ -600,14 +325,9 @@
     const statusState = document.getElementById("statusState");
     const browsePanel = document.getElementById("browsePanel");
     const IDLE_HIDE = 120000;
-    let lastActivity = Date.now();
-    let welcomePlayed = false;
-    let lastSpoken = "";
+    let lastActivity = Date.now(), welcomePlayed = false, lastSpoken = "", pendingImage = null;
     function poke() { lastActivity = Date.now(); S.asleep = false; }
-    function setStatus(text, busy) {
-      statusState.textContent = text || (busy ? "thinking" : "online");
-      if (busy) S.mode = "talking";
-    }
+    function setStatus(text, busy) { statusState.textContent = text || (busy ? "thinking" : "online"); if (busy) S.mode = "talking"; }
     window.setStatus = setStatus;
     function hudTick() {
       const speak = S.mode === "talking" || window.hopeIsSpeaking;
@@ -618,44 +338,22 @@
       if (window.hopeListenLabel) statusState.textContent = window.hopeListenLabel;
       else statusState.textContent = speak ? "talking" : S.asleep ? "idle" : (window.HOPE_BROWSE_MODE ? "browse" : "online");
       dock.classList.toggle("hide", inside || stale || S.music || S.browse);
-      playerEl.classList.toggle("on", S.music);
-      playerEl.classList.toggle("hide", inside || stale);
-      browsePanel.classList.toggle("on", S.browse);
-      browsePanel.classList.toggle("hide", inside || stale);
-      pulsebar.classList.toggle("talk", !!speak);
-      pulsebar.classList.toggle("hide", inside);
+      playerEl.classList.toggle("on", S.music); playerEl.classList.toggle("hide", inside || stale);
+      browsePanel.classList.toggle("on", S.browse); browsePanel.classList.toggle("hide", inside || stale);
+      pulsebar.classList.toggle("talk", !!speak); pulsebar.classList.toggle("hide", inside);
       if (inside || stale) settingsEl.classList.remove("on");
     }
     function frame(now) {
-      const t = now * 0.001;
-      const dt = Math.min(0.05, t - S.t || 0.016);
-      S.t = t;
-      S.rotY += 0.0032 + S.enter*0.0015;
-      S.rotX = 0.26 + Math.sin(S.t*0.33)*0.08;
-      S.tox = Math.sin(S.t*0.32)*0.14;
-      S.toy = Math.cos(S.t*0.26)*0.1;
-      tickSpell(dt);
-      S.face += ((S.form==="orb" || S.targetEnter>0.15 ? 1 : 0.08) - S.face) * 0.06;
+      const t = now * 0.001; const dt = Math.min(0.05, t - S.t || 0.016); S.t = t;
+      S.rotY += 0.0032 + S.enter*0.0015; S.rotX = 0.26 + Math.sin(S.t*0.33)*0.08; S.tox = Math.sin(S.t*0.32)*0.14; S.toy = Math.cos(S.t*0.26)*0.1;
+      tickSpell(dt); S.face += ((S.form==="orb" || S.targetEnter>0.15 ? 1 : 0.08) - S.face) * 0.06;
       const morph = S.form === "orb" ? 0.06 : 0.085;
       for (const n of nodes) { n.px += (n.tx-n.px)*morph; n.py += (n.ty-n.py)*morph; n.pz += (n.tz-n.pz)*morph; }
-      if (S.mode === "talking") {
-        const beat = 0.5 + 0.5*Math.abs(Math.sin(S.t*10));
-        S.targetScale = 1.12 + beat*0.08; S.targetTalk = 1; S.pulse = beat;
-        if (Math.random() < 0.3) spawnPulses(3);
-      } else {
-        S.targetScale = 1 + Math.sin(S.t*1.5)*0.025; S.targetTalk = 0; S.pulse = 0.15 + Math.sin(S.t*2.1)*0.12;
-        if (Math.random() < 0.05) spawnPulses(1);
-      }
-      S.scale += (S.targetScale-S.scale)*0.08;
-      S.talk += (S.targetTalk-S.talk)*0.1;
-      S.ox += (S.tox-S.ox)*0.045;
-      S.oy += (S.toy-S.oy)*0.045;
-      S.enter += (S.targetEnter-S.enter)*0.055;
-      S.warm += ((S.asleep ? 1 : 0) - S.warm) * 0.035;
-      const opened = S.enter > 0.78;
-      chatEl.classList.toggle("on", opened);
-      if (opened && !S.inside) { S.inside = true; input.focus(); }
-      if (!opened) S.inside = false;
+      if (S.mode === "talking") { const beat = 0.5 + 0.5*Math.abs(Math.sin(S.t*10)); S.targetScale = 1.12 + beat*0.08; S.targetTalk = 1; S.pulse = beat; if (Math.random() < 0.3) spawnPulses(3); }
+      else { S.targetScale = 1 + Math.sin(S.t*1.5)*0.025; S.targetTalk = 0; S.pulse = 0.15 + Math.sin(S.t*2.1)*0.12; if (Math.random() < 0.05) spawnPulses(1); }
+      S.scale += (S.targetScale-S.scale)*0.08; S.talk += (S.targetTalk-S.talk)*0.1; S.ox += (S.tox-S.ox)*0.045; S.oy += (S.toy-S.oy)*0.045; S.enter += (S.targetEnter-S.enter)*0.055; S.warm += ((S.asleep ? 1 : 0) - S.warm) * 0.035;
+      const opened = S.enter > 0.78; chatEl.classList.toggle("on", opened);
+      if (opened && !S.inside) { S.inside = true; input.focus(); } if (!opened) S.inside = false;
       draw(); hudTick(); requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
@@ -663,70 +361,68 @@
     function flyOut() { S.targetEnter = 0; input.blur(); }
     document.getElementById("exit").addEventListener("click", flyOut);
     addEventListener("keydown", (e) => { if (e.code === "Escape") flyOut(); });
-    let pendingImage = null;
-    function showImage(data) {
-      pendingImage = data;
-      document.getElementById("imgThumb").src = data;
-      document.getElementById("imgPreview").classList.add("on");
-    }
-    function clearImage() {
-      pendingImage = null;
-      document.getElementById("imgPreview").classList.remove("on");
-    }
+    function showImage(data) { pendingImage = data; document.getElementById("imgThumb").src = data; document.getElementById("imgPreview").classList.add("on"); }
+    function clearImage() { pendingImage = null; document.getElementById("imgPreview").classList.remove("on"); }
     document.getElementById("removeImage").addEventListener("click", clearImage);
     input.addEventListener("paste", (e) => {
       const items = (e.clipboardData || {}).items || [];
       for (const item of items) {
         if (item.type && item.type.indexOf("image") === 0) {
           e.preventDefault();
-          const blob = item.getAsFile();
-          const reader = new FileReader();
-          reader.onload = (ev) => showImage(ev.target.result);
-          reader.readAsDataURL(blob);
-          break;
+          const blob = item.getAsFile(); const reader = new FileReader();
+          reader.onload = (ev) => showImage(ev.target.result); reader.readAsDataURL(blob); break;
         }
       }
     });
+    function addBubble(text, who) {
+      const el = document.createElement("div");
+      el.className = who === "me" ? "chat-bubble user" : "chat-bubble";
+      el.textContent = text;
+      msgsEl.appendChild(el);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+      return el;
+    }
     async function speakText(text) {
       const clean = String(text || "").replace(/\s+/g, " ").trim();
-      if (!document.getElementById("setVoice").checked || !clean) return;
-      if (clean === lastSpoken) return;
+      if (!document.getElementById("setVoice").checked || !clean || clean === lastSpoken) return;
       lastSpoken = clean;
       if (window.pauseWake) window.pauseWake();
-      window.hopeIsSpeaking = true;
-      S.mode = "talking";
+      window.hopeIsSpeaking = true; S.mode = "talking";
       try {
-        const res = await fetch(`${window.BACKEND_URL}/speak`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: clean })
-        });
+        const res = await fetch(`${window.BACKEND_URL}/speak`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: clean }) });
         if (!res.ok) throw new Error("tts");
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
+        const audio = new Audio(URL.createObjectURL(await res.blob()));
         await audio.play();
         await new Promise((resolve) => { audio.onended = resolve; audio.onerror = resolve; });
       } catch (_) {}
-      window.hopeIsSpeaking = false;
-      S.mode = "idle";
-      if (document.getElementById("setWake").checked && window.startWakeWordMode) {
-        window.startWakeWordMode();
-      }
+      window.hopeIsSpeaking = false; S.mode = "idle";
+      if (document.getElementById("setWake").checked && window.startWakeWordMode) window.startWakeWordMode();
     }
     window.speakText = speakText;
     async function sendToHope(text) {
+      const msg = String(text || "").trim();
+      if (!msg && !pendingImage) return;
       poke();
-      if (window.setConciseMode) window.setConciseMode(document.getElementById("setConcise").checked);
-      window.HOPE_BROWSE_MODE = document.getElementById("search").checked;
+      addBubble(msg || "[image]", "me");
       S.mode = "talking";
-      if (window.simulateChatResponse) {
-        await window.simulateChatResponse(text, msgsEl, 22, pendingImage);
-      }
+      let reply = "No response.";
+      try {
+        const res = await fetch(`${window.BACKEND_URL}/ask`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: msg || "[image]",
+            concise: !!(document.getElementById("setConcise") && document.getElementById("setConcise").checked),
+            browse_mode: !!(document.getElementById("search") && document.getElementById("search").checked),
+            image: pendingImage || null
+          })
+        });
+        const data = await res.json();
+        reply = data.reply || data.liveweb_analyzed || "No response.";
+      } catch (_) { reply = "Could not reach Hope."; }
       clearImage();
-      const bots = msgsEl.querySelectorAll(".chat-bubble:not(.user), .bubble.bot");
-      const spoken = bots.length ? (bots[bots.length - 1].textContent || "") : "";
-      if (spoken && !/welcome back/i.test(spoken)) await speakText(spoken);
+      addBubble(reply, "bot");
+      if (!/welcome back/i.test(reply)) await speakText(reply);
       S.mode = "idle";
     }
     window.sendToHope = sendToHope;
@@ -738,71 +434,29 @@
       flyIn();
       await sendToHope(text || "[image]");
     });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        form.requestSubmit();
-      }
-    });
-    function setBrowse(on) {
-      document.getElementById("search").checked = !!on;
-      window.HOPE_BROWSE_MODE = !!on;
-      document.getElementById("btnBrowser").classList.toggle("on", !!on);
-      S.browse = !!on;
-      poke();
-    }
-    document.getElementById("btnBrowser").addEventListener("click", (e) => {
-      e.stopPropagation();
-      setBrowse(!document.getElementById("search").checked);
-    });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+    function setBrowse(on) { document.getElementById("search").checked = !!on; window.HOPE_BROWSE_MODE = !!on; document.getElementById("btnBrowser").classList.toggle("on", !!on); S.browse = !!on; poke(); }
+    document.getElementById("btnBrowser").addEventListener("click", (e) => { e.stopPropagation(); setBrowse(!document.getElementById("search").checked); });
     document.getElementById("search").addEventListener("change", (e) => setBrowse(e.target.checked));
-    document.getElementById("closeBrowse").addEventListener("click", async (e) => {
-      e.stopPropagation();
-      setBrowse(false);
-      try { await fetch(`${window.BACKEND_URL}/browse-stop`, { method: "POST" }); } catch (_) {}
-    });
-    setInterval(async () => {
-      if (!window.HOPE_BROWSE_MODE) return;
-      try {
-        const res = await fetch(`${window.BACKEND_URL}/browse-frame`);
-        const data = await res.json();
-        if (data.image) document.getElementById("browseImg").src = data.image;
-        if (data.log) document.getElementById("browseLog").textContent = data.log;
-      } catch (_) {}
-    }, 1200);
-    document.getElementById("btnMic").addEventListener("click", (e) => {
-      e.stopPropagation();
-      poke();
-      if (window.toggleMic) window.toggleMic();
-    });
+    document.getElementById("closeBrowse").addEventListener("click", async (e) => { e.stopPropagation(); setBrowse(false); try { await fetch(`${window.BACKEND_URL}/browse-stop`, { method: "POST" }); } catch (_) {} });
+    setInterval(async () => { if (!window.HOPE_BROWSE_MODE) return; try { const res = await fetch(`${window.BACKEND_URL}/browse-frame`); const data = await res.json(); if (data.image) document.getElementById("browseImg").src = data.image; if (data.log) document.getElementById("browseLog").textContent = data.log; } catch (_) {} }, 1200);
+    document.getElementById("btnMic").addEventListener("click", (e) => { e.stopPropagation(); poke(); if (window.toggleMic) window.toggleMic(); });
     document.getElementById("btnMusic").addEventListener("click", (e) => { e.stopPropagation(); poke(); S.music = true; });
     document.getElementById("closePlayer").addEventListener("click", (e) => { e.stopPropagation(); poke(); S.music = false; });
     document.getElementById("btnChat").addEventListener("click", (e) => { e.stopPropagation(); flyIn(); });
     document.getElementById("btnSettings").addEventListener("click", (e) => { e.stopPropagation(); poke(); e.currentTarget.classList.toggle("on"); settingsEl.classList.toggle("on"); });
     document.getElementById("setHope").addEventListener("change", (e) => { S.hopeOn = e.target.checked; if (!S.hopeOn && S.form !== "orb") setForm("orb"); });
     document.getElementById("setTalk").addEventListener("change", (e) => { S.mode = e.target.checked ? "talking" : "idle"; });
-    document.getElementById("setConcise").addEventListener("change", (e) => { if (window.setConciseMode) window.setConciseMode(e.target.checked); });
-    document.getElementById("setWake").addEventListener("change", (e) => {
-      if (e.target.checked && window.startWakeWordMode) window.startWakeWordMode();
-      else if (window.stopWakeWordMode) window.stopWakeWordMode();
-    });
+    document.getElementById("setWake").addEventListener("change", (e) => { if (e.target.checked && window.startWakeWordMode) window.startWakeWordMode(); else if (window.stopWakeWordMode) window.stopWakeWordMode(); });
     document.getElementById("closeSettings").addEventListener("click", (e) => { e.stopPropagation(); settingsEl.classList.remove("on"); document.getElementById("btnSettings").classList.remove("on"); });
     async function playWelcome() {
       if (welcomePlayed) return;
       welcomePlayed = true;
       poke();
+      if (window.ensureMic) await window.ensureMic();
       let reply = "I'm ready when you are.";
-      try {
-        const res = await fetch(`${window.BACKEND_URL}/welcome`);
-        if (res.ok) {
-          const data = await res.json();
-          reply = data.reply || reply;
-        }
-      } catch (_) {}
-      const bot = document.createElement("div");
-      bot.className = "chat-bubble";
-      bot.textContent = reply;
-      msgsEl.appendChild(bot);
+      try { const res = await fetch(`${window.BACKEND_URL}/welcome`); if (res.ok) { const data = await res.json(); reply = data.reply || reply; } } catch (_) {}
+      addBubble(reply, "bot");
       await speakText(reply);
     }
     document.body.addEventListener("click", playWelcome, { once: true });
