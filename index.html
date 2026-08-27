@@ -160,6 +160,14 @@
     body.asleep .status .dot { background: #ff8a3a; box-shadow: 0 0 8px rgba(255,138,58,0.9); }
     body.asleep .status .state { color: #ffb06a; }
     body.asleep .pulsebar .track, body.asleep .pulsebar .dots { stroke: #ff9a4a; fill: #ff9a4a; }
+    body.listening .status .dot { background: #4aff9a; box-shadow: 0 0 10px rgba(74,255,154,0.95); }
+    body.listening .status .state { color: #8fffc4; }
+    #btnMic.listening { color: #4aff9a !important; box-shadow: 0 0 12px rgba(74,255,154,0.65); }
+    #btnMic.listening svg { animation: micPulse 1s ease-in-out infinite; }
+    @keyframes micPulse {
+      0%,100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.15); opacity: 0.7; }
+    }
     @keyframes liveDot { 0%,100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.72); opacity: 0.7; } }
     @media (max-width: 720px) { .dock, .player, .browse-panel { bottom: 16px; } .pulsebar { top: 10px; height: 44px; } }
   </style>
@@ -187,7 +195,6 @@
       </g>
     </svg>
   </div>
-
   <nav class="dock" id="dock">
     <div class="d3wrapper"><div class="cover">
       <button type="button" class="button" id="btnBrowser" title="Browse mode">
@@ -215,7 +222,6 @@
       </button>
     </div></div>
   </nav>
-
   <div class="settings" id="settings">
     <button type="button" class="close-player" id="closeSettings">×</button>
     <h3>Settings</h3>
@@ -226,7 +232,6 @@
     <label>Listen for “Hope” <input type="checkbox" id="setWake" checked /></label>
     <label>Browse mode <input type="checkbox" id="search" /></label>
   </div>
-
   <div class="player" id="player">
     <div class="card">
       <button type="button" class="close-player" id="closePlayer">×</button>
@@ -244,7 +249,6 @@
       <p class="timetext time_full">0:00</p>
     </div>
   </div>
-
   <div class="browse-panel" id="browsePanel">
     <div class="card">
       <button type="button" class="close-player" id="closeBrowse">×</button>
@@ -253,7 +257,6 @@
       <div class="blog" id="browseLog">Globe on. Hope will open pages when you ask.</div>
     </div>
   </div>
-
   <div class="ui">
     <div class="chat" id="chat">
       <header><span>Inside the orb</span><button type="button" id="exit">Fly out</button></header>
@@ -268,14 +271,118 @@
       </form>
     </div>
   </div>
-
   <script>
     window.BACKEND_URL = window.BACKEND_URL || "https://hope-production-7e9d.up.railway.app";
     window.HOPE_BROWSE_MODE = false;
     window.CONCISE_MODE = true;
   </script>
   <script src="js/typing-animation.js"></script>
-  <script src="js/voice.js"></script>
+  <script>
+  (function () {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const WAKE = /\b(hey\s+)?hope\b/i;
+    let wakeRec = null, cmdRec = null, wakeOn = true, restarting = false, listening = false;
+    function setListening(on, label) {
+      listening = !!on;
+      window.hopeListenLabel = on ? (label || "listening") : "";
+      document.body.classList.toggle("listening", listening);
+      const btn = document.getElementById("btnMic");
+      if (btn) { btn.classList.toggle("on", listening); btn.classList.toggle("listening", listening); }
+      const state = document.getElementById("statusState");
+      if (state && window.hopeListenLabel) state.textContent = window.hopeListenLabel;
+    }
+    function stopSpeech() {
+      document.querySelectorAll("audio").forEach((a) => { try { a.pause(); a.currentTime = 0; } catch (_) {} });
+      window.hopeIsSpeaking = false;
+      if (window.NeuralOrb) window.NeuralOrb.idle();
+    }
+    function cleanHeard(text) {
+      return String(text || "").replace(/^(hey\s+)?hope[,.\s]*/i, "").trim();
+    }
+    async function handleUtterance(raw) {
+      const text = String(raw || "").trim();
+      if (!text) return;
+      stopSpeech();
+      const after = WAKE.test(text) ? cleanHeard(text) : text;
+      if (!after) { setListening(true, "listening"); return; }
+      if (window.sendToHope) await window.sendToHope(after);
+      if (wakeOn && document.getElementById("setWake")?.checked) startWake();
+      else setListening(false, "online");
+    }
+    function makeRec(continuous) {
+      if (!SpeechRecognition) return null;
+      const rec = new SpeechRecognition();
+      rec.lang = "en-US";
+      rec.continuous = !!continuous;
+      rec.interimResults = true;
+      return rec;
+    }
+    function startCommand() {
+      if (!SpeechRecognition) { setListening(false, "no mic"); return; }
+      stopWake();
+      if (cmdRec) { try { cmdRec.abort(); } catch (_) {} }
+      cmdRec = makeRec(false);
+      let finalText = "";
+      cmdRec.onstart = () => setListening(true, "listening");
+      cmdRec.onresult = (e) => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) finalText += e.results[i][0].transcript + " ";
+        }
+      };
+      cmdRec.onerror = () => { setListening(false, "online"); if (wakeOn) startWake(); };
+      cmdRec.onend = () => {
+        const said = finalText.trim();
+        if (said) handleUtterance(said);
+        else if (wakeOn) startWake();
+        else setListening(false, "online");
+      };
+      try { cmdRec.start(); setListening(true, "listening"); } catch (_) { setListening(false, "online"); }
+    }
+    function stopWake() {
+      if (wakeRec) { try { wakeRec.onend = null; wakeRec.abort(); } catch (_) {} wakeRec = null; }
+    }
+    function startWake() {
+      wakeOn = true;
+      if (!SpeechRecognition) return;
+      if (document.getElementById("setWake") && !document.getElementById("setWake").checked) return;
+      stopWake();
+      wakeRec = makeRec(true);
+      wakeRec.onstart = () => setListening(true, "wake");
+      wakeRec.onresult = (e) => {
+        let said = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
+        said = said.trim();
+        if (!WAKE.test(said)) return;
+        stopSpeech();
+        const rest = cleanHeard(said);
+        if (rest.length > 1) handleUtterance(said);
+        else startCommand();
+      };
+      wakeRec.onend = () => {
+        if (!wakeOn || restarting) return;
+        restarting = true;
+        setTimeout(() => { restarting = false; if (wakeOn) startWake(); }, 250);
+      };
+      try { wakeRec.start(); setListening(true, "wake"); } catch (_) {}
+    }
+    window.startListening = startCommand;
+    window.toggleMic = function () {
+      if (listening && cmdRec) {
+        try { cmdRec.stop(); } catch (_) {}
+        setListening(false, "online");
+        if (wakeOn) startWake();
+        return;
+      }
+      startCommand();
+    };
+    window.startWakeWordMode = startWake;
+    window.stopWakeWordMode = function () {
+      wakeOn = false;
+      stopWake();
+      setListening(false, "online");
+    };
+  })();
+  </script>
   <script>
     const canvas = document.getElementById("net");
     const ctx = canvas.getContext("2d");
@@ -471,16 +578,20 @@
     function poke() { lastActivity = Date.now(); S.asleep = false; }
     function setStatus(text, busy) {
       statusState.textContent = text || (busy ? "thinking" : "online");
-      if (busy) { S.mode = "talking"; }
+      if (busy) S.mode = "talking";
     }
     window.setStatus = setStatus;
     function hudTick() {
       const speak = S.mode === "talking" || window.hopeIsSpeaking;
       const inside = S.enter > 0.45 || S.targetEnter > 0.45;
       const stale = Date.now() - lastActivity > IDLE_HIDE;
-      S.asleep = stale && !speak && !inside;
+      S.asleep = stale && !speak && !inside && !document.body.classList.contains("listening");
       document.body.classList.toggle("asleep", S.asleep);
-      statusState.textContent = speak ? "talking" : S.asleep ? "idle" : (window.HOPE_BROWSE_MODE ? "browse" : "online");
+      if (document.body.classList.contains("listening") && window.hopeListenLabel) {
+        statusState.textContent = window.hopeListenLabel;
+      } else {
+        statusState.textContent = speak ? "talking" : S.asleep ? "idle" : (window.HOPE_BROWSE_MODE ? "browse" : "online");
+      }
       dock.classList.toggle("hide", inside || stale || S.music || S.browse);
       playerEl.classList.toggle("on", S.music);
       playerEl.classList.toggle("hide", inside || stale);
@@ -532,7 +643,6 @@
     });
     document.getElementById("exit").addEventListener("click", flyOut);
     addEventListener("keydown", (e) => { if (e.code === "Escape") flyOut(); });
-
     let pendingImage = null;
     function showImage(data) {
       pendingImage = data;
@@ -557,7 +667,6 @@
         }
       }
     });
-
     async function speakText(text) {
       if (!document.getElementById("setVoice").checked || !text) return;
       try {
@@ -579,7 +688,6 @@
       S.mode = "idle";
     }
     window.speakText = speakText;
-
     async function sendToHope(text) {
       poke();
       flyIn();
@@ -622,7 +730,6 @@
       msgsEl.scrollTop = msgsEl.scrollHeight;
     }
     window.sendToHope = sendToHope;
-
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = input.value.trim();
@@ -636,7 +743,6 @@
         form.requestSubmit();
       }
     });
-
     function setBrowse(on) {
       document.getElementById("search").checked = !!on;
       window.HOPE_BROWSE_MODE = !!on;
@@ -663,13 +769,10 @@
         if (data.log) document.getElementById("browseLog").textContent = data.log;
       } catch (_) {}
     }, 1200);
-
     document.getElementById("btnMic").addEventListener("click", (e) => {
       e.stopPropagation();
       poke();
-      e.currentTarget.classList.toggle("on");
-      if (window.startListening) window.startListening();
-      else if (window.toggleMic) window.toggleMic();
+      if (window.toggleMic) window.toggleMic();
     });
     document.getElementById("btnMusic").addEventListener("click", (e) => { e.stopPropagation(); poke(); S.music = true; });
     document.getElementById("closePlayer").addEventListener("click", (e) => { e.stopPropagation(); poke(); S.music = false; });
@@ -678,8 +781,11 @@
     document.getElementById("setHope").addEventListener("change", (e) => { S.hopeOn = e.target.checked; if (!S.hopeOn && S.form !== "orb") setForm("orb"); });
     document.getElementById("setTalk").addEventListener("change", (e) => { S.mode = e.target.checked ? "talking" : "idle"; });
     document.getElementById("setConcise").addEventListener("change", (e) => { if (window.setConciseMode) window.setConciseMode(e.target.checked); });
+    document.getElementById("setWake").addEventListener("change", (e) => {
+      if (e.target.checked && window.startWakeWordMode) window.startWakeWordMode();
+      else if (window.stopWakeWordMode) window.stopWakeWordMode();
+    });
     document.getElementById("closeSettings").addEventListener("click", (e) => { e.stopPropagation(); settingsEl.classList.remove("on"); document.getElementById("btnSettings").classList.remove("on"); });
-
     let welcomePlayed = false;
     async function playWelcome() {
       if (welcomePlayed) return;
@@ -702,7 +808,6 @@
     }
     document.body.addEventListener("click", playWelcome, { once: true });
     document.body.addEventListener("touchstart", playWelcome, { once: true });
-
     window.NeuralOrb = { talk(text) { poke(); S.mode = "talking"; speakText(text); }, idle() { S.mode = "idle"; }, enter: flyIn, exit: flyOut };
   </script>
 </body>
