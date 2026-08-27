@@ -623,7 +623,7 @@
       for (const n of nodes) { n.px += (n.tx-n.px)*morph; n.py += (n.ty-n.py)*morph; n.pz += (n.tz-n.pz)*morph; }
       if (S.mode === "talking") {
         const beat = 0.5 + 0.5*Math.abs(Math.sin(S.t*10));
-        S.targetScale = 1.28 + beat*0.16; S.targetTalk = 1; S.pulse = beat;
+        S.targetScale = 1.12 + beat*0.08; S.targetTalk = 1; S.pulse = beat;
         if (Math.random() < 0.3) spawnPulses(3);
       } else {
         S.targetScale = 1 + Math.sin(S.t*1.5)*0.025; S.targetTalk = 0; S.pulse = 0.15 + Math.sin(S.t*2.1)*0.12;
@@ -644,12 +644,6 @@
     requestAnimationFrame(frame);
     function flyIn() { S.targetEnter = 1; poke(); }
     function flyOut() { S.targetEnter = 0; input.blur(); }
-    canvas.addEventListener("click", (e) => {
-      if (!welcomePlayed) return;
-      if (S.targetEnter > 0.5) return;
-      const limit = Math.min(innerWidth, innerHeight) * 0.28;
-      if (Math.hypot(e.clientX-innerWidth*0.5, e.clientY-innerHeight*0.5) < limit) flyIn();
-    });
     document.getElementById("exit").addEventListener("click", flyOut);
     addEventListener("keydown", (e) => { if (e.code === "Escape") flyOut(); });
     let pendingImage = null;
@@ -698,9 +692,8 @@
       if (document.getElementById("setWake").checked && window.startWakeWordMode) window.startWakeWordMode();
     }
     window.speakText = speakText;
-    async function sendToHope(text, opts) {
+    async function sendToHope(text) {
       poke();
-      if (opts && opts.openChat) flyIn();
       if (window.setConciseMode) window.setConciseMode(document.getElementById("setConcise").checked);
       window.HOPE_BROWSE_MODE = document.getElementById("search").checked;
       S.mode = "talking";
@@ -719,7 +712,8 @@
       const text = input.value.trim();
       if (!text && !pendingImage) return;
       input.value = "";
-      await sendToHope(text || "[image]", { openChat: true });
+      flyIn();
+      await sendToHope(text || "[image]");
     });
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -774,6 +768,9 @@
       if (welcomePlayed) return;
       welcomePlayed = true;
       poke();
+      if (document.getElementById("setWake").checked && window.startWakeWordMode) {
+        window.startWakeWordMode();
+      }
       let reply = "Welcome back. I'm ready when you are.";
       try {
         const res = await fetch(`${window.BACKEND_URL}/welcome`);
@@ -787,7 +784,6 @@
       bot.textContent = reply;
       msgsEl.appendChild(bot);
       await speakText(reply);
-      if (document.getElementById("setWake").checked && window.startWakeWordMode) window.startWakeWordMode();
     }
     document.body.addEventListener("click", playWelcome, { once: true });
     document.body.addEventListener("touchstart", playWelcome, { once: true });
