@@ -24,6 +24,7 @@
       box-shadow: 0 0 40px rgba(40, 140, 255, 0.18), inset 0 0 40px rgba(30, 80, 160, 0.12);
       backdrop-filter: blur(14px); opacity: 0; transform: scale(0.82);
       transition: opacity 0.35s ease, transform 0.35s ease; overflow: hidden;
+      user-select: text;
     }
     .chat.on { opacity: 1; transform: scale(1); }
     .chat header {
@@ -35,17 +36,26 @@
       margin-left: auto; background: transparent; border: 1px solid rgba(140, 210, 255, 0.3);
       color: #d7f3ff; border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 11px;
     }
-    .msgs { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .msgs { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
     .bubble, .chat-bubble {
       max-width: 82%; padding: 9px 12px; border-radius: 14px; font-size: 14px; line-height: 1.4;
       user-select: text; align-self: flex-start; background: rgba(40, 90, 160, 0.45);
       border: 1px solid rgba(120, 200, 255, 0.2); white-space: pre-wrap; word-break: break-word;
+      pointer-events: auto; position: relative; z-index: 2;
     }
     .bubble.me, .chat-bubble.user {
       align-self: flex-end; background: rgba(180, 230, 255, 0.16);
       border: 1px solid rgba(180, 230, 255, 0.25);
     }
-    .chat-bubble a { color: #79d2ff; }
+    .chat-bubble a, .bubble a {
+      color: #79d2ff !important;
+      text-decoration: underline !important;
+      cursor: pointer !important;
+      pointer-events: auto !important;
+      position: relative;
+      z-index: 20;
+      word-break: break-all;
+    }
     .chat-bubble img { max-width: 180px; border-radius: 10px; display: block; margin-top: 6px; }
     form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid rgba(120, 200, 255, 0.15); align-items: flex-end; }
     form textarea, form input {
@@ -280,16 +290,18 @@
   <script>
   (function () {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const WAKE = /\b(hey\s+)?hope\b/i;
-    let wakeRec = null, cmdRec = null, wakeOn = true, restarting = false, listening = false;
-    function setListening(on, label) {
-      listening = !!on;
-      window.hopeListenLabel = on ? (label || "listening") : "";
-      document.body.classList.toggle("listening", listening);
+    const WAKE = /\b(hey\s+)?(hope|hoped|hopes)\b/i;
+    let wakeRec = null, talkRec = null, wakeOn = true, talkOn = false, restartingWake = false, restartingTalk = false, lastWakeAt = 0;
+    function paint() {
+      window.hopeListenLabel = talkOn ? "listening" : (wakeOn ? "wake" : "");
+      document.body.classList.toggle("listening", talkOn);
       const btn = document.getElementById("btnMic");
-      if (btn) { btn.classList.toggle("on", listening); btn.classList.toggle("listening", listening); }
+      if (btn) {
+        btn.classList.toggle("on", talkOn);
+        btn.classList.toggle("listening", talkOn);
+      }
       const state = document.getElementById("statusState");
-      if (state && window.hopeListenLabel) state.textContent = window.hopeListenLabel;
+      if (state) state.textContent = talkOn ? "listening" : (wakeOn ? "wake" : "online");
     }
     function stopSpeech() {
       document.querySelectorAll("audio").forEach((a) => { try { a.pause(); a.currentTime = 0; } catch (_) {} });
@@ -297,90 +309,88 @@
       if (window.NeuralOrb) window.NeuralOrb.idle();
     }
     function cleanHeard(text) {
-      return String(text || "").replace(/^(hey\s+)?hope[,.\s]*/i, "").trim();
+      return String(text || "").replace(/^(hey\s+)?(hope|hoped|hopes)[,.\s]*/i, "").trim();
     }
-    async function handleUtterance(raw) {
+    async function sendHeard(raw) {
       const text = String(raw || "").trim();
       if (!text) return;
       stopSpeech();
-      const after = WAKE.test(text) ? cleanHeard(text) : text;
-      if (!after) { setListening(true, "listening"); return; }
-      if (window.sendToHope) await window.sendToHope(after);
-      if (wakeOn && document.getElementById("setWake")?.checked) startWake();
-      else setListening(false, "online");
+      if (window.sendToHope) await window.sendToHope(text);
+      if (wakeOn && !talkOn) startWake();
     }
-    function makeRec(continuous) {
+    function makeRec() {
       if (!SpeechRecognition) return null;
       const rec = new SpeechRecognition();
       rec.lang = "en-US";
-      rec.continuous = !!continuous;
+      rec.continuous = true;
       rec.interimResults = true;
+      rec.maxAlternatives = 3;
       return rec;
-    }
-    function startCommand() {
-      if (!SpeechRecognition) { setListening(false, "no mic"); return; }
-      stopWake();
-      if (cmdRec) { try { cmdRec.abort(); } catch (_) {} }
-      cmdRec = makeRec(false);
-      let finalText = "";
-      cmdRec.onstart = () => setListening(true, "listening");
-      cmdRec.onresult = (e) => {
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) finalText += e.results[i][0].transcript + " ";
-        }
-      };
-      cmdRec.onerror = () => { setListening(false, "online"); if (wakeOn) startWake(); };
-      cmdRec.onend = () => {
-        const said = finalText.trim();
-        if (said) handleUtterance(said);
-        else if (wakeOn) startWake();
-        else setListening(false, "online");
-      };
-      try { cmdRec.start(); setListening(true, "listening"); } catch (_) { setListening(false, "online"); }
     }
     function stopWake() {
       if (wakeRec) { try { wakeRec.onend = null; wakeRec.abort(); } catch (_) {} wakeRec = null; }
     }
     function startWake() {
       wakeOn = true;
-      if (!SpeechRecognition) return;
-      if (document.getElementById("setWake") && !document.getElementById("setWake").checked) return;
+      if (!SpeechRecognition || talkOn) return;
+      if (document.getElementById("setWake") && !document.getElementById("setWake").checked) {
+        wakeOn = false; paint(); return;
+      }
       stopWake();
-      wakeRec = makeRec(true);
-      wakeRec.onstart = () => setListening(true, "wake");
+      wakeRec = makeRec();
+      wakeRec.onstart = paint;
       wakeRec.onresult = (e) => {
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
         said = said.trim();
         if (!WAKE.test(said)) return;
-        stopSpeech();
+        if (Date.now() - lastWakeAt < 1200) return;
+        lastWakeAt = Date.now();
         const rest = cleanHeard(said);
-        if (rest.length > 1) handleUtterance(said);
-        else startCommand();
+        if (rest) sendHeard(rest);
       };
+      wakeRec.onerror = () => {};
       wakeRec.onend = () => {
-        if (!wakeOn || restarting) return;
-        restarting = true;
-        setTimeout(() => { restarting = false; if (wakeOn) startWake(); }, 250);
+        if (!wakeOn || talkOn || restartingWake) return;
+        restartingWake = true;
+        setTimeout(() => { restartingWake = false; if (wakeOn && !talkOn) startWake(); }, 200);
       };
-      try { wakeRec.start(); setListening(true, "wake"); } catch (_) {}
-    }
-    window.startListening = startCommand;
-    window.toggleMic = function () {
-      if (listening && cmdRec) {
-        try { cmdRec.stop(); } catch (_) {}
-        setListening(false, "online");
-        if (wakeOn) startWake();
-        return;
+      try { wakeRec.start(); paint(); } catch (_) {
+        setTimeout(() => { if (wakeOn && !talkOn) startWake(); }, 400);
       }
-      startCommand();
-    };
-    window.startWakeWordMode = startWake;
-    window.stopWakeWordMode = function () {
-      wakeOn = false;
+    }
+    function stopTalk() {
+      talkOn = false;
+      if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} talkRec = null; }
+      paint();
+      if (wakeOn) startWake();
+    }
+    function startTalk() {
+      if (!SpeechRecognition) return;
+      talkOn = true;
       stopWake();
-      setListening(false, "online");
-    };
+      if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} }
+      talkRec = makeRec();
+      talkRec.onstart = paint;
+      talkRec.onresult = (e) => {
+        let said = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) said += e.results[i][0].transcript + " ";
+        }
+        said = said.trim();
+        if (said) sendHeard(said);
+      };
+      talkRec.onend = () => {
+        if (!talkOn || restartingTalk) return;
+        restartingTalk = true;
+        setTimeout(() => { restartingTalk = false; if (talkOn) startTalk(); }, 200);
+      };
+      try { talkRec.start(); paint(); } catch (_) {}
+    }
+    window.startWakeWordMode = startWake;
+    window.stopWakeWordMode = function () { wakeOn = false; stopWake(); if (!talkOn) paint(); };
+    window.toggleMic = function () { talkOn ? stopTalk() : startTalk(); };
+    window.startListening = window.toggleMic;
   })();
   </script>
   <script>
@@ -575,6 +585,7 @@
     const browsePanel = document.getElementById("browsePanel");
     const IDLE_HIDE = 120000;
     let lastActivity = Date.now();
+    let welcomePlayed = false;
     function poke() { lastActivity = Date.now(); S.asleep = false; }
     function setStatus(text, busy) {
       statusState.textContent = text || (busy ? "thinking" : "online");
@@ -585,13 +596,10 @@
       const speak = S.mode === "talking" || window.hopeIsSpeaking;
       const inside = S.enter > 0.45 || S.targetEnter > 0.45;
       const stale = Date.now() - lastActivity > IDLE_HIDE;
-      S.asleep = stale && !speak && !inside && !document.body.classList.contains("listening");
+      S.asleep = stale && !speak && !inside && !document.body.classList.contains("listening") && window.hopeListenLabel !== "wake";
       document.body.classList.toggle("asleep", S.asleep);
-      if (document.body.classList.contains("listening") && window.hopeListenLabel) {
-        statusState.textContent = window.hopeListenLabel;
-      } else {
-        statusState.textContent = speak ? "talking" : S.asleep ? "idle" : (window.HOPE_BROWSE_MODE ? "browse" : "online");
-      }
+      if (window.hopeListenLabel) statusState.textContent = window.hopeListenLabel;
+      else statusState.textContent = speak ? "talking" : S.asleep ? "idle" : (window.HOPE_BROWSE_MODE ? "browse" : "online");
       dock.classList.toggle("hide", inside || stale || S.music || S.browse);
       playerEl.classList.toggle("on", S.music);
       playerEl.classList.toggle("hide", inside || stale);
@@ -637,6 +645,7 @@
     function flyIn() { S.targetEnter = 1; poke(); }
     function flyOut() { S.targetEnter = 0; input.blur(); }
     canvas.addEventListener("click", (e) => {
+      if (!welcomePlayed) return;
       if (S.targetEnter > 0.5) return;
       const limit = Math.min(innerWidth, innerHeight) * 0.28;
       if (Math.hypot(e.clientX-innerWidth*0.5, e.clientY-innerHeight*0.5) < limit) flyIn();
@@ -686,48 +695,23 @@
       } catch (_) {}
       window.hopeIsSpeaking = false;
       S.mode = "idle";
+      if (document.getElementById("setWake").checked && window.startWakeWordMode) window.startWakeWordMode();
     }
     window.speakText = speakText;
-    async function sendToHope(text) {
+    async function sendToHope(text, opts) {
       poke();
-      flyIn();
+      if (opts && opts.openChat) flyIn();
       if (window.setConciseMode) window.setConciseMode(document.getElementById("setConcise").checked);
       window.HOPE_BROWSE_MODE = document.getElementById("search").checked;
       S.mode = "talking";
       if (window.simulateChatResponse) {
         await window.simulateChatResponse(text, msgsEl, 22, pendingImage);
-      } else {
-        const mine = document.createElement("div");
-        mine.className = "bubble me";
-        mine.textContent = text;
-        msgsEl.appendChild(mine);
-        const bot = document.createElement("div");
-        bot.className = "bubble bot";
-        bot.textContent = "…";
-        msgsEl.appendChild(bot);
-        try {
-          const res = await fetch(`${window.BACKEND_URL}/ask`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              message: text,
-              concise: document.getElementById("setConcise").checked,
-              browse_mode: document.getElementById("search").checked,
-              image: pendingImage
-            })
-          });
-          const data = await res.json();
-          bot.textContent = data.reply || "No response";
-        } catch (err) {
-          bot.textContent = "Could not reach Hope.";
-        }
       }
       clearImage();
       const last = msgsEl.querySelector(".chat-bubble:last-child, .bubble.bot:last-child");
       const spoken = last ? last.textContent : "";
       if (spoken && document.getElementById("setVoice").checked) await speakText(spoken);
       S.mode = "idle";
-      msgsEl.scrollTop = msgsEl.scrollHeight;
     }
     window.sendToHope = sendToHope;
     form.addEventListener("submit", async (e) => {
@@ -735,7 +719,7 @@
       const text = input.value.trim();
       if (!text && !pendingImage) return;
       input.value = "";
-      await sendToHope(text || "[image]");
+      await sendToHope(text || "[image]", { openChat: true });
     });
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -786,11 +770,10 @@
       else if (window.stopWakeWordMode) window.stopWakeWordMode();
     });
     document.getElementById("closeSettings").addEventListener("click", (e) => { e.stopPropagation(); settingsEl.classList.remove("on"); document.getElementById("btnSettings").classList.remove("on"); });
-    let welcomePlayed = false;
     async function playWelcome() {
       if (welcomePlayed) return;
       welcomePlayed = true;
-      flyIn();
+      poke();
       let reply = "Welcome back. I'm ready when you are.";
       try {
         const res = await fetch(`${window.BACKEND_URL}/welcome`);
@@ -800,7 +783,7 @@
         }
       } catch (_) {}
       const bot = document.createElement("div");
-      bot.className = "bubble bot";
+      bot.className = "chat-bubble";
       bot.textContent = reply;
       msgsEl.appendChild(bot);
       await speakText(reply);
