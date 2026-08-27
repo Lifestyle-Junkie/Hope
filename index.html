@@ -291,7 +291,9 @@
   (function () {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     const WAKE = /\b(hey\s+)?(hope|hoped|hopes)\b/i;
-    let wakeRec = null, talkRec = null, wakeOn = true, talkOn = false, restartingWake = false, restartingTalk = false, lastWakeAt = 0;
+    let wakeRec = null, talkRec = null, wakeOn = true, talkOn = false;
+    let restartingWake = false, restartingTalk = false, lastWakeAt = 0;
+
     function paint() {
       window.hopeListenLabel = talkOn ? "listening" : (wakeOn ? "wake" : "");
       document.body.classList.toggle("listening", talkOn);
@@ -303,21 +305,27 @@
       const state = document.getElementById("statusState");
       if (state) state.textContent = talkOn ? "listening" : (wakeOn ? "wake" : "online");
     }
+
     function stopSpeech() {
       document.querySelectorAll("audio").forEach((a) => { try { a.pause(); a.currentTime = 0; } catch (_) {} });
       window.hopeIsSpeaking = false;
       if (window.NeuralOrb) window.NeuralOrb.idle();
     }
+
     function cleanHeard(text) {
       return String(text || "").replace(/^(hey\s+)?(hope|hoped|hopes)[,.\s]*/i, "").trim();
     }
+
     async function sendHeard(raw) {
+      if (window.hopeIsSpeaking) return;
       const text = String(raw || "").trim();
       if (!text) return;
+      if (/welcome back/i.test(text)) return;
       stopSpeech();
       if (window.sendToHope) await window.sendToHope(text);
-      if (wakeOn && !talkOn) startWake();
+      if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake();
     }
+
     function makeRec() {
       if (!SpeechRecognition) return null;
       const rec = new SpeechRecognition();
@@ -327,12 +335,14 @@
       rec.maxAlternatives = 3;
       return rec;
     }
+
     function stopWake() {
       if (wakeRec) { try { wakeRec.onend = null; wakeRec.abort(); } catch (_) {} wakeRec = null; }
     }
+
     function startWake() {
       wakeOn = true;
-      if (!SpeechRecognition || talkOn) return;
+      if (!SpeechRecognition || talkOn || window.hopeIsSpeaking) return;
       if (document.getElementById("setWake") && !document.getElementById("setWake").checked) {
         wakeOn = false; paint(); return;
       }
@@ -340,31 +350,34 @@
       wakeRec = makeRec();
       wakeRec.onstart = paint;
       wakeRec.onresult = (e) => {
+        if (window.hopeIsSpeaking) return;
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
         said = said.trim();
         if (!WAKE.test(said)) return;
-        if (Date.now() - lastWakeAt < 1200) return;
+        if (Date.now() - lastWakeAt < 1500) return;
         lastWakeAt = Date.now();
         const rest = cleanHeard(said);
         if (rest) sendHeard(rest);
       };
       wakeRec.onerror = () => {};
       wakeRec.onend = () => {
-        if (!wakeOn || talkOn || restartingWake) return;
+        if (!wakeOn || talkOn || window.hopeIsSpeaking || restartingWake) return;
         restartingWake = true;
-        setTimeout(() => { restartingWake = false; if (wakeOn && !talkOn) startWake(); }, 200);
+        setTimeout(() => { restartingWake = false; if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 250);
       };
       try { wakeRec.start(); paint(); } catch (_) {
-        setTimeout(() => { if (wakeOn && !talkOn) startWake(); }, 400);
+        setTimeout(() => { if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 400);
       }
     }
+
     function stopTalk() {
       talkOn = false;
       if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} talkRec = null; }
       paint();
-      if (wakeOn) startWake();
+      if (wakeOn && !window.hopeIsSpeaking) startWake();
     }
+
     function startTalk() {
       if (!SpeechRecognition) return;
       talkOn = true;
@@ -373,21 +386,24 @@
       talkRec = makeRec();
       talkRec.onstart = paint;
       talkRec.onresult = (e) => {
+        if (window.hopeIsSpeaking) return;
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) {
           if (e.results[i].isFinal) said += e.results[i][0].transcript + " ";
         }
         said = said.trim();
-        if (said) sendHeard(said);
+        if (said && !/welcome back/i.test(said)) sendHeard(said);
       };
       talkRec.onend = () => {
         if (!talkOn || restartingTalk) return;
         restartingTalk = true;
-        setTimeout(() => { restartingTalk = false; if (talkOn) startTalk(); }, 200);
+        setTimeout(() => { restartingTalk = false; if (talkOn) startTalk(); }, 250);
       };
       try { talkRec.start(); paint(); } catch (_) {}
     }
+
     window.startWakeWordMode = startWake;
+    window.pauseWake = stopWake;
     window.stopWakeWordMode = function () { wakeOn = false; stopWake(); if (!talkOn) paint(); };
     window.toggleMic = function () { talkOn ? stopTalk() : startTalk(); };
     window.startListening = window.toggleMic;
@@ -586,6 +602,7 @@
     const IDLE_HIDE = 120000;
     let lastActivity = Date.now();
     let welcomePlayed = false;
+    let lastSpoken = "";
     function poke() { lastActivity = Date.now(); S.asleep = false; }
     function setStatus(text, busy) {
       statusState.textContent = text || (busy ? "thinking" : "online");
@@ -671,14 +688,18 @@
       }
     });
     async function speakText(text) {
-      if (!document.getElementById("setVoice").checked || !text) return;
+      const clean = String(text || "").replace(/\s+/g, " ").trim();
+      if (!document.getElementById("setVoice").checked || !clean) return;
+      if (clean === lastSpoken) return;
+      lastSpoken = clean;
+      if (window.pauseWake) window.pauseWake();
+      window.hopeIsSpeaking = true;
+      S.mode = "talking";
       try {
-        window.hopeIsSpeaking = true;
-        S.mode = "talking";
         const res = await fetch(`${window.BACKEND_URL}/speak`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text })
+          body: JSON.stringify({ text: clean })
         });
         if (!res.ok) throw new Error("tts");
         const blob = await res.blob();
@@ -689,7 +710,9 @@
       } catch (_) {}
       window.hopeIsSpeaking = false;
       S.mode = "idle";
-      if (document.getElementById("setWake").checked && window.startWakeWordMode) window.startWakeWordMode();
+      if (document.getElementById("setWake").checked && window.startWakeWordMode) {
+        window.startWakeWordMode();
+      }
     }
     window.speakText = speakText;
     async function sendToHope(text) {
@@ -701,9 +724,9 @@
         await window.simulateChatResponse(text, msgsEl, 22, pendingImage);
       }
       clearImage();
-      const last = msgsEl.querySelector(".chat-bubble:last-child, .bubble.bot:last-child");
-      const spoken = last ? last.textContent : "";
-      if (spoken && document.getElementById("setVoice").checked) await speakText(spoken);
+      const bots = msgsEl.querySelectorAll(".chat-bubble:not(.user), .bubble.bot");
+      const spoken = bots.length ? (bots[bots.length - 1].textContent || "") : "";
+      if (spoken && !/welcome back/i.test(spoken)) await speakText(spoken);
       S.mode = "idle";
     }
     window.sendToHope = sendToHope;
@@ -768,10 +791,7 @@
       if (welcomePlayed) return;
       welcomePlayed = true;
       poke();
-      if (document.getElementById("setWake").checked && window.startWakeWordMode) {
-        window.startWakeWordMode();
-      }
-      let reply = "Welcome back. I'm ready when you are.";
+      let reply = "I'm ready when you are.";
       try {
         const res = await fetch(`${window.BACKEND_URL}/welcome`);
         if (res.ok) {
