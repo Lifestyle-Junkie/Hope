@@ -82,7 +82,8 @@
     .player.hide, .browse-panel.hide { opacity: 0; pointer-events: none; }
     .card { position: relative; width: 260px; height: 130px; background: #0b1018; border: 1px solid rgba(120, 200, 255, 0.18); border-radius: 10px; padding: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
     .browse-panel .card { width: min(360px, 90vw); height: auto; min-height: 180px; }
-    .browse-panel img { width: 100%; border-radius: 8px; display: block; background: #000; }
+    .browse-panel img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; display: none; background: #000; }
+    .browse-panel img.on { display: block; }
     .browse-panel .blog { font-size: 11px; color: #9bb4c8; margin-top: 8px; max-height: 70px; overflow: auto; }
     .card .top { display: flex; gap: 10px; }
     .card .pfp { height: 40px; width: 40px; background: #1a2433; border-radius: 5px; display: flex; justify-content: center; align-items: center; flex: 0 0 40px; }
@@ -180,7 +181,7 @@
     <label>Browse mode <input type="checkbox" id="search" /></label>
   </div>
   <div class="player" id="player"><div class="card"><button type="button" class="close-player" id="closePlayer">×</button><div class="top"><div class="pfp"><div class="playing"><div class="greenline line-1"></div><div class="greenline line-2"></div><div class="greenline line-3"></div><div class="greenline line-4"></div><div class="greenline line-5"></div></div></div><div class="texts"><p class="title-1">Hope Radio</p><p class="title-2">Coming soon</p></div></div><div class="controls"><svg class="volume_button" width="20" height="16" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M11.26 3.691A1.2 1.2 0 0 1 12 4.8v14.4a1.199 1.199 0 0 1-2.048.848L5.503 15.6H2.4a1.2 1.2 0 0 1-1.2-1.2V9.6a1.2 1.2 0 0 1 1.2-1.2h3.103l4.449-4.448a1.2 1.2 0 0 1 1.308-.26Z" clip-rule="evenodd"></path></svg><div class="volume"><div class="slider"><div class="green"></div></div><div class="circle"></div></div><div class="air"></div></div><div class="time"><div class="elapsed"></div></div><p class="timetext time_now">0:00</p><p class="timetext time_full">0:00</p></div></div>
-  <div class="browse-panel" id="browsePanel"><div class="card"><button type="button" class="close-player" id="closeBrowse">×</button><div class="title-1" style="margin:4px 0 8px">Live browser</div><img id="browseImg" alt="browser frame" /><div class="blog" id="browseLog">Globe on. Hope will open pages when you ask.</div></div></div>
+  <div class="browse-panel" id="browsePanel"><div class="card"><button type="button" class="close-player" id="closeBrowse">×</button><div class="title-1" style="margin:4px 0 8px">Live browser</div><img id="browseImg" alt="browser frame" /><div class="blog" id="browseLog">Browser off. Say “Hope, open the browser and go to …” or tap the globe.</div></div></div>
   <div class="ui"><div class="chat" id="chat"><header><span>Inside the orb</span><button type="button" id="exit">Fly out</button></header><div class="msgs" id="msgs"></div><div class="preview-row" id="imgPreview"><img id="imgThumb" alt="preview" /><button type="button" id="removeImage">Remove</button></div><form id="form"><textarea id="input" rows="1" placeholder="Say something…"></textarea><button type="submit">Send</button></form></div></div>
   <script>
     window.BACKEND_URL = window.BACKEND_URL || "https://hope-production-7e9d.up.railway.app";
@@ -190,7 +191,7 @@
   <script>
   (function () {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const WAKE = /\b(hey\s+)?(hope|hoped|hopes)\b/i;
+    const WAKE = /\b((hey|hi|yo|ok|okay|oh)\s+)?(hope|hoped|hopes)\b/i;
     let wakeRec = null, talkRec = null, wakeOn = true, talkOn = false;
     let restartingWake = false, restartingTalk = false, lastWakeAt = 0, micReady = false;
     function paint() {
@@ -200,7 +201,6 @@
       if (btn) { btn.classList.toggle("on", talkOn); btn.classList.toggle("listening", talkOn); }
     }
     async function ensureMic() {
-      if (micReady) return true;
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach((t) => t.stop());
@@ -212,11 +212,14 @@
         return false;
       }
     }
-    function cleanHeard(text) { return String(text || "").replace(/^(hey\s+)?(hope|hoped|hopes)[,.\s]*/i, "").trim(); }
+    function cleanHeard(text) {
+      return String(text || "").replace(/^(hey|hi|yo|ok|okay|oh)[,.\s]+/i, "").replace(/^(hope|hoped|hopes)[,.\s]*/i, "").trim();
+    }
     async function sendHeard(raw) {
       if (window.hopeIsSpeaking) return;
       const text = String(raw || "").trim();
       if (!text || /welcome back|i'm ready when you are/i.test(text)) return;
+      if (window.pokeActivity) window.pokeActivity();
       if (window.sendToHope) await window.sendToHope(text);
     }
     function makeRec() {
@@ -225,7 +228,24 @@
       rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 3;
       return rec;
     }
-    function stopWake() { if (wakeRec) { try { wakeRec.onend = null; wakeRec.abort(); } catch (_) {} wakeRec = null; } }
+    function stopWake() { if (wakeRec) { try { wakeRec.onend = null; wakeRec.onerror = null; wakeRec.onresult = null; wakeRec.abort(); } catch (_) {} wakeRec = null; } }
+    function scheduleWake(ms) {
+      if (restartingWake) return;
+      restartingWake = true;
+      setTimeout(() => {
+        restartingWake = false;
+        if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake();
+      }, ms);
+    }
+    async function handleWakePhrase(said) {
+      if (window.hopeIsSpeaking) return;
+      if (!WAKE.test(said) || Date.now() - lastWakeAt < 900) return;
+      lastWakeAt = Date.now();
+      if (window.pokeActivity) window.pokeActivity();
+      const rest = cleanHeard(said);
+      if (rest) await sendHeard(rest);
+      else if (window.sendToHope) await window.sendToHope("Yes?");
+    }
     async function startWake() {
       wakeOn = true;
       if (!SpeechRecognition || talkOn || window.hopeIsSpeaking) return;
@@ -238,25 +258,28 @@
         if (window.hopeIsSpeaking) return;
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
-        said = said.trim();
-        if (!WAKE.test(said) || Date.now() - lastWakeAt < 1500) return;
-        lastWakeAt = Date.now();
-        const rest = cleanHeard(said);
-        if (rest) sendHeard(rest);
+        handleWakePhrase(said.trim());
       };
-      wakeRec.onerror = (e) => { if (e && e.error === "not-allowed") { const s = document.getElementById("statusState"); if (s) s.textContent = "mic blocked"; } };
+      wakeRec.onerror = (e) => {
+        const err = e && e.error;
+        if (err === "not-allowed") {
+          const s = document.getElementById("statusState");
+          if (s) s.textContent = "mic blocked";
+          return;
+        }
+        if (wakeOn && !talkOn && !window.hopeIsSpeaking) scheduleWake(err === "no-speech" ? 250 : 600);
+      };
       wakeRec.onend = () => {
-        if (!wakeOn || talkOn || window.hopeIsSpeaking || restartingWake) return;
-        restartingWake = true;
-        setTimeout(() => { restartingWake = false; if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 300);
+        if (!wakeOn || talkOn || window.hopeIsSpeaking) return;
+        scheduleWake(350);
       };
-      try { wakeRec.start(); paint(); } catch (_) { setTimeout(() => { if (wakeOn && !talkOn && !window.hopeIsSpeaking) startWake(); }, 400); }
+      try { wakeRec.start(); paint(); } catch (_) { scheduleWake(500); }
     }
     function stopTalk() {
       talkOn = false;
       if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} talkRec = null; }
       paint();
-      if (wakeOn && !window.hopeIsSpeaking) startWake();
+      if (wakeOn && !window.hopeIsSpeaking) scheduleWake(400);
     }
     async function startTalk() {
       if (!SpeechRecognition) { const s = document.getElementById("statusState"); if (s) s.textContent = "no mic api"; return; }
@@ -281,10 +304,14 @@
     }
     window.startWakeWordMode = startWake;
     window.pauseWake = stopWake;
+    window.resumeWakeAfterSpeak = function () { scheduleWake(850); };
     window.stopWakeWordMode = function () { wakeOn = false; stopWake(); if (!talkOn) paint(); };
     window.toggleMic = function () { talkOn ? stopTalk() : startTalk(); };
     window.startListening = window.toggleMic;
     window.ensureMic = ensureMic;
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && wakeOn && !talkOn && !window.hopeIsSpeaking) scheduleWake(400);
+    });
   })();
   </script>
   <script>
@@ -374,7 +401,8 @@
     const browsePanel = document.getElementById("browsePanel");
     const IDLE_HIDE = 120000;
     let lastActivity = Date.now(), welcomePlayed = false, lastSpoken = "", pendingImage = null;
-    function poke() { lastActivity = Date.now(); S.asleep = false; }
+    function poke() { lastActivity = Date.now(); S.asleep = false; document.body.classList.remove("asleep"); }
+    window.pokeActivity = poke;
     function hudTick() {
       const speak = S.mode === "talking" || window.hopeIsSpeaking;
       const inside = S.enter > 0.45 || S.targetEnter > 0.45;
@@ -386,7 +414,7 @@
       else if (S.asleep) statusState.textContent = "idle";
       else if (window.HOPE_BROWSE_MODE) statusState.textContent = "browse";
       else statusState.textContent = "online";
-      dock.classList.toggle("hide", inside || S.music || S.browse || S.asleep);
+      dock.classList.toggle("hide", inside || S.music || S.asleep);
       playerEl.classList.toggle("on", S.music); playerEl.classList.toggle("hide", inside || S.asleep);
       browsePanel.classList.toggle("on", S.browse); browsePanel.classList.toggle("hide", inside || S.asleep);
       pulsebar.classList.toggle("talk", !!speak); pulsebar.classList.toggle("hide", inside);
@@ -456,13 +484,16 @@
         await new Promise((resolve) => { audio.onended = resolve; audio.onerror = resolve; });
       } catch (_) {}
       window.hopeIsSpeaking = false; S.mode = "idle";
-      if (document.getElementById("setWake").checked && window.startWakeWordMode) window.startWakeWordMode();
+      if (document.getElementById("setWake").checked && window.resumeWakeAfterSpeak) window.resumeWakeAfterSpeak();
+      else if (document.getElementById("setWake").checked && window.startWakeWordMode) setTimeout(() => window.startWakeWordMode(), 850);
     }
     window.speakText = speakText;
     async function sendToHope(text) {
       const msg = String(text || "").trim();
       if (!msg && !pendingImage) return;
       poke();
+      if (/\b(close|stop|turn off)\b.*\bbrowser\b|\bbrowser\b.*\b(off|close|stop)\b/i.test(msg)) setBrowse(false);
+      else if (looksLikeBrowse(msg)) setBrowse(true);
       addLine(msg || "[image]", "me");
       S.mode = "talking";
       let reply = "No response.";
@@ -473,7 +504,7 @@
           body: JSON.stringify({
             message: msg || "[image]",
             concise: !!(document.getElementById("setConcise") && document.getElementById("setConcise").checked),
-            browse_mode: !!(document.getElementById("search") && document.getElementById("search").checked),
+            browse_mode: !!(window.HOPE_BROWSE_MODE),
             image: pendingImage || null
           })
         });
@@ -495,11 +526,41 @@
       await sendToHope(text || "[image]");
     });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
-    function setBrowse(on) { document.getElementById("search").checked = !!on; window.HOPE_BROWSE_MODE = !!on; document.getElementById("btnBrowser").classList.toggle("on", !!on); S.browse = !!on; poke(); }
+    function looksLikeBrowse(text) {
+      return /\b(open (the )?browser|turn on (the )?browser|browse|go to|visit|open (https?:\/\/|www\.)|look up|google|youtube|search (for|the web)|navigate to)\b/i.test(String(text || ""));
+    }
+    function frameSrc(img) {
+      if (!img) return "";
+      return String(img).startsWith("data:") ? img : ("data:image/png;base64," + img);
+    }
+    function setBrowse(on) {
+      on = !!on;
+      document.getElementById("search").checked = on;
+      window.HOPE_BROWSE_MODE = on;
+      document.getElementById("btnBrowser").classList.toggle("on", on);
+      S.browse = on;
+      poke();
+      if (!on) {
+        document.getElementById("browseImg").classList.remove("on");
+        document.getElementById("browseImg").removeAttribute("src");
+        document.getElementById("browseLog").textContent = "Browser off. Say “Hope, open the browser and go to …” or tap the globe.";
+      } else {
+        document.getElementById("browseLog").textContent = "Browser on. Tell Hope where to go.";
+      }
+    }
     document.getElementById("btnBrowser").addEventListener("click", (e) => { e.stopPropagation(); setBrowse(!document.getElementById("search").checked); });
     document.getElementById("search").addEventListener("change", (e) => setBrowse(e.target.checked));
     document.getElementById("closeBrowse").addEventListener("click", async (e) => { e.stopPropagation(); setBrowse(false); try { await fetch(`${window.BACKEND_URL}/browse-stop`, { method: "POST" }); } catch (_) {} });
-    setInterval(async () => { if (!window.HOPE_BROWSE_MODE) return; try { const res = await fetch(`${window.BACKEND_URL}/browse-frame`); const data = await res.json(); if (data.image) document.getElementById("browseImg").src = data.image; if (data.log) document.getElementById("browseLog").textContent = data.log; } catch (_) {} }, 1200);
+    setInterval(async () => {
+      if (!window.HOPE_BROWSE_MODE) return;
+      try {
+        const res = await fetch(`${window.BACKEND_URL}/browse-frame`);
+        const data = await res.json();
+        const img = document.getElementById("browseImg");
+        if (data.image) { img.src = frameSrc(data.image); img.classList.add("on"); }
+        if (data.log || data.url) document.getElementById("browseLog").textContent = data.log || data.url;
+      } catch (_) {}
+    }, 1200);
     document.getElementById("btnMic").addEventListener("click", (e) => { e.stopPropagation(); poke(); if (window.toggleMic) window.toggleMic(); });
     document.getElementById("btnMusic").addEventListener("click", (e) => { e.stopPropagation(); poke(); S.music = true; });
     document.getElementById("closePlayer").addEventListener("click", (e) => { e.stopPropagation(); poke(); S.music = false; });
