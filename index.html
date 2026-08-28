@@ -194,6 +194,18 @@
     const WAKE = /\b((hey|hi|yo|ok|okay|oh)\s+)?(hope|hoped|hopes)\b/i;
     let wakeRec = null, talkRec = null, wakeOn = true, talkOn = false;
     let restartingWake = false, restartingTalk = false, lastWakeAt = 0, micReady = false;
+    function normHeard(s) {
+      return String(s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+    }
+    function isEcho(text) {
+      if (window.hopeIsSpeaking) return true;
+      if (Date.now() < (window.hopeIgnoreUntil || 0)) return true;
+      const a = normHeard(text);
+      const b = normHeard(window.lastHopeSpoken || "");
+      if (!a) return true;
+      if (b && (a === b || (a.length > 12 && b.includes(a)) || (b.length > 12 && a.includes(b.slice(0, Math.min(48, b.length)))))) return true;
+      return false;
+    }
     function paint() {
       window.hopeListenLabel = talkOn ? "listening" : "";
       document.body.classList.toggle("listening", talkOn);
@@ -202,7 +214,9 @@
     }
     async function ensureMic() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
         stream.getTracks().forEach((t) => t.stop());
         micReady = true;
         return true;
@@ -218,7 +232,7 @@
     async function sendHeard(raw) {
       if (window.hopeIsSpeaking) return;
       const text = String(raw || "").trim();
-      if (!text || /welcome back|i'm ready when you are/i.test(text)) return;
+      if (!text || isEcho(text) || /welcome back|i'm ready when you are/i.test(text)) return;
       if (window.pokeActivity) window.pokeActivity();
       if (window.sendToHope) await window.sendToHope(text);
     }
@@ -238,13 +252,12 @@
       }, ms);
     }
     async function handleWakePhrase(said) {
-      if (window.hopeIsSpeaking) return;
-      if (!WAKE.test(said) || Date.now() - lastWakeAt < 900) return;
+      if (window.hopeIsSpeaking || isEcho(said)) return;
+      if (!WAKE.test(said) || Date.now() - lastWakeAt < 1200) return;
       lastWakeAt = Date.now();
       if (window.pokeActivity) window.pokeActivity();
       const rest = cleanHeard(said);
-      if (rest) await sendHeard(rest);
-      else if (window.sendToHope) await window.sendToHope("Yes?");
+      if (rest && !isEcho(rest)) await sendHeard(rest);
     }
     async function startWake() {
       wakeOn = true;
@@ -255,7 +268,7 @@
       wakeRec = makeRec();
       wakeRec.onstart = paint;
       wakeRec.onresult = (e) => {
-        if (window.hopeIsSpeaking) return;
+        if (window.hopeIsSpeaking || Date.now() < (window.hopeIgnoreUntil || 0)) return;
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
         handleWakePhrase(said.trim());
@@ -289,22 +302,22 @@
       talkRec = makeRec();
       talkRec.onstart = paint;
       talkRec.onresult = (e) => {
-        if (window.hopeIsSpeaking) return;
+        if (window.hopeIsSpeaking || Date.now() < (window.hopeIgnoreUntil || 0)) return;
         let said = "";
         for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript + " ";
         said = said.trim();
-        if (said && !/welcome back/i.test(said)) sendHeard(said);
+        if (said && !/welcome back/i.test(said) && !isEcho(said)) sendHeard(said);
       };
       talkRec.onend = () => {
-        if (!talkOn || restartingTalk) return;
+        if (!talkOn || restartingTalk || window.hopeIsSpeaking) return;
         restartingTalk = true;
-        setTimeout(() => { restartingTalk = false; if (talkOn) startTalk(); }, 300);
+        setTimeout(() => { restartingTalk = false; if (talkOn && !window.hopeIsSpeaking) startTalk(); }, 300);
       };
       try { talkRec.start(); paint(); } catch (_) {}
     }
     window.startWakeWordMode = startWake;
     window.pauseWake = stopWake;
-    window.resumeWakeAfterSpeak = function () { scheduleWake(850); };
+    window.resumeWakeAfterSpeak = function () { scheduleWake(1200); };
     window.stopWakeWordMode = function () { wakeOn = false; stopWake(); if (!talkOn) paint(); };
     window.toggleMic = function () { talkOn ? stopTalk() : startTalk(); };
     window.startListening = window.toggleMic;
@@ -474,6 +487,8 @@
       const clean = String(text || "").replace(/\s+/g, " ").trim();
       if (!document.getElementById("setVoice").checked || !clean || clean === lastSpoken) return;
       lastSpoken = clean;
+      window.lastHopeSpoken = clean;
+      window.hopeIgnoreUntil = Date.now() + 120000;
       if (window.pauseWake) window.pauseWake();
       window.hopeIsSpeaking = true; S.mode = "talking";
       try {
@@ -484,8 +499,9 @@
         await new Promise((resolve) => { audio.onended = resolve; audio.onerror = resolve; });
       } catch (_) {}
       window.hopeIsSpeaking = false; S.mode = "idle";
+      window.hopeIgnoreUntil = Date.now() + 1600;
       if (document.getElementById("setWake").checked && window.resumeWakeAfterSpeak) window.resumeWakeAfterSpeak();
-      else if (document.getElementById("setWake").checked && window.startWakeWordMode) setTimeout(() => window.startWakeWordMode(), 850);
+      else if (document.getElementById("setWake").checked && window.startWakeWordMode) setTimeout(() => window.startWakeWordMode(), 1200);
     }
     window.speakText = speakText;
     async function sendToHope(text) {
