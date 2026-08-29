@@ -294,11 +294,16 @@
     }
     async function handleWakePhrase(said) {
       if (window.hopeIsSpeaking || isEcho(said)) return;
-      if (!WAKE.test(said) || Date.now() - lastWakeAt < 1200) return;
+      if (!WAKE.test(said) || Date.now() - lastWakeAt < 900) return;
       lastWakeAt = Date.now();
       if (window.pokeActivity) window.pokeActivity();
       const rest = cleanHeard(said);
-      if (rest && !isEcho(rest)) await sendHeard(rest);
+      if (rest && !isEcho(rest)) {
+        await sendHeard(rest);
+        return;
+      }
+      // "Hey Hope" / "Hope" with no command — open the mic and listen
+      if (!talkOn) startTalk();
     }
     async function startWake() {
       wakeOn = true;
@@ -339,22 +344,54 @@
       if (!SpeechRecognition) { const s = document.getElementById("statusState"); if (s) s.textContent = "no mic api"; return; }
       if (!(await ensureMic())) return;
       talkOn = true; stopWake();
-      if (talkRec) { try { talkRec.onend = null; talkRec.abort(); } catch (_) {} }
+      if (talkRec) { try { talkRec.onend = null; talkRec.onerror = null; talkRec.onresult = null; talkRec.abort(); } catch (_) {} talkRec = null; }
+      await new Promise((r) => setTimeout(r, 180));
+      if (!talkOn || window.hopeIsSpeaking) return;
       talkRec = makeRec();
+      let pending = "";
       talkRec.onstart = paint;
       talkRec.onresult = (e) => {
-        if (window.hopeIsSpeaking || Date.now() < (window.hopeIgnoreUntil || 0)) return;
-        let said = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) said += e.results[i][0].transcript + " ";
-        said = said.trim();
-        if (said && !/welcome back/i.test(said) && !isEcho(said)) sendHeard(said);
+        if (window.hopeIsSpeaking) return;
+        let finalSaid = "", interimSaid = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const piece = (e.results[i][0].transcript || "").trim();
+          if (e.results[i].isFinal) finalSaid += piece + " ";
+          else interimSaid += piece + " ";
+        }
+        finalSaid = finalSaid.trim();
+        interimSaid = interimSaid.trim();
+        if (interimSaid) pending = interimSaid;
+        if (finalSaid) {
+          pending = "";
+          if (Date.now() >= (window.hopeIgnoreUntil || 0) && !/welcome back/i.test(finalSaid) && !isEcho(finalSaid)) sendHeard(finalSaid);
+        }
+      };
+      talkRec.onerror = (e) => {
+        const err = e && e.error;
+        if (err === "not-allowed") {
+          const s = document.getElementById("statusState");
+          if (s) s.textContent = "mic blocked";
+          talkOn = false; paint();
+          return;
+        }
+        if (talkOn && !window.hopeIsSpeaking && err !== "aborted") {
+          restartingTalk = true;
+          setTimeout(() => { restartingTalk = false; if (talkOn && !window.hopeIsSpeaking) startTalk(); }, 350);
+        }
       };
       talkRec.onend = () => {
+        if (pending && talkOn && !window.hopeIsSpeaking && Date.now() >= (window.hopeIgnoreUntil || 0) && !isEcho(pending)) {
+          const leftover = pending; pending = "";
+          sendHeard(leftover);
+        }
         if (!talkOn || restartingTalk || window.hopeIsSpeaking) return;
         restartingTalk = true;
         setTimeout(() => { restartingTalk = false; if (talkOn && !window.hopeIsSpeaking) startTalk(); }, 300);
       };
-      try { talkRec.start(); paint(); } catch (_) {}
+      try { talkRec.start(); paint(); } catch (_) {
+        restartingTalk = true;
+        setTimeout(() => { restartingTalk = false; if (talkOn && !window.hopeIsSpeaking) startTalk(); }, 400);
+      }
     }
     window.startWakeWordMode = startWake;
     window.pauseWake = stopWake;
@@ -559,10 +596,36 @@
       else if (document.getElementById("setWake").checked && window.startWakeWordMode) setTimeout(() => window.startWakeWordMode(), 1200);
     }
     window.speakText = speakText;
+    function localHopeCommand(msg) {
+      const t = String(msg || "").toLowerCase();
+      const handsOn = /\b((enable|turn on|start|activate)\b.{0,24}\bhands?( tracking)?|hands?( tracking)?\b.{0,12}\b(on|enable|start|activate))\b/.test(t);
+      const handsOff = /\b((disable|turn off|stop|deactivate)\b.{0,24}\bhands?( tracking)?|hands?( tracking)?\b.{0,12}\b(off|disable|stop))\b/.test(t);
+      if (handsOn) {
+        const box = document.getElementById("setHands");
+        if (box) box.checked = true;
+        if (window.startHopeHands) window.startHopeHands();
+        return "Hand tracking is on.";
+      }
+      if (handsOff) {
+        const box = document.getElementById("setHands");
+        if (box) box.checked = false;
+        if (window.stopHopeHands) window.stopHopeHands();
+        return "Hand tracking is off.";
+      }
+      return null;
+    }
     async function sendToHope(text) {
       const msg = String(text || "").trim();
       if (!msg && !pendingImage) return;
       poke();
+      const local = msg ? localHopeCommand(msg) : null;
+      if (local) {
+        addLine(msg, "me");
+        addLine(local, "bot");
+        await speakText(local);
+        S.mode = "idle";
+        return;
+      }
       if (/\b(close|stop|turn off)\b.*\bbrowser\b|\bbrowser\b.*\b(off|close|stop)\b/i.test(msg)) setBrowse(false);
       else if (looksLikeBrowse(msg)) setBrowse(true);
       addLine(msg || "[image]", "me");
@@ -647,6 +710,7 @@
       poke();
       if (window.startHopeHands && document.getElementById("setHands") && document.getElementById("setHands").checked) window.startHopeHands();
       if (window.ensureMic) await window.ensureMic();
+      if (document.getElementById("setWake") && document.getElementById("setWake").checked && window.startWakeWordMode) setTimeout(() => window.startWakeWordMode(), 400);
       let reply = "I'm ready when you are.";
       try { const res = await fetch(`${window.BACKEND_URL}/welcome`); if (res.ok) { const data = await res.json(); reply = data.reply || reply; } } catch (_) {}
       addLine(reply, "bot");
@@ -913,6 +977,7 @@
       }
       toggle.addEventListener("change", (e) => { e.target.checked ? startHands() : stopHands(); });
       window.startHopeHands = startHands;
+      window.stopHopeHands = stopHands;
       if (toggle) toggle.checked = true;
     })();
   </script>
