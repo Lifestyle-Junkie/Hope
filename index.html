@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -875,7 +874,12 @@
         }
         requestAnimationFrame(loop);
       }
+      let starting = false;
       async function startHands() {
+        if (running || starting) return;
+        if (toggle && !toggle.checked) return;
+        starting = true;
+        tag.textContent = "starting camera";
         try {
           await loadHands();
           camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false });
@@ -891,12 +895,14 @@
           loop();
         } catch (err) {
           console.warn(err);
-          tag.textContent = err && err.name === "NotAllowedError" ? "camera blocked" : "hands failed";
-          toggle.checked = false;
+          tag.textContent = err && err.name === "NotAllowedError" ? "allow camera" : "hands failed";
+        } finally {
+          starting = false;
         }
       }
       function stopHands() {
         running = false;
+        starting = false;
         preview.classList.remove("on");
         tag.textContent = "hands off";
         cursorEl.classList.remove("on", "pinch", "click");
@@ -907,8 +913,7 @@
       }
       toggle.addEventListener("change", (e) => { e.target.checked ? startHands() : stopHands(); });
       window.startHopeHands = startHands;
-      toggle.checked = true;
-      startHands();
+      if (toggle) toggle.checked = true;
     })();
   </script>
 </body>
