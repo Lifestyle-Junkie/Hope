@@ -650,17 +650,15 @@
       const cursorEl = document.getElementById("handCursor");
       const octx = overlay.getContext("2d");
       let landmarker = null, camStream = null, running = false, lastVideoTime = -1;
-      let lastCommandAt = 0, lastClickAt = 0;
-      let locked = "none";
-      let lockCount = 0;
+      let lastCommandAt = 0, lastClickAt = 0, lastModeAt = 0;
+      let mode = "none";
+      let enterFrames = 0;
       let cursorX = innerWidth / 2, cursorY = innerHeight / 2;
       let pinchHeld = false;
       let pinchOpen = true;
       let pinchFrames = 0;
-      let lastPointAt = 0;
-      const LOCK_IN = { palm: 8, fist: 8, point: 3, pinch: 4, none: 6 };
-      const LOCK_OUT = { palm: 6, fist: 6, point: 10, pinch: 5, none: 4 };
-      const COMMAND_COOLDOWN = 900;
+      const ENTER = { palm: 7, fist: 7, point: 5, none: 5 };
+      const HOLD = { palm: 10, fist: 10, point: 14 };
       const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
       function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
       function ext(lm, tip, mcp) {
@@ -674,24 +672,20 @@
         const m = ext(lm, 12, 9);
         const r = ext(lm, 16, 13);
         const p = ext(lm, 20, 17);
-        const indexStraight = dist(lm[8], lm[5]) > scale * 0.62;
-        const indexDominant = i > 1.38 && i > m * 1.12 && i > r * 1.10 && i > p * 1.08;
-        const othersFolded = [m, r, p].filter((v) => v < 1.42).length >= 2;
+        const indexStraight = dist(lm[8], lm[5]) > scale * 0.58;
+        const indexDominant = i > 1.32 && i > m * 1.10 && i > r * 1.08 && i > p * 1.06;
+        const othersFolded = [m, r, p].filter((v) => v < 1.45).length >= 2;
         return indexStraight && indexDominant && othersFolded;
       }
       function classify(lm) {
         const scale = Math.max(dist(lm[0], lm[9]), 0.08);
-        const pinch = dist(lm[4], lm[8]) / scale;
-        const thumb = dist(lm[4], lm[17]) > scale * 0.55;
         const index = fingerOpen(lm, 8, 6, 5, scale);
         const middle = fingerOpen(lm, 12, 10, 9, scale);
         const ring = fingerOpen(lm, 16, 14, 13, scale);
         const pinky = fingerOpen(lm, 20, 18, 17, scale);
         const openCount = [index, middle, ring, pinky].filter(Boolean).length;
-        const pointing = isPoint(lm, scale);
-        if (pinch < 0.48 && (pointing || index || pinch < 0.36)) return "pinch";
-        if (pointing || (index && !middle && !ring && !pinky)) return "point";
-        if (openCount >= 4 && thumb) return "palm";
+        if (openCount >= 4) return "palm";
+        if (isPoint(lm, scale) || (index && !middle && !ring && !pinky)) return "point";
         if (openCount === 0 && !index) return "fist";
         return "none";
       }
@@ -757,65 +751,65 @@
       }
       function fireCommand(kind) {
         const now = Date.now();
-        if (now - lastCommandAt < COMMAND_COOLDOWN) return;
+        if (now - lastCommandAt < 1200) return;
         lastCommandAt = now;
         poke();
         if (kind === "palm") flyIn();
         if (kind === "fist") flyOut();
       }
-      function onHand(landmarks) {
-        const raw = classify(landmarks);
-        if (raw === locked) {
-          lockCount = Math.min(lockCount + 1, 40);
-        } else if (locked === "point" && (raw === "pinch" || raw === "point")) {
-          lockCount = Math.min(lockCount + 1, 40);
-        } else {
-          lockCount -= (locked === "point" ? 1 : 2);
-          if (lockCount <= -(LOCK_OUT[locked] || 6)) {
-            locked = raw;
-            lockCount = 1;
-          }
-        }
-        const need = LOCK_IN[locked] || 8;
-        const firm = lockCount >= need ? locked : "none";
-        const scale = Math.max(dist(landmarks[0], landmarks[9]), 0.08);
-        const pinchRatio = dist(landmarks[4], landmarks[8]) / scale;
-        if (firm === "point" || firm === "pinch") {
-          lastPointAt = Date.now();
-          if (firm === "point") moveCursor(landmarks);
-          cursorEl.classList.add("on");
-        } else if (Date.now() - lastPointAt > 700) {
+      function setMode(next) {
+        if (mode === next) return;
+        mode = next;
+        enterFrames = 0;
+        lastModeAt = Date.now();
+        if (next === "palm") fireCommand("palm");
+        if (next === "fist") fireCommand("fist");
+        if (next !== "point") {
           cursorEl.classList.remove("on", "pinch");
-        }
-
-        if (pinchRatio > 0.58) {
+          pinchHeld = false;
           pinchOpen = true;
           pinchFrames = 0;
-          pinchHeld = false;
-          cursorEl.classList.remove("pinch");
-        } else if (pinchRatio < 0.50) {
-          pinchFrames += 1;
+        }
+      }
+      function onHand(landmarks) {
+        const raw = classify(landmarks);
+        const scale = Math.max(dist(landmarks[0], landmarks[9]), 0.08);
+        const pinchRatio = dist(landmarks[4], landmarks[8]) / scale;
+        const now = Date.now();
+
+        if (raw === mode) {
+          enterFrames = 0;
         } else {
-          pinchFrames = Math.max(0, pinchFrames - 1);
+          const needed = mode === "none" ? (ENTER[raw] || 6) : (HOLD[mode] || 10);
+          if (raw === "none") enterFrames += 1;
+          else if (mode === "point" && raw === "fist" && pinchRatio < 0.55) enterFrames += 0;
+          else enterFrames += 1;
+          if (enterFrames >= needed) setMode(raw);
         }
 
-        const canClick = Date.now() - lastPointAt < 900;
-        if (canClick && pinchOpen && pinchFrames >= 2 && !pinchHeld) {
-          pinchOpen = false;
-          pinchHeld = true;
-          cursorEl.classList.add("pinch");
-          clickAtCursor();
-          tag.textContent = "click";
+        if (mode === "point") {
+          moveCursor(landmarks);
+          if (pinchRatio > 0.58) {
+            pinchOpen = true;
+            pinchFrames = 0;
+            pinchHeld = false;
+            cursorEl.classList.remove("pinch");
+          } else if (pinchRatio < 0.48) {
+            pinchFrames += 1;
+          } else {
+            pinchFrames = Math.max(0, pinchFrames - 1);
+          }
+          if (pinchOpen && pinchFrames >= 3 && !pinchHeld) {
+            pinchOpen = false;
+            pinchHeld = true;
+            cursorEl.classList.add("pinch");
+            clickAtCursor();
+            tag.textContent = "click";
+            return;
+          }
         }
 
-        if (firm === "pinch") cursorEl.classList.add("pinch");
-
-        if (firm === "palm") fireCommand("palm");
-        if (firm === "fist") fireCommand("fist");
-
-        if (!(canClick && pinchHeld && pinchRatio < 0.50)) {
-          tag.textContent = (firm === "none" ? (raw === "none" ? "hold still" : raw + "…") : firm) + "  " + pinchRatio.toFixed(2);
-        }
+        tag.textContent = (mode === "none" ? (raw === "none" ? "ready" : raw + "…") : mode);
       }
       async function loop() {
         if (!running || !landmarker) return;
