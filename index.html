@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,7 +15,7 @@
       user-select: none;
       transition: background 0.8s ease;
     }
-    canvas#net { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; }
+    canvas#net { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: default; }
     .idle-wash {
       position: fixed; inset: 0; z-index: 3; pointer-events: none;
       background: radial-gradient(circle at 50% 48%, rgba(255, 140, 50, 0.28), rgba(18, 6, 0, 0.62) 70%);
@@ -212,7 +211,7 @@
     <label>Listen for “Hope” <input type="checkbox" id="setWake" checked /></label>
     <label>Browse mode <input type="checkbox" id="search" /></label>
     <label>Hand tracking <input type="checkbox" id="setHands" /></label>
-    <p style="font-size:10px;color:#9bb4c8;line-height:1.45;margin-top:8px;">Palm opens chat. Fist closes it. Point with index to move cursor. Pinch to click.</p>
+    <p style="font-size:10px;color:#9bb4c8;line-height:1.45;margin-top:8px;">Fist zooms into chat. Open palm zooms out. Point to move the cursor. Pinch to click. Only the orb is clickable.</p>
   </div>
   <div id="handCursor"></div>
   <div class="hand-preview" id="handPreview">
@@ -412,7 +411,7 @@
     function pos(n) { return [n.x*n.layer, n.y*n.layer, n.z*n.layer]; }
     function dist3(a, b) { const A=pos(a), B=pos(b); return Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]); }
     for (let i = 0; i < nodes.length; i++) { const near = []; for (let j = 0; j < nodes.length; j++) { if (i === j || nodes[i].surface !== nodes[j].surface) continue; near.push({ j, d: dist3(nodes[i], nodes[j]) }); } near.sort((a,b) => a.d - b.d); const links = nodes[i].surface ? 5 : 3; for (let k = 0; k < links && k < near.length; k++) if (i < near[k].j) edges.push({ a:i, b:near[k].j, seed:Math.random() }); }
-    const S = { t:0, scale:1, targetScale:1, talk:0, targetTalk:0, ox:0, oy:0, tox:0, toy:0, rotY:0, rotX:0.28, mode:"idle", pulse:0, enter:0, targetEnter:0, inside:false, form:"orb", face:0, music:false, hopeOn:true, warm:0, browse:false, asleep:false };
+    const S = { t:0, scale:1, targetScale:1, talk:0, targetTalk:0, ox:0, oy:0, tox:0, toy:0, rotY:0, rotX:0.28, mode:"idle", pulse:0, enter:0, targetEnter:0, inside:false, form:"orb", face:0, music:false, hopeOn:true, warm:0, browse:false, asleep:false, orbR:0 };
     function resize() { const dpr = Math.min(devicePixelRatio||1, 2); canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr; }
     addEventListener("resize", resize); resize();
     function rot(p, ax, ay) { let y = p.y*Math.cos(ax) - p.z*Math.sin(ax); let z = p.y*Math.sin(ax) + p.z*Math.cos(ax); let x = p.x*Math.cos(ay) + z*Math.sin(ay); z = -p.x*Math.sin(ay) + z*Math.cos(ay); return { x, y, z }; }
@@ -435,6 +434,7 @@
       const breath = 1 + Math.sin(S.t*2.1)*0.03 + S.pulse*0.05;
       const base = Math.min(innerWidth, innerHeight) * (S.form==="HOPE"?0.36:0.29) * S.scale * breath;
       const radius = base * (1 + S.enter*3.4);
+      S.orbR = radius;
       const glowR = radius * (0.55 + S.talk*0.1);
       const g0 = ctx.createRadialGradient(innerWidth*0.5, innerHeight*0.5, 0, innerWidth*0.5, innerHeight*0.5, glowR*1.7);
       g0.addColorStop(0, `rgba(${C.glow},${0.08+S.enter*0.08})`); g0.addColorStop(1,"rgba(5,6,10,0)");
@@ -491,9 +491,18 @@
     requestAnimationFrame(frame);
     function flyIn() { S.targetEnter = 1; poke(); }
     function flyOut() { S.targetEnter = 0; input.blur(); }
+    function orbHit(e) {
+      const r = S.orbR || Math.min(innerWidth, innerHeight) * 0.29;
+      return Math.hypot(e.clientX - innerWidth * 0.5, e.clientY - innerHeight * 0.5) <= r * 0.82;
+    }
     document.getElementById("exit").addEventListener("click", flyOut);
     addEventListener("keydown", (e) => { if (e.code === "Escape") flyOut(); });
-    canvas.addEventListener("click", () => { if (S.targetEnter < 0.2) flyIn(); });
+    canvas.addEventListener("mousemove", (e) => {
+      canvas.style.cursor = (S.targetEnter < 0.2 && orbHit(e)) ? "pointer" : "default";
+    });
+    canvas.addEventListener("click", (e) => {
+      if (S.targetEnter < 0.2 && orbHit(e)) flyIn();
+    });
     function showImage(data) { pendingImage = data; document.getElementById("imgThumb").src = data; document.getElementById("imgPreview").classList.add("on"); }
     function clearImage() { pendingImage = null; document.getElementById("imgPreview").classList.remove("on"); }
     document.getElementById("removeImage").addEventListener("click", clearImage);
@@ -768,8 +777,8 @@
         if (now - lastCommandAt < 1200) return;
         lastCommandAt = now;
         poke();
-        if (kind === "palm") flyIn();
-        if (kind === "fist") flyOut();
+        if (kind === "palm") flyOut();
+        if (kind === "fist") flyIn();
       }
       function setMode(next) {
         if (mode === next) return;
