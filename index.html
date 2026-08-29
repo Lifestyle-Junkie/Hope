@@ -169,6 +169,23 @@
       position: absolute; left: 8px; bottom: 6px; font-size: 10px;
       letter-spacing: 0.14em; text-transform: uppercase; color: #bfe9ff;
     }
+    #handCursor {
+      position: fixed; z-index: 40; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+      border-radius: 50%; pointer-events: none; opacity: 0;
+      border: 2px solid #79d2ff;
+      box-shadow: 0 0 14px rgba(121,210,255,0.75), inset 0 0 8px rgba(121,210,255,0.35);
+      transition: opacity 0.18s ease, background 0.15s ease, border-color 0.15s ease;
+    }
+    #handCursor.on { opacity: 1; }
+    #handCursor.click {
+      transform: scale(0.72);
+      background: rgba(121,210,255,0.55);
+      border-color: #e8f6ff;
+    }
+    #handCursor.pinch {
+      background: rgba(255,160,80,0.45);
+      border-color: #ffb06a;
+    }
     @media (max-width: 720px) { .dock, .player, .browse-panel { bottom: 16px; } .pulsebar { top: 10px; height: 44px; } }
   </style>
 </head>
@@ -194,7 +211,9 @@
     <label>Listen for “Hope” <input type="checkbox" id="setWake" checked /></label>
     <label>Browse mode <input type="checkbox" id="search" /></label>
     <label>Hand tracking <input type="checkbox" id="setHands" /></label>
+    <p style="font-size:10px;color:#9bb4c8;line-height:1.45;margin-top:8px;">Palm opens chat. Fist closes it. Point with index to move cursor. Pinch to click.</p>
   </div>
+  <div id="handCursor"></div>
   <div class="hand-preview" id="handPreview">
     <div class="wrap">
       <video id="handCam" playsinline muted></video>
@@ -628,11 +647,36 @@
       const overlay = document.getElementById("handOverlay");
       const tag = document.getElementById("handTag");
       const toggle = document.getElementById("setHands");
+      const cursorEl = document.getElementById("handCursor");
       const octx = overlay.getContext("2d");
       let landmarker = null, camStream = null, running = false, lastVideoTime = -1;
-      let pinched = false, lastGestureAt = 0;
+      let lastCommandAt = 0, lastClickAt = 0;
+      let locked = "none";
+      let lockCount = 0;
+      let cursorX = innerWidth / 2, cursorY = innerHeight / 2;
+      let pinchHeld = false;
+      const LOCK_FRAMES = 8;
+      const COMMAND_COOLDOWN = 900;
       const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
       function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+      function fingerOpen(lm, tip, pip, mcp, scale) {
+        return dist(lm[tip], lm[mcp]) > dist(lm[pip], lm[mcp]) * 1.18 && dist(lm[tip], lm[mcp]) > scale * 0.72;
+      }
+      function classify(lm) {
+        const scale = Math.max(dist(lm[0], lm[9]), 0.08);
+        const pinch = dist(lm[4], lm[8]) / scale;
+        const thumb = dist(lm[4], lm[17]) > scale * 0.55;
+        const index = fingerOpen(lm, 8, 6, 5, scale);
+        const middle = fingerOpen(lm, 12, 10, 9, scale);
+        const ring = fingerOpen(lm, 16, 14, 13, scale);
+        const pinky = fingerOpen(lm, 20, 18, 17, scale);
+        const openCount = [index, middle, ring, pinky].filter(Boolean).length;
+        if (pinch < 0.38 && index && !middle && !ring && !pinky) return "pinch";
+        if (index && !middle && !ring && !pinky) return "point";
+        if (openCount >= 4 && thumb) return "palm";
+        if (openCount <= 1 && pinch < 0.85) return "fist";
+        return "none";
+      }
       async function loadHands() {
         if (landmarker) return landmarker;
         tag.textContent = "loading hands";
@@ -645,9 +689,9 @@
           },
           runningMode: "VIDEO",
           numHands: 1,
-          minHandDetectionConfidence: 0.6,
-          minHandPresenceConfidence: 0.6,
-          minTrackingConfidence: 0.5
+          minHandDetectionConfidence: 0.65,
+          minHandPresenceConfidence: 0.65,
+          minTrackingConfidence: 0.6
         });
         return landmarker;
       }
@@ -670,24 +714,63 @@
           octx.fill();
         }
       }
-      function onHand(landmarks) {
-        poke();
-        const pinch = dist(landmarks[4], landmarks[8]);
+      function moveCursor(lm) {
+        const nx = 1 - lm[8].x;
+        const ny = lm[8].y;
+        const tx = nx * innerWidth;
+        const ty = ny * innerHeight;
+        cursorX += (tx - cursorX) * 0.35;
+        cursorY += (ty - cursorY) * 0.35;
+        cursorEl.style.left = cursorX + "px";
+        cursorEl.style.top = cursorY + "px";
+        cursorEl.classList.add("on");
+      }
+      function clickAtCursor() {
         const now = Date.now();
-        if (now - lastGestureAt < 700) return;
-        if (pinch < 0.07 && !pinched) {
-          pinched = true;
-          lastGestureAt = now;
-          tag.textContent = "pinch · enter";
-          flyIn();
-        } else if (pinch > 0.12 && pinched) {
-          pinched = false;
-          lastGestureAt = now;
-          tag.textContent = "open · exit";
-          flyOut();
-        } else {
-          tag.textContent = pinched ? "holding" : "tracking";
+        if (now - lastClickAt < 450) return;
+        lastClickAt = now;
+        cursorEl.classList.add("click");
+        setTimeout(() => cursorEl.classList.remove("click"), 140);
+        const el = document.elementFromPoint(cursorX, cursorY);
+        if (!el || el === cursorEl) return;
+        const clickable = el.closest("button, a, input, textarea, label, .button, [role='button']") || el;
+        clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: cursorX, clientY: cursorY }));
+        if (clickable.matches && clickable.matches("input, textarea")) clickable.focus();
+      }
+      function fireCommand(kind) {
+        const now = Date.now();
+        if (now - lastCommandAt < COMMAND_COOLDOWN) return;
+        lastCommandAt = now;
+        poke();
+        if (kind === "palm") flyIn();
+        if (kind === "fist") flyOut();
+      }
+      function onHand(landmarks) {
+        const raw = classify(landmarks);
+        if (raw === locked) lockCount = Math.min(lockCount + 1, 30);
+        else {
+          lockCount = Math.max(0, lockCount - 2);
+          if (lockCount === 0) locked = raw;
         }
+        const firm = lockCount >= LOCK_FRAMES ? locked : "none";
+        if (firm === "point" || firm === "pinch") moveCursor(landmarks);
+        else cursorEl.classList.remove("on", "pinch");
+
+        if (firm === "pinch") {
+          cursorEl.classList.add("pinch");
+          if (!pinchHeld) {
+            pinchHeld = true;
+            clickAtCursor();
+          }
+        } else {
+          pinchHeld = false;
+          cursorEl.classList.remove("pinch");
+        }
+
+        if (firm === "palm") fireCommand("palm");
+        if (firm === "fist") fireCommand("fist");
+
+        tag.textContent = firm === "none" ? (raw === "none" ? "hold still" : raw + "…") : firm;
       }
       async function loop() {
         if (!running || !landmarker) return;
@@ -699,7 +782,12 @@
           const hand = result && result.landmarks && result.landmarks[0];
           drawHand(hand);
           if (hand) onHand(hand);
-          else tag.textContent = "no hand";
+          else {
+            tag.textContent = "no hand";
+            cursorEl.classList.remove("on");
+            lockCount = Math.max(0, lockCount - 3);
+            if (lockCount === 0) locked = "none";
+          }
         }
         requestAnimationFrame(loop);
       }
@@ -722,6 +810,7 @@
         running = false;
         preview.classList.remove("on");
         tag.textContent = "hands off";
+        cursorEl.classList.remove("on", "pinch", "click");
         if (camStream) camStream.getTracks().forEach((t) => t.stop());
         camStream = null;
         video.srcObject = null;
