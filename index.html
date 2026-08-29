@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -210,7 +211,7 @@
     <label>Speak replies <input type="checkbox" id="setVoice" checked /></label>
     <label>Listen for “Hope” <input type="checkbox" id="setWake" checked /></label>
     <label>Browse mode <input type="checkbox" id="search" /></label>
-    <label>Hand tracking <input type="checkbox" id="setHands" /></label>
+    <label>Hand tracking <input type="checkbox" id="setHands" checked /></label>
     <p style="font-size:10px;color:#9bb4c8;line-height:1.45;margin-top:8px;">Fist zooms into chat. Open palm zooms out. Point to move the cursor. Pinch to click. Only the orb is clickable.</p>
   </div>
   <div id="handCursor"></div>
@@ -501,8 +502,12 @@
       canvas.style.cursor = (S.targetEnter < 0.2 && orbHit(e)) ? "pointer" : "default";
     });
     canvas.addEventListener("click", (e) => {
+      if (S.asleep || document.body.classList.contains("asleep")) return;
       if (S.targetEnter < 0.2 && orbHit(e)) flyIn();
     });
+    document.addEventListener("pointermove", () => {
+      if (S.asleep || document.body.classList.contains("asleep")) poke();
+    }, { passive: true });
     function showImage(data) { pendingImage = data; document.getElementById("imgThumb").src = data; document.getElementById("imgPreview").classList.add("on"); }
     function clearImage() { pendingImage = null; document.getElementById("imgPreview").classList.remove("on"); }
     document.getElementById("removeImage").addEventListener("click", clearImage);
@@ -641,6 +646,7 @@
       if (welcomePlayed) return;
       welcomePlayed = true;
       poke();
+      if (window.startHopeHands && document.getElementById("setHands") && document.getElementById("setHands").checked) window.startHopeHands();
       if (window.ensureMic) await window.ensureMic();
       let reply = "I'm ready when you are.";
       try { const res = await fetch(`${window.BACKEND_URL}/welcome`); if (res.ok) { const data = await res.json(); reply = data.reply || reply; } } catch (_) {}
@@ -805,6 +811,7 @@
         }
       }
       function onHand(landmarks) {
+        poke();
         const raw = classify(landmarks);
         const scale = Math.max(dist(landmarks[0], landmarks[9]), 0.08);
         const pinchRatio = dist(landmarks[4], landmarks[8]) / scale;
@@ -899,6 +906,9 @@
         octx.clearRect(0, 0, overlay.width, overlay.height);
       }
       toggle.addEventListener("change", (e) => { e.target.checked ? startHands() : stopHands(); });
+      window.startHopeHands = startHands;
+      toggle.checked = true;
+      startHands();
     })();
   </script>
 </body>
