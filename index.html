@@ -655,12 +655,26 @@
       let lockCount = 0;
       let cursorX = innerWidth / 2, cursorY = innerHeight / 2;
       let pinchHeld = false;
-      const LOCK_FRAMES = 8;
+      const LOCK_IN = { palm: 8, fist: 8, point: 4, pinch: 5, none: 6 };
+      const LOCK_OUT = { palm: 6, fist: 6, point: 12, pinch: 6, none: 4 };
       const COMMAND_COOLDOWN = 900;
       const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
       function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
       function fingerOpen(lm, tip, pip, mcp, scale) {
-        return dist(lm[tip], lm[mcp]) > dist(lm[pip], lm[mcp]) * 1.18 && dist(lm[tip], lm[mcp]) > scale * 0.72;
+        return dist(lm[tip], lm[mcp]) > dist(lm[pip], lm[mcp]) * 1.22 && dist(lm[tip], lm[mcp]) > scale * 0.78;
+      }
+      function fingerClosed(lm, tip, pip, mcp, scale) {
+        return dist(lm[tip], lm[mcp]) < scale * 0.62 && dist(lm[tip], lm[0]) < dist(lm[pip], lm[0]) * 1.12;
+      }
+      function isPoint(lm, scale) {
+        const indexLen = dist(lm[8], lm[5]);
+        const middleLen = dist(lm[12], lm[9]);
+        const ringLen = dist(lm[16], lm[13]);
+        const pinkyLen = dist(lm[20], lm[17]);
+        const indexOut = indexLen > scale * 0.82 && dist(lm[8], lm[6]) > dist(lm[6], lm[5]) * 0.85;
+        const othersIn = middleLen < indexLen * 0.72 && ringLen < indexLen * 0.70 && pinkyLen < indexLen * 0.68;
+        const curled = fingerClosed(lm, 12, 10, 9, scale) && fingerClosed(lm, 16, 14, 13, scale) && fingerClosed(lm, 20, 18, 17, scale);
+        return indexOut && othersIn && curled;
       }
       function classify(lm) {
         const scale = Math.max(dist(lm[0], lm[9]), 0.08);
@@ -671,10 +685,11 @@
         const ring = fingerOpen(lm, 16, 14, 13, scale);
         const pinky = fingerOpen(lm, 20, 18, 17, scale);
         const openCount = [index, middle, ring, pinky].filter(Boolean).length;
-        if (pinch < 0.38 && index && !middle && !ring && !pinky) return "pinch";
-        if (index && !middle && !ring && !pinky) return "point";
+        const pointing = isPoint(lm, scale);
+        if (pointing && pinch < 0.36) return "pinch";
+        if (pointing) return "point";
         if (openCount >= 4 && thumb) return "palm";
-        if (openCount <= 1 && pinch < 0.85) return "fist";
+        if (openCount === 0 && !index && pinch < 0.90) return "fist";
         return "none";
       }
       async function loadHands() {
@@ -747,12 +762,19 @@
       }
       function onHand(landmarks) {
         const raw = classify(landmarks);
-        if (raw === locked) lockCount = Math.min(lockCount + 1, 30);
-        else {
-          lockCount = Math.max(0, lockCount - 2);
-          if (lockCount === 0) locked = raw;
+        if (raw === locked) {
+          lockCount = Math.min(lockCount + 1, 40);
+        } else if (locked === "point" && (raw === "pinch" || raw === "point")) {
+          lockCount = Math.min(lockCount + 1, 40);
+        } else {
+          lockCount -= (locked === "point" ? 1 : 2);
+          if (lockCount <= -(LOCK_OUT[locked] || 6)) {
+            locked = raw;
+            lockCount = 1;
+          }
         }
-        const firm = lockCount >= LOCK_FRAMES ? locked : "none";
+        const need = LOCK_IN[locked] || 8;
+        const firm = lockCount >= need ? locked : "none";
         if (firm === "point" || firm === "pinch") moveCursor(landmarks);
         else cursorEl.classList.remove("on", "pinch");
 
