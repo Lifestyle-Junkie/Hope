@@ -27,15 +27,15 @@
     .ui { position: fixed; inset: 0; z-index: 4; pointer-events: none; display: grid; place-items: center; }
     .chat {
       width: min(420px, 86vw); height: min(520px, 70vh);
-      pointer-events: auto; display: flex; flex-direction: column;
+      display: flex; flex-direction: column;
       border-radius: 22px; background: rgba(8, 14, 26, 0.82);
       border: 1px solid rgba(120, 200, 255, 0.28);
       box-shadow: 0 0 40px rgba(40, 140, 255, 0.18), inset 0 0 40px rgba(30, 80, 160, 0.12);
       backdrop-filter: blur(14px); opacity: 0; transform: scale(0.82);
       transition: opacity 0.35s ease, transform 0.35s ease; overflow: hidden;
-      user-select: text;
+      user-select: text; pointer-events: none;
     }
-    .chat.on { opacity: 1; transform: scale(1); }
+    .chat.on { opacity: 1; transform: scale(1); pointer-events: auto; }
     .chat header {
       display: flex; align-items: center; gap: 10px; padding: 14px 16px;
       border-bottom: 1px solid rgba(120, 200, 255, 0.15);
@@ -766,11 +766,21 @@
         lastClickAt = now;
         cursorEl.classList.add("click");
         setTimeout(() => cursorEl.classList.remove("click"), 140);
-        const el = document.elementFromPoint(cursorX, cursorY);
-        if (!el || el === cursorEl) return;
+        const x = cursorX, y = cursorY;
+        const hit = { clientX: x, clientY: y };
+        cursorEl.style.display = "none";
+        const el = document.elementFromPoint(x, y);
+        cursorEl.style.display = "";
+        if (!el) return;
+        if (el === canvas || el.id === "net") {
+          if (S.targetEnter < 0.2 && orbHit(hit)) flyIn();
+          return;
+        }
         const clickable = el.closest("button, a, input, textarea, label, .button, [role='button']") || el;
-        clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: cursorX, clientY: cursorY }));
+        if (typeof clickable.click === "function") clickable.click();
+        else clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y }));
         if (clickable.matches && clickable.matches("input, textarea")) clickable.focus();
+        tag.textContent = "clicked";
       }
       function fireCommand(kind) {
         const now = Date.now();
