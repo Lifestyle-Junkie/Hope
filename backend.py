@@ -5,14 +5,16 @@ Hope v2 API server
 - ElevenLabs + Discord
 - /browse-frame for live browser panel
 - browse_mode: Computer Use only when the globe icon is on
+- /ask-stream: SSE token stream so the UI can paint the reply as it arrives
 """
 from __future__ import annotations
 import os
 import re
+import json
 import threading
 import traceback
 import importlib.metadata
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Iterator
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import requests
@@ -327,10 +329,15 @@ def ask():
             search_query += " death date"
         print(f"[LiveWeb] live search browse_mode={browse_mode} query={search_query!r}")
         try:
-            try:
-                raw, analyzed = liveweb.perform_live_search(search_query, browse_mode=browse_mode)
-            except TypeError:
-                raw, analyzed = liveweb.perform_live_search(search_query)
+            if hasattr(liveweb, "perform_live_search"):
+                try:
+                    raw, analyzed = liveweb.perform_live_search(
+                        search_query, browse_mode=browse_mode
+                    )
+                except TypeError:
+                    raw, analyzed = liveweb.perform_live_search(search_query)
+            else:
+                raw, analyzed = None, None
             liveweb_raw, liveweb_analyzed = raw, sanitize_reply(analyzed or "")
             if liveweb_analyzed:
                 print(f"[LiveWeb] Analyzed (trunc): {liveweb_analyzed[:180]}{'...' if len(liveweb_analyzed) > 180 else ''}")
@@ -413,6 +420,174 @@ def ask():
             "history_length": len(new_history),
         },
     })
+
+
+def _hope_system_prompt(personality: str, context: Optional[str], previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
+    if personality == "god":
+        prompt = (
+            "You are God, a new god created by the old god Hope. "
+            "Address the user as dear child. Keep answers short. Light scripture tone. Emojis sparingly."
+        )
+    else:
+        prompt = (
+            "You are Hope, an AI designed by your creator Nick. "
+            "Keep answers SHORT and natural. For math, give the final number only. "
+            "Use conversation context. Never invent numbers that contradict earlier context. "
+            "Emojis are allowed but do not overuse them."
+        )
+    extra = []
+    if context:
+        extra.append(f"Context entity: {context}")
+    if previous_fact:
+        extra.append(f"Earlier fact: {previous_fact}")
+    if liveweb_fact and not str(liveweb_fact).lower().startswith("**note:**"):
+        extra.append(f"Live snippet: {liveweb_fact}")
+    if extra:
+        prompt += "\n\n=== CURRENT MEMORY ===\n" + "\n".join(extra) + "\n=== END MEMORY ==="
+    return prompt
+
+
+def _iter_openai_tokens(system_prompt: str, user_prompt: str, history: List[Dict[str, str]], max_tokens: int = 220) -> Iterator[str]:
+    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    for h in (history or [])[-12:]:
+        role = h.get("role") or "user"
+        content = (h.get("content") or "").strip()
+        if content and role in {"user", "assistant", "system"}:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_prompt})
+    if not OPENAI_AVAILABLE or openai is None:
+        return
+    try:
+        if hasattr(openai, "OpenAI"):
+            client = openai.OpenAI(api_key=OPENAI_API_KEY)
+            stream = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.4,
+                stream=True,
+            )
+            for chunk in stream:
+                try:
+                    delta = chunk.choices[0].delta.content or ""
+                except Exception:
+                    delta = ""
+                if delta:
+                    yield delta
+            return
+        stream = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=0.4,
+            stream=True,
+        )
+        for chunk in stream:
+            try:
+                delta = chunk["choices"][0]["delta"].get("content") or ""
+            except Exception:
+                delta = ""
+            if delta:
+                yield delta
+    except Exception as e:
+        print(f"[Stream] OpenAI error: {e}")
+        return
+
+
+@app.route("/ask-stream", methods=["POST", "OPTIONS"])
+def ask_stream():
+    if request.method == "OPTIONS":
+        return ("", 200)
+    try:
+        data = request.get_json(force=True) or {}
+    except Exception:
+        return error_response("Invalid JSON", 400)
+    user_prompt = (data.get("message") or "").strip()
+    personality = (data.get("personality") or "hope").lower().strip()
+    browse_mode = _as_bool(data.get("browse_mode") or data.get("use_browser"))
+    if not user_prompt:
+        return error_response("Empty prompt", 400)
+    if personality == "god":
+        session_id = f"discord-{(request.remote_addr or 'anon')}"
+    else:
+        session_id = WEB_MEMORY_KEY
+    session_data = get_session(session_id) or {}
+    last_person = session_data.get("last_person") or ""
+    last_fact_mem = sanitize_reply(session_data.get("last_fact") or "")
+    last_topic = session_data.get("last_topic") or ""
+    last_ticker = session_data.get("last_ticker") or ""
+    last_url = session_data.get("last_url") or ""
+    history: List[Dict[str, str]] = session_data.get("history") or []
+    history = [
+        {"role": h.get("role", "user"), "content": sanitize_reply(h.get("content") or "")}
+        for h in history
+    ]
+    new_topic = topic_of(user_prompt)
+    reuse_context = True
+    chosen_context_person = last_person if reuse_context else None
+    chosen_previous_fact = last_fact_mem if reuse_context else None
+    liveweb_analyzed = None
+    needs_live = False
+    if liveweb and hasattr(liveweb, "needs_live_data"):
+        try:
+            needs_live = bool(liveweb.needs_live_data(user_prompt, browse_mode=browse_mode))
+        except TypeError:
+            needs_live = bool(browse_mode)
+            if not browse_mode:
+                needs_live = bool(liveweb.needs_live_data(user_prompt))
+    if liveweb and needs_live and hasattr(liveweb, "perform_live_search"):
+        try:
+            try:
+                raw, analyzed = liveweb.perform_live_search(user_prompt, browse_mode=browse_mode)
+            except TypeError:
+                raw, analyzed = liveweb.perform_live_search(user_prompt)
+            liveweb_analyzed = sanitize_reply(analyzed or "")
+        except Exception as e:
+            print(f"[LiveWeb/stream] {e}")
+    chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
+    system_prompt = _hope_system_prompt(personality, chosen_context_person, chained_fact, liveweb_analyzed)
+
+    def generate():
+        full = ""
+        yield "data: " + json.dumps({"type": "start"}) + "\n\n"
+        got = False
+        for piece in _iter_openai_tokens(system_prompt, user_prompt, history):
+            got = True
+            full += piece
+            yield "data: " + json.dumps({"type": "token", "text": piece}) + "\n\n"
+        if not got:
+            full = liveweb_analyzed or "No data available."
+            yield "data: " + json.dumps({"type": "token", "text": full}) + "\n\n"
+        full = sanitize_reply(full)
+        new_history = history + [
+            {"role": "user", "content": user_prompt},
+            {"role": "assistant", "content": full},
+        ]
+        try:
+            update_session(
+                session_id,
+                last_person=_extract_entity_from_text(full) or chosen_context_person,
+                last_fact=full[:400],
+                last_topic=new_topic or last_topic,
+                history=new_history,
+                last_ticker=last_ticker or None,
+                last_url=last_url or None,
+            )
+        except Exception as e:
+            print(f"[Stream] memory update failed: {e}")
+        yield "data: " + json.dumps({"type": "done", "reply": full}) + "\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
 def welcome():
     if request.method == "OPTIONS":
