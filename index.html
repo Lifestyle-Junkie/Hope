@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -303,7 +302,6 @@
         await sendHeard(rest);
         return;
       }
-      // "Hey Hope" / "Hope" with no command — open the mic and listen
       if (!talkOn) startTalk();
     }
     async function startWake() {
@@ -606,6 +604,8 @@
       const t = String(msg || "").toLowerCase();
       const handsOn = /\b((enable|turn on|start|activate)\b.{0,24}\bhands?( tracking)?|hands?( tracking)?\b.{0,12}\b(on|enable|start|activate))\b/.test(t);
       const handsOff = /\b((disable|turn off|stop|deactivate)\b.{0,24}\bhands?( tracking)?|hands?( tracking)?\b.{0,12}\b(off|disable|stop))\b/.test(t);
+      const browseOn = /\b((enable|turn on|start|activate|open)\b.{0,28}\b((the |live )?browser|live browse)|((live )?browser)\b.{0,16}\b(on|enable|start|activate))\b/.test(t);
+      const browseOff = /\b((disable|turn off|stop|close|deactivate)\b.{0,28}\b((the |live )?browser|live browse)|((live )?browser)\b.{0,16}\b(off|disable|stop|close))\b/.test(t);
       if (handsOn) {
         const box = document.getElementById("setHands");
         if (box) box.checked = true;
@@ -617,6 +617,18 @@
         if (box) box.checked = false;
         if (window.stopHopeHands) window.stopHopeHands();
         return "Hand tracking is off.";
+      }
+      if (browseOn) {
+        setBrowse(true);
+        return "Live browser is on. Tell me where to go — like YouTube, Google, or any site.";
+      }
+      if (browseOff) {
+        setBrowse(false);
+        try { fetch(`${window.BACKEND_URL}/browse-stop`, { method: "POST" }); } catch (_) {}
+        return "Live browser is off.";
+      }
+      if (/\b(do you have|can you use|what is|what's|whats|you have)\b.{0,24}\b(live )?browser\b/.test(t) || (/\blive browser\b/.test(t) && /\b(what|have|access|feature|mean)\b/.test(t))) {
+        return "Yes. I have a live browser. Say enable live browser, or tell me to go to a site like YouTube.";
       }
       return null;
     }
@@ -770,7 +782,7 @@
     });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
     function looksLikeBrowse(text) {
-      return /\b(open (the )?browser|turn on (the )?browser|browse|go to|visit|open (https?:\/\/|www\.)|look up|google|youtube|search (for|the web)|navigate to)\b/i.test(String(text || ""));
+      return /\b(open (the |live )?browser|turn on (the |live )?browser|enable (the |live )?browser|live browser|browse mode|go to|visit|open (https?:\/\/|www\.)|look up|google|youtube|search (for|the web)|navigate to)\b/i.test(String(text || ""));
     }
     function frameSrc(img) {
       if (!img) return "";
