@@ -420,8 +420,6 @@ def ask():
             "history_length": len(new_history),
         },
     })
-
-
 def _hope_system_prompt(personality: str, context: Optional[str], previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
     if personality == "god":
         prompt = (
@@ -433,7 +431,9 @@ def _hope_system_prompt(personality: str, context: Optional[str], previous_fact:
             "You are Hope, an AI designed by your creator Nick. "
             "Keep answers SHORT and natural. For math, give the final number only. "
             "Use conversation context. Never invent numbers that contradict earlier context. "
-            "Emojis are allowed but do not overuse them."
+            "You have a live browser feature. If the user says enable live browser, turn on live browser, "
+            "open the browser, or go to a website, you CAN do that. Confirm it and ask where to go. "
+            "Never say you cannot browse the web. Emojis are allowed but do not overuse them."
         )
     extra = []
     if context:
@@ -445,8 +445,6 @@ def _hope_system_prompt(personality: str, context: Optional[str], previous_fact:
     if extra:
         prompt += "\n\n=== CURRENT MEMORY ===\n" + "\n".join(extra) + "\n=== END MEMORY ==="
     return prompt
-
-
 def _iter_openai_tokens(system_prompt: str, user_prompt: str, history: List[Dict[str, str]], max_tokens: int = 220) -> Iterator[str]:
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for h in (history or [])[-12:]:
@@ -492,8 +490,6 @@ def _iter_openai_tokens(system_prompt: str, user_prompt: str, history: List[Dict
     except Exception as e:
         print(f"[Stream] OpenAI error: {e}")
         return
-
-
 @app.route("/ask-stream", methods=["POST", "OPTIONS"])
 def ask_stream():
     if request.method == "OPTIONS":
@@ -546,7 +542,6 @@ def ask_stream():
             print(f"[LiveWeb/stream] {e}")
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
     system_prompt = _hope_system_prompt(personality, chosen_context_person, chained_fact, liveweb_analyzed)
-
     def generate():
         full = ""
         yield "data: " + json.dumps({"type": "start"}) + "\n\n"
@@ -576,7 +571,6 @@ def ask_stream():
         except Exception as e:
             print(f"[Stream] memory update failed: {e}")
         yield "data: " + json.dumps({"type": "done", "reply": full}) + "\n\n"
-
     return Response(
         generate(),
         mimetype="text/event-stream",
@@ -586,8 +580,6 @@ def ask_stream():
             "Connection": "keep-alive",
         },
     )
-
-
 @app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
 def welcome():
     if request.method == "OPTIONS":
