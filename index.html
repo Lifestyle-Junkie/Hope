@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -360,7 +361,12 @@
         }
         finalSaid = finalSaid.trim();
         interimSaid = interimSaid.trim();
-        if (interimSaid) pending = interimSaid;
+        if (interimSaid) {
+          pending = interimSaid;
+          if (window.noteHeardPartial && Date.now() >= (window.hopeIgnoreUntil || 0) && !isEcho(interimSaid)) {
+            window.noteHeardPartial(interimSaid);
+          }
+        }
         if (finalSaid) {
           pending = "";
           if (Date.now() >= (window.hopeIgnoreUntil || 0) && !/welcome back/i.test(finalSaid) && !isEcho(finalSaid)) sendHeard(finalSaid);
@@ -614,13 +620,74 @@
       }
       return null;
     }
-    async function sendToHope(text) {
+    let liveUserEl = null;
+    let liveBotEl = null;
+    let streamAbort = null;
+    let streamTimer = null;
+    let lastStreamedMsg = "";
+    let streamInFlight = "";
+
+    function setLiveUserText(text) {
+      const said = String(text || "").trim();
+      if (!said) return;
+      if (!liveUserEl || !liveUserEl.isConnected) {
+        liveUserEl = addLine(said, "me");
+        liveUserEl.style.opacity = "0.7";
+      } else {
+        liveUserEl.textContent = said;
+      }
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    }
+
+    function noteHeardPartial(text) {
+      const clean = String(text || "").replace(/^(hey|hi|yo|ok|okay|oh)[,.\s]+/i, "").replace(/^(hope|hoped|hopes)[,.\s]*/i, "").trim() || String(text || "").trim();
+      if (!clean) return;
+      poke();
+      setLiveUserText(clean);
+      if (streamTimer) clearTimeout(streamTimer);
+      streamTimer = setTimeout(() => {
+        streamTimer = null;
+        sendToHope(clean, { fromPartial: true });
+      }, 700);
+    }
+
+    async function readSseStream(res, onToken) {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let full = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() || "";
+        for (const block of parts) {
+          const line = block.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          try {
+            const ev = JSON.parse(line.slice(5).trim());
+            if (ev.type === "token" && ev.text) {
+              full += ev.text;
+              onToken(full);
+            }
+            if (ev.type === "done" && ev.reply) full = ev.reply;
+          } catch (_) {}
+        }
+      }
+      return full;
+    }
+
+    async function sendToHope(text, opts) {
       const msg = String(text || "").trim();
       if (!msg && !pendingImage) return;
       poke();
       const local = msg ? localHopeCommand(msg) : null;
       if (local) {
-        addLine(msg, "me");
+        if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
+        setLiveUserText(msg);
+        if (liveUserEl) liveUserEl.style.opacity = "1";
+        liveUserEl = null;
         addLine(local, "bot");
         await speakText(local);
         S.mode = "idle";
@@ -628,29 +695,71 @@
       }
       if (/\b(close|stop|turn off)\b.*\bbrowser\b|\bbrowser\b.*\b(off|close|stop)\b/i.test(msg)) setBrowse(false);
       else if (looksLikeBrowse(msg)) setBrowse(true);
-      addLine(msg || "[image]", "me");
+
+      if (streamInFlight === msg && opts && opts.fromPartial) return;
+      if (streamAbort) {
+        try { streamAbort.abort(); } catch (_) {}
+        streamAbort = null;
+      }
+      streamInFlight = msg;
+      lastStreamedMsg = msg;
+      setLiveUserText(msg || "[image]");
+      if (liveUserEl) liveUserEl.style.opacity = "1";
       S.mode = "talking";
-      let reply = "No response.";
+      if (!liveBotEl || !liveBotEl.isConnected) liveBotEl = addLine("", "bot");
+      liveBotEl.textContent = "";
+      const ctrl = new AbortController();
+      streamAbort = ctrl;
+      let reply = "";
+      const payload = {
+        message: msg || "[image]",
+        concise: !!(document.getElementById("setConcise") && document.getElementById("setConcise").checked),
+        browse_mode: !!(window.HOPE_BROWSE_MODE),
+        image: pendingImage || null
+      };
       try {
-        const res = await fetch(`${window.BACKEND_URL}/ask`, {
+        const res = await fetch(`${window.BACKEND_URL}/ask-stream`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: msg || "[image]",
-            concise: !!(document.getElementById("setConcise") && document.getElementById("setConcise").checked),
-            browse_mode: !!(window.HOPE_BROWSE_MODE),
-            image: pendingImage || null
-          })
+          headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+          body: JSON.stringify(payload),
+          signal: ctrl.signal
         });
-        const data = await res.json();
-        reply = data.reply || data.liveweb_analyzed || "No response.";
-      } catch (_) { reply = "Could not reach Hope."; }
+        if (res.ok && res.body) {
+          reply = await readSseStream(res, (full) => {
+            if (liveBotEl) liveBotEl.innerHTML = mdToHTML(full);
+            msgsEl.scrollTop = msgsEl.scrollHeight;
+          });
+        } else {
+          throw new Error("stream");
+        }
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        try {
+          const res = await fetch(`${window.BACKEND_URL}/ask`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: ctrl.signal
+          });
+          const data = await res.json();
+          reply = data.reply || data.liveweb_analyzed || "No response.";
+          if (liveBotEl) liveBotEl.innerHTML = mdToHTML(reply);
+        } catch (e2) {
+          if (e2 && e2.name === "AbortError") return;
+          reply = "Could not reach Hope.";
+          if (liveBotEl) liveBotEl.textContent = reply;
+        }
+      }
+      if (streamAbort === ctrl) streamAbort = null;
+      streamInFlight = "";
+      liveUserEl = null;
+      liveBotEl = null;
       clearImage();
-      addLine(reply, "bot");
-      if (!/welcome back/i.test(reply)) await speakText(reply);
+      if (reply && !/welcome back/i.test(reply)) await speakText(reply);
       S.mode = "idle";
     }
     window.sendToHope = sendToHope;
+    window.noteHeardPartial = noteHeardPartial;
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       const text = input.value.trim();
