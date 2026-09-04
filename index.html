@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -650,9 +649,13 @@
         setMap(true, route);
         return "Opening the map to " + route.destination + ".";
       }
-      if (/\b(open|show|enable|turn on)\b.{0,16}\bmaps?\b/.test(t) || /\bmaps? on\b/.test(t)) {
+      const mapsOnly = /\b(open|show|enable|turn on)\b.{0,16}\bmaps?\b/.test(t) || /\bmaps? on\b/.test(t);
+      const extraAsk = /\b(how far|closest|nearest|near me|distance|minutes? away)\b/.test(t);
+      if (mapsOnly && !extraAsk) {
         setMap(true, { origin: "current location", destination: "" });
-        return "Maps are on.";
+        return window.HOPE_ORIGIN
+          ? ("Maps are on. You're at " + window.HOPE_ORIGIN + ".")
+          : "Maps are on. Allow location so I can use your exact spot.";
       }
       return null;
     }
@@ -747,11 +750,17 @@
       const ctrl = new AbortController();
       streamAbort = ctrl;
       let reply = "";
+      if (/\b(near me|nearby|closest|nearest|how far|how long|directions?|route to|take me to|arcades?|restaurants?|maps?)\b/i.test(msg)) {
+        if (!window.HOPE_ORIGIN) {
+          window.HOPE_ORIGIN = await getMyOrigin();
+        }
+      }
       const payload = {
         message: msg || "[image]",
         concise: !!(document.getElementById("setConcise") && document.getElementById("setConcise").checked),
         browse_mode: !!(window.HOPE_BROWSE_MODE),
-        image: pendingImage || null
+        image: pendingImage || null,
+        origin: window.HOPE_ORIGIN || null
       };
       try {
         const res = await fetch(`${window.BACKEND_URL}/ask-stream`, {
@@ -791,6 +800,11 @@
       liveUserEl = null;
       liveBotEl = null;
       clearImage();
+      if (reply && /\b(near me|nearby|closest|nearest|how far|directions? to|route to)\b/i.test(msg)) {
+        const destMatch = String(reply).match(/\bat\s+([^\n.]{8,80})/i);
+        if (destMatch) setMap(true, { origin: window.HOPE_ORIGIN || "current location", destination: destMatch[1].trim() });
+        else setMap(true, { origin: window.HOPE_ORIGIN || "current location", destination: "" });
+      }
       if (reply && !/welcome back/i.test(reply)) await speakText(reply);
       S.mode = "idle";
     }
@@ -822,7 +836,11 @@
           return;
         }
         navigator.geolocation.getCurrentPosition(
-          (pos) => resolve(pos.coords.latitude.toFixed(5) + "," + pos.coords.longitude.toFixed(5)),
+          (pos) => {
+            const here = pos.coords.latitude.toFixed(5) + "," + pos.coords.longitude.toFixed(5);
+            window.HOPE_ORIGIN = here;
+            resolve(here);
+          },
           (err) => {
             console.warn("[Maps] geolocation failed", err);
             resolve(null);
