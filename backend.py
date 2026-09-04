@@ -17,7 +17,7 @@ import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List, Iterator
 from flask import Flask, request, jsonify, Response, redirect
-from urllib.parse import quote
+from urllib.parse import quote as urlquote
 from flask_cors import CORS
 import requests
 from sanitize import sanitize_reply
@@ -719,7 +719,7 @@ def maps_embed():
     destination = (request.args.get("destination") or "Pembroke Pines, FL").strip()
     url = (
         "https://www.google.com/maps/embed/v1/directions"
-        f"?key={quote(key)}&origin={quote(origin)}&destination={quote(destination)}"
+        f"?key={urlquote(key)}&origin={urlquote(origin)}&destination={urlquote(destination)}"
     )
     print(f"[Maps] embed {origin!r} -> {destination!r}")
     return redirect(url)
