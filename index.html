@@ -230,7 +230,7 @@
   </div>
   <div class="player" id="player"><div class="card"><button type="button" class="close-player" id="closePlayer">×</button><div class="top"><div class="pfp"><div class="playing"><div class="greenline line-1"></div><div class="greenline line-2"></div><div class="greenline line-3"></div><div class="greenline line-4"></div><div class="greenline line-5"></div></div></div><div class="texts"><p class="title-1">Hope Radio</p><p class="title-2">Coming soon</p></div></div><div class="controls"><svg class="volume_button" width="20" height="16" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M11.26 3.691A1.2 1.2 0 0 1 12 4.8v14.4a1.199 1.199 0 0 1-2.048.848L5.503 15.6H2.4a1.2 1.2 0 0 1-1.2-1.2V9.6a1.2 1.2 0 0 1 1.2-1.2h3.103l4.449-4.448a1.2 1.2 0 0 1 1.308-.26Z" clip-rule="evenodd"></path></svg><div class="volume"><div class="slider"><div class="green"></div></div><div class="circle"></div></div><div class="air"></div></div><div class="time"><div class="elapsed"></div></div><p class="timetext time_now">0:00</p><p class="timetext time_full">0:00</p></div></div>
   <div class="browse-panel" id="browsePanel"><div class="card"><button type="button" class="close-player" id="closeBrowse">×</button><div class="title-1" style="margin:4px 0 8px">Live browser</div><img id="browseImg" alt="browser frame" /><div class="blog" id="browseLog">Browser off. Say “Hope, open the browser and go to …” or tap the globe.</div></div></div>
-  <div class="map-panel" id="mapPanel"><div class="card"><button type="button" class="close-player" id="closeMap">×</button><div class="title-1" style="margin:4px 0 8px" id="mapTitle">Maps</div><iframe id="mapFrame" title="Hope maps" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe><div class="blog" id="mapLog">Say “Hope, directions to Miami from Pembroke Pines.”</div></div></div>
+  <div class="map-panel" id="mapPanel"><div class="card"><button type="button" class="close-player" id="closeMap">×</button><div class="title-1" style="margin:4px 0 8px" id="mapTitle">Maps</div><iframe id="mapFrame" title="Hope maps" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe><div class="blog" id="mapLog">Say “Hope, open maps” or “directions to Miami.”</div></div></div>
   <div class="ui"><div class="chat" id="chat"><header><span>Inside the orb</span><button type="button" id="exit">Fly out</button></header><div class="msgs" id="msgs"></div><div class="preview-row" id="imgPreview"><img id="imgThumb" alt="preview" /><button type="button" id="removeImage">Remove</button></div><form id="form"><textarea id="input" rows="1" placeholder="Say something…"></textarea><button type="submit">Send</button></form></div></div>
   <script>
     window.BACKEND_URL = window.BACKEND_URL || "https://hope-production-7e9d.up.railway.app";
@@ -651,7 +651,7 @@
         return "Opening the map to " + route.destination + ".";
       }
       if (/\b(open|show|enable|turn on)\b.{0,16}\bmaps?\b/.test(t) || /\bmaps? on\b/.test(t)) {
-        setMap(true, { origin: "current location", destination: "Pembroke Pines, FL" });
+        setMap(true, { origin: "current location", destination: "" });
         return "Maps are on.";
       }
       return null;
@@ -815,7 +815,23 @@
       if (dest) return { origin: "current location", destination: dest[1].replace(/[?.!]+$/, "").trim() };
       return null;
     }
-    function setMap(on, route) {
+    function getMyOrigin() {
+      return new Promise((resolve) => {
+        if (!navigator.geolocation) {
+          resolve(null);
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve(pos.coords.latitude.toFixed(5) + "," + pos.coords.longitude.toFixed(5)),
+          (err) => {
+            console.warn("[Maps] geolocation failed", err);
+            resolve(null);
+          },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        );
+      });
+    }
+    async function setMap(on, route) {
       const frame = document.getElementById("mapFrame");
       const title = document.getElementById("mapTitle");
       const log = document.getElementById("mapLog");
@@ -827,12 +843,20 @@
         poke();
         return;
       }
-      const origin = (route && route.origin) || "current location";
-      const destination = (route && route.destination) || "Pembroke Pines, FL";
+      let origin = (route && route.origin) || "current location";
+      let destination = (route && route.destination) || "";
+      if (!origin || /current location/i.test(origin)) {
+        if (log) log.textContent = "Getting your location…";
+        const here = await getMyOrigin();
+        origin = here || "Miami, FL";
+      }
+      if (!destination || /pembroke pines/i.test(destination)) {
+        destination = origin;
+      }
       const backend = (window.BACKEND_URL || "").replace(/\/$/, "");
       if (frame) frame.src = backend + "/maps-embed?origin=" + encodeURIComponent(origin) + "&destination=" + encodeURIComponent(destination);
-      if (title) title.textContent = route && route.destination ? ("Route to " + route.destination) : "Maps";
-      if (log) log.textContent = route ? ((route.origin || "current location") + " → " + route.destination) : "Maps on.";
+      if (title) title.textContent = destination === origin ? "Your location" : ("Route to " + destination);
+      if (log) log.textContent = origin + " → " + destination;
       poke();
     }
     function looksLikeBrowse(text) {
