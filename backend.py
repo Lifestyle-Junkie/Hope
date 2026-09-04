@@ -6,6 +6,7 @@ Hope v2 API server
 - /browse-frame for live browser panel
 - browse_mode: Computer Use only when the globe icon is on
 - /ask-stream: SSE token stream so the UI can paint the reply as it arrives
+- /maps-embed: Google Maps directions iframe (key stays in Railway)
 """
 from __future__ import annotations
 import os
@@ -15,7 +16,8 @@ import threading
 import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List, Iterator
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, redirect
+from urllib.parse import quote
 from flask_cors import CORS
 import requests
 from sanitize import sanitize_reply
@@ -76,6 +78,8 @@ else:
     print("🔐 OpenAI enabled.")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = "DAQ2lZdypaQsApLOpVPq"
+MAPS_API_KEY = os.getenv("MAPS_API_KEY", "")
+print(f"[Debug] Maps key loaded (length: {len(MAPS_API_KEY)} chars).")
 app = Flask(__name__)
 CORS(app)
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
@@ -703,6 +707,22 @@ def send_email_route():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+@app.route("/maps-embed", methods=["GET", "OPTIONS"])
+def maps_embed():
+    if request.method == "OPTIONS":
+        return ("", 200)
+    key = (MAPS_API_KEY or os.getenv("MAPS_API_KEY", "")).strip()
+    if not key:
+        print("[Maps] MAPS_API_KEY missing")
+        return error_response("MAPS_API_KEY not set", 500)
+    origin = (request.args.get("origin") or "current location").strip()
+    destination = (request.args.get("destination") or "Pembroke Pines, FL").strip()
+    url = (
+        "https://www.google.com/maps/embed/v1/directions"
+        f"?key={quote(key)}&origin={quote(origin)}&destination={quote(destination)}"
+    )
+    print(f"[Maps] embed {origin!r} -> {destination!r}")
+    return redirect(url)
 @app.route("/browse-frame", methods=["GET", "OPTIONS"])
 def browse_frame():
     if request.method == "OPTIONS":
@@ -763,6 +783,7 @@ if __name__ == "__main__":
     print("🔐 OpenAI enabled:" if OPENAI_AVAILABLE else "🛑 OpenAI disabled (no key).")
     print("🎤 ElevenLabs voice enabled.")
     print("📈 Market quotes enabled:" if market else "🛑 Market module missing.")
+    print("🗺️ Maps embed enabled:" if MAPS_API_KEY else "🛑 MAPS_API_KEY missing.")
     try:
         app.run(host=host, port=port, debug=debug, use_reloader=False)
     except KeyboardInterrupt:
