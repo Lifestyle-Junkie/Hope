@@ -11,13 +11,11 @@ from __future__ import annotations
 import os
 import re
 from typing import Optional, List, Any, Tuple
-
 try:
     import openai
 except Exception:
     openai = None  # type: ignore
     print("[Tone] OpenAI import failed.")
-
 # --------------- Patterns --------------- #
 DEATH_QUERY_RE = re.compile(
     r"\b(how did|cause of death|when did .* die|did .* die|die|died|death|dead|deceased|killed|assassinated|shot|passed away)\b",
@@ -90,12 +88,16 @@ GREETING_RE = re.compile(
     r")[\s!?.]*$",
     re.IGNORECASE,
 )
+PLACE_QUERY_RE = re.compile(
+    r"\b(near me|nearby|closest|nearest|how far|how long|minutes? away|"
+    r"distance (to|from)|restaurants?|arcades?|gas stations?|coffee|pizza)\b",
+    re.IGNORECASE,
+)
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
     "come", "release", "date", "latest", "news", "he", "she", "they", "cause", "death", "die"
 }
-
 _COLOR_MAP = {
     "blue": "#1e3a8a",
     "navy": "#0f172a",
@@ -113,17 +115,12 @@ _COLOR_MAP = {
     "teal": "#134e4a",
     "mint": "#7dffb3",
 }
-
 MODEL = "gpt-5.6-terra"
-
-
 def _openai_available() -> bool:
     if not openai:
         return False
     key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
     return bool(key)
-
-
 def _get_client():
     """Official OpenAI client for this worker."""
     if not openai:
@@ -138,17 +135,13 @@ def _get_client():
     except Exception as e:
         print(f"[Tone] Client create error: {type(e).__name__}: {e}")
         return None
-
-
 def _sanitize_md(text: str) -> str:
     if not text:
         return ""
     fences: List[str] = []
-
     def _save_fence(m: re.Match) -> str:
         fences.append(m.group(0))
         return f"\0FENCE{len(fences) - 1}\0"
-
     text = re.sub(r"```[\s\S]*?```", _save_fence, text)
     text = re.sub(r"<\s*/?\s*(?:b|strong)\s*>", "**", text)
     text = re.sub(r"<[^>]+>", "", text)
@@ -157,8 +150,6 @@ def _sanitize_md(text: str) -> str:
     for i, fence in enumerate(fences):
         text = text.replace(f"\0FENCE{i}\0", fence)
     return text.strip()
-
-
 def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
     if not source:
         return fallback or "This subject"
@@ -170,8 +161,6 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
         if c.lower() not in STOP and len(c) > 2:
             return c
     return fallback or "This subject"
-
-
 def _extract_url(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
@@ -183,14 +172,10 @@ def _extract_url(text: Optional[str]) -> Optional[str]:
         host = d.group(0).lower()
         return f"https://{host}"
     return None
-
-
 def _format_site_link(url: str, label: Optional[str] = None) -> str:
     host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
     label = label or host
     return f"[{label}]({url})"
-
-
 def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
     if not history:
         return None
@@ -209,23 +194,18 @@ def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
     except Exception as e:
         print(f"[Tone] last_html extract error: {e}")
     return None
-
-
 def _pick_color_from_prompt(prompt: str) -> Optional[str]:
     low = (prompt or "").lower()
     for name, hex_ in _COLOR_MAP.items():
         if re.search(rf"\b{name}\b", low):
             return hex_
     return None
-
-
 def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
     if not prev_html or not prompt:
         return None
     low = prompt.lower()
     html = prev_html
     changed = False
-
     mentions_button = bool(re.search(r"\b(button|buttons|cta)\b", low))
     color = _pick_color_from_prompt(prompt)
     wants_bg = bool(
@@ -233,7 +213,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
         or re.search(r"\btheme\b", low)
         or re.search(r"\b(make|change|set)\b.*\b(background|theme|page|site|html)\b", low)
     )
-
     if color and not mentions_button and (
         wants_bg
         or re.search(
@@ -272,7 +251,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             )
             if n:
                 html = new_html
-
     if mentions_button and color:
         new_html, n = re.subn(
             r"(button\s*\{[^}]*?background\s*:\s*)([^;]+)",
@@ -295,7 +273,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-
     if re.search(r"\b(bold|bolder|thicker|more bold)\b", low):
         injected = False
         for sel in ("body", "h1", "h2", "h3"):
@@ -324,7 +301,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
                 1,
             )
             changed = True
-
     if (
         re.search(r"\b(bigger|larger|increase)\b.*\b(text|font)\b", low)
         or re.search(r"\b(text|font)\b.*\b(bigger|larger)\b", low)
@@ -351,7 +327,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-
     if (
         re.search(r"\b(smaller|tinier|decrease)\b.*\b(text|font)\b", low)
         or re.search(r"\b(text|font)\b.*\b(smaller|tinier)\b", low)
@@ -377,7 +352,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-
     if re.search(r"\b(rounder|more rounded|softer)\b", low):
         new_html, n = re.subn(
             r"(\.card\s*\{[^}]*?border-radius\s*:\s*)([^;]+)",
@@ -400,7 +374,6 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             if n:
                 html = new_html
                 changed = True
-
     if re.search(r"\b(sharper|less rounded|square)\b", low):
         new_html, n = re.subn(
             r"(\.card\s*\{[^}]*?border-radius\s*:\s*)([^;]+)",
@@ -412,23 +385,17 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
         if n:
             html = new_html
             changed = True
-
     return html if changed else None
-
-
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
     """Terra-only caller. Never uses max_tokens (unsupported on this model)."""
     client = _get_client()
     if not client:
         return "Model unavailable right now, sir."
-
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-
     budgets = [max(int(max_tokens), 200), 400, 700]
-
     last_err = None
     for budget in budgets:
         try:
@@ -442,10 +409,8 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
                 content = (resp.choices[0].message.content or "").strip()
             except Exception:
                 content = ""
-
             if content:
                 return _sanitize_md(content)
-
             fr = None
             try:
                 fr = getattr(resp.choices[0], "finish_reason", None)
@@ -455,12 +420,9 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
         except Exception as e:
             last_err = e
             print(f"[Tone] OpenAI error at budget={budget}: {type(e).__name__}: {e}")
-
     if last_err:
         print(f"[Tone] All attempts failed: {type(last_err).__name__}: {last_err}")
     return "Sorry boss, I hit a temporary glitch. Ask me that again, sir."
-
-
 def _extract_message_text(resp) -> str:
     try:
         choice = resp.choices[0]
@@ -485,8 +447,6 @@ def _extract_message_text(resp) -> str:
     except Exception as e:
         print(f"[Tone] Extract error: {e}")
     return ""
-
-
 def _finalize_code_content(content: str) -> str:
     content = (content or "").strip()
     if not content:
@@ -499,8 +459,6 @@ def _finalize_code_content(content: str) -> str:
     )
     lang = "html" if looks_html else "text"
     return f"```{lang}\n{content}\n```"
-
-
 def _style_variant(user: str) -> Tuple[str, str, str, str]:
     low = (user or "").lower()
     seed = sum(ord(c) for c in low) % 4
@@ -517,12 +475,9 @@ def _style_variant(user: str) -> Tuple[str, str, str, str]:
         ("#0f1410", "#1a221c", "#a3e635", "#ecfccb"),
     ]
     return variants[seed]
-
-
 def _html_store_fallback(user: str) -> str:
     low = (user or "").lower()
     seed = sum(ord(c) for c in low) % 3
-
     if "book" in low:
         product = "Books"
         items = [
@@ -571,16 +526,13 @@ def _html_store_fallback(user: str) -> str:
             ("Trail Flex", "All-terrain grip", "$110"),
             ("Night Slip", "Lightweight daily", "$68"),
         ]
-
     bg, card_bg, accent, text = _style_variant(user)
-
     if "landing" in low or "book" in low:
         layout = "editorial" if seed != 1 else "split_hero"
     elif "shoe" in low or "store" in low or "shop" in low:
         layout = "store_grid" if seed != 2 else "bento"
     else:
         layout = ["store_grid", "split_hero", "bento"][seed]
-
     if layout == "store_grid":
         cards = "\n".join(
             f"""      <article class="card">
@@ -630,7 +582,6 @@ def _html_store_fallback(user: str) -> str:
   <footer>Store grid layout</footer>
 </body>
 </html>"""
-
     elif layout == "editorial":
         featured = items[0]
         rows = "\n".join(
@@ -682,7 +633,6 @@ def _html_store_fallback(user: str) -> str:
   <footer>Editorial landing layout</footer>
 </body>
 </html>"""
-
     elif layout == "split_hero":
         side = "\n".join(
             f"""      <li>
@@ -732,7 +682,6 @@ def _html_store_fallback(user: str) -> str:
   </div>
 </body>
 </html>"""
-
     else:
         a, b, c, d = items[0], items[1], items[2], items[3]
         html = f"""<!DOCTYPE html>
@@ -776,25 +725,19 @@ def _html_store_fallback(user: str) -> str:
   <footer>Bento mosaic layout</footer>
 </body>
 </html>"""
-
     label = {
         "store_grid": "product grid",
         "editorial": "editorial landing",
         "split_hero": "split-hero",
         "bento": "bento mosaic",
     }.get(layout, layout)
-
     return f"""Here's a single-file {product.lower()} page for you, boss ({label} layout):
-
 ```html
 {html}
 ```"""
-
-
 def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     is_iteration_payload = "previous html" in (user or "").lower()
     client = _get_client()
-
     if not client:
         print("[Tone] Code path: OpenAI unavailable")
         if is_iteration_payload:
@@ -810,14 +753,11 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
                 "Try: make the background blue / make the buttons purple / make the text more bold"
             )
         return _html_store_fallback(user)
-
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-
     budgets = [max(int(max_tokens), 1200), 2000, 2500]
-
     for i, budget in enumerate(budgets, start=1):
         try:
             resp = client.chat.completions.create(
@@ -831,7 +771,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
                 return _finalize_code_content(content)
         except Exception as e:
             print(f"[Tone] OpenAI code attempt{i} error: {type(e).__name__}: {e}")
-
     try:
         short_system = (
             "You are Hope, a coding assistant by Nick. "
@@ -855,7 +794,6 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             return _finalize_code_content(content)
     except Exception as e:
         print(f"[Tone] OpenAI code short-system error: {type(e).__name__}: {e}")
-
     if is_iteration_payload:
         m = re.search(r"```html\s*([\s\S]*?)```", user, re.IGNORECASE)
         if m:
@@ -868,11 +806,8 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
             "Couldn't apply that edit right now, sir. "
             "Try: make the background blue / make the buttons purple / make the text more bold"
         )
-
     print("[Tone] Using local HTML fallback after empty model responses")
     return _html_store_fallback(user)
-
-
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
     lines = []
     if previous_fact:
@@ -880,8 +815,6 @@ def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str])
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         lines.append(f"Live snippet: {liveweb_fact}")
     return "\n".join(lines)
-
-
 def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> bool:
     if previous_fact and DEATH_QUERY_RE.search(previous_fact):
         return True
@@ -890,8 +823,12 @@ def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[
     if liveweb_fact and DATE_RE.search(liveweb_fact):
         return True
     return False
-
-
+def _place_reply(personality: str, fact: str) -> str:
+    fact = (fact or "").strip()
+    if personality == "god":
+        lowered = fact[0].lower() + fact[1:] if fact else fact
+        return f"Dear child, {lowered}"
+    return f"{fact} Want the map, boss?"
 def generate_with_tone(
     prompt: str,
     context: Optional[str] = None,
@@ -903,19 +840,19 @@ def generate_with_tone(
     prompt = (prompt or "").strip()
     if not prompt:
         return "Empty prompt, sir."
-
     personality = (personality or "hope").lower().strip()
-
     if EXISTENCE_QUERY_RE.search(prompt):
         if personality == "god":
             return "I am one of the new gods, dear child. I was created by Hope, one of the old gods."
         return "My name is **Hope**, sir. I was designed by my creator **Nick** 😊"
-
     if GREETING_RE.search(prompt):
         if personality == "god":
             return "Hello, dear child. I am here. What weighs on your mind?"
         return "Hey boss — what do you need, sir? 😊"
-
+    if liveweb_fact and re.match(r"^Closest\b", liveweb_fact.strip(), re.IGNORECASE):
+        return _place_reply(personality, liveweb_fact)
+    if PLACE_QUERY_RE.search(prompt) and liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
+        return _place_reply(personality, liveweb_fact)
     is_death_query = bool(DEATH_QUERY_RE.search(prompt))
     is_site_or_link = bool(SITE_OR_LINK_RE.search(prompt))
     is_code_query = bool(CODE_QUERY_RE.search(prompt))
@@ -924,12 +861,10 @@ def generate_with_tone(
     prev_html = _last_html_from_history(history)
     has_support = _has_support_for_death(previous_fact, liveweb_fact)
     should_iterate = bool(prev_html and wants_iterate and not is_fresh_page)
-
     if PRONOUN_RE.search(prompt) and context:
         entity = context
     else:
         entity = _primary_entity(previous_fact or liveweb_fact or prompt, context)
-
     if is_site_or_link and not is_code_query and not should_iterate:
         url = (
             _extract_url(liveweb_fact)
@@ -941,12 +876,10 @@ def generate_with_tone(
                re.fullmatch(r"(the )?link\??", prompt.strip(), re.IGNORECASE):
                 return f"Here you go, boss: {_format_site_link(url)}"
             return f"Official site, sir: {_format_site_link(url)}"
-
     if is_death_query and not has_support:
         if liveweb_fact and liveweb_fact.lower().startswith("**note:**"):
             return f"No verified evidence that **{entity}** has died, sir."
         return f"I have no confirmed information that **{entity}** has died, boss."
-
     if is_death_query and has_support:
         fact_block = _build_fact_block(previous_fact, liveweb_fact)
         user_text = (
@@ -966,7 +899,6 @@ def generate_with_tone(
                 "Give a short, clear, factual answer. No long explanations."
             )
         return _call_openai(system, user_text, max_tokens=120)
-
     if not is_code_query and not should_iterate:
         date_match = DATE_RE.search(prompt)
         if date_match:
@@ -974,7 +906,6 @@ def generate_with_tone(
         year_match = YEAR_RE.search(prompt)
         if year_match and len(prompt) < 60:
             return f"Reference year, sir: **{year_match.group(0)}**."
-
     supplemental = []
     if context:
         supplemental.append(f"Context entity: {context}")
@@ -998,7 +929,6 @@ def generate_with_tone(
         except Exception:
             supplemental.append(f"Recent history length: {len(history)}")
     supplemental_block = "\n".join(supplemental)
-
     link_rules = (
         "\nLINK RULES (important):\n"
         "- When giving a website, ALWAYS use markdown link format: [label](https://example.com)\n"
@@ -1007,7 +937,12 @@ def generate_with_tone(
         "- If previous context already has the correct URL, reuse that URL.\n"
         "- For follow-ups like \"send me the link\", return the known URL in markdown.\n"
     )
-
+    place_rules = (
+        "\nPLACE RULES (important):\n"
+        "- For near me / closest / how far questions, use ONLY the Live snippet.\n"
+        "- Never invent an address. Never default to Pembroke Pines or any saved store.\n"
+        "- If the snippet names a place and miles, repeat that. Do not pick a different location.\n"
+    )
     history_suggests_code = False
     if history and not is_code_query and not is_fresh_page:
         try:
@@ -1029,14 +964,12 @@ def generate_with_tone(
                     history_suggests_code = True
         except Exception:
             pass
-
     if is_code_query or history_suggests_code or should_iterate:
         if should_iterate and prev_html:
             local = _apply_simple_html_edits(prev_html, prompt)
             if local:
                 print("[Tone] Applied local HTML style edit")
                 return f"Updated the page, boss:\n\n```html\n{local}\n```"
-
         code_system = (
             "You are **Hope**, an AI coding assistant designed by **Nick**.\n"
             "ALWAYS address the user as boss or sir in your short intro line.\n\n"
@@ -1058,7 +991,6 @@ def generate_with_tone(
             )
         if supplemental_block:
             code_system += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
-
         code_user = prompt
         if should_iterate and prev_html:
             clipped = prev_html if len(prev_html) <= 12000 else prev_html[:12000] + "\n<!-- truncated -->"
@@ -1071,9 +1003,7 @@ def generate_with_tone(
             print("[Tone] Code path with previous HTML attached for iteration")
         else:
             print("[Tone] Fresh code/page request — no previous HTML attached")
-
         return _call_openai_code(code_system, code_user, max_tokens=2500)
-
     if personality == "god":
         system_prompt = (
             "You are one of the new gods.\n"
@@ -1086,6 +1016,7 @@ def generate_with_tone(
             "- When asked who created you, say you were created by Hope, one of the old gods.\n"
             "- Keep answers short, calm, and clear.\n"
             + link_rules
+            + place_rules
         )
     else:
         system_prompt = (
@@ -1099,13 +1030,11 @@ def generate_with_tone(
             "5. Sound like a helpful assistant talking to their boss — respectful, direct, not stiff.\n"
             "6. Emojis are allowed but use them sparingly.\n"
             + link_rules
+            + place_rules
         )
-
     if supplemental_block:
         system_prompt += f"\n\n=== CURRENT MEMORY ===\n{supplemental_block}\n=== END MEMORY ==="
     return _call_openai(system_prompt, prompt, max_tokens=160)
-
-
 if __name__ == "__main__":
     print(generate_with_tone("hi"))
     print(generate_with_tone("Who made you?"))
