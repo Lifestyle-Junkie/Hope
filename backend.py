@@ -715,14 +715,23 @@ def maps_embed():
     if not key:
         print("[Maps] MAPS_API_KEY missing")
         return error_response("MAPS_API_KEY not set", 500)
-    origin = (request.args.get("origin") or "current location").strip()
+    origin = (request.args.get("origin") or "").strip()
     destination = (request.args.get("destination") or "Pembroke Pines, FL").strip()
-    url = (
+    if origin.lower() in {"", "current location", "current location,"}:
+        origin = "Pembroke Pines, FL"
+    src = (
         "https://www.google.com/maps/embed/v1/directions"
         f"?key={urlquote(key)}&origin={urlquote(origin)}&destination={urlquote(destination)}"
     )
     print(f"[Maps] embed {origin!r} -> {destination!r}")
-    return redirect(url)
+    html = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<style>html,body,iframe{margin:0;height:100%;width:100%;border:0;background:#000}</style>"
+        "</head><body>"
+        f"<iframe src='{src}' allowfullscreen loading='lazy'></iframe>"
+        "</body></html>"
+    )
+    return Response(html, mimetype="text/html")
 @app.route("/browse-frame", methods=["GET", "OPTIONS"])
 def browse_frame():
     if request.method == "OPTIONS":
