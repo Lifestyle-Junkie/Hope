@@ -7,6 +7,7 @@ Hope v2 API server
 - browse_mode: Computer Use only when the globe icon is on
 - /ask-stream: SSE token stream so the UI can paint the reply as it arrives
 - /maps-embed: Google Maps directions iframe (key stays in Railway)
+- places.py: live nearby search from the user's GPS (no hardcoded stores)
 """
 from __future__ import annotations
 import os
@@ -38,6 +39,11 @@ from links import (
     prefer_site_url_from_prompt,
 )
 try:
+    import places
+except Exception:
+    places = None  # type: ignore
+    print("[Error] Import places failed.")
+try:
     print(f"[Debug] Flask version: {importlib.metadata.version('flask')}")
 except Exception:
     pass
@@ -64,7 +70,7 @@ print("📂 Working directory:", os.getcwd())
 for fn in [
     "tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py",
     "discord_bot.py", "market.py", "sanitize.py", "memory.py", "links.py",
-    "webagent.py",
+    "webagent.py", "places.py",
 ]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
@@ -142,6 +148,46 @@ def _as_bool(val) -> bool:
     if val is None:
         return False
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
+def _places_payload(user_prompt: str, origin: Optional[str], session_id: str, history, last_ticker, last_url, new_topic, topic_overlap, vision_description):
+    if not (places and hasattr(places, "looks_like_place_query")):
+        return None
+    if not places.looks_like_place_query(user_prompt):
+        return None
+    hit = places.search_nearby(origin, user_prompt, MAPS_API_KEY)
+    print(f"[Places] ok={hit.get('ok')} dest={hit.get('destination')!r}")
+    if not hit.get("reply"):
+        return None
+    reply = sanitize_reply(hit["reply"])
+    new_history = history + [
+        {"role": "user", "content": user_prompt},
+        {"role": "assistant", "content": reply},
+    ]
+    update_session(
+        session_id,
+        last_person=None,
+        last_fact=reply[:400],
+        last_topic=new_topic or "places",
+        history=new_history,
+        last_ticker=last_ticker or None,
+        last_url=last_url or None,
+    )
+    return {
+        "reply": reply,
+        "context_used": bool(origin),
+        "destination": hit.get("destination"),
+        "places": hit.get("places") or [],
+        "liveweb_raw": None,
+        "liveweb_analyzed": reply,
+        "vision_note": vision_description if vision_description else None,
+        "memory": {
+            "last_person": None,
+            "topic_overlap": topic_overlap,
+            "topic": new_topic or "places",
+            "last_ticker": last_ticker or None,
+            "last_url": last_url or None,
+            "history_length": len(new_history),
+        },
+    }
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
     if request.method == "OPTIONS":
@@ -157,9 +203,10 @@ def ask():
     image_data = data.get("image") or None
     personality = (data.get("personality") or "hope").lower().strip()
     browse_mode = _as_bool(data.get("browse_mode") or data.get("use_browser"))
+    origin = (data.get("origin") or "").strip() or None
     print(
         f"[Ask] Incoming: {user_prompt!r} concise={concise} "
-        f"personality={personality} browse_mode={browse_mode}"
+        f"personality={personality} browse_mode={browse_mode} origin={origin!r}"
     )
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
@@ -310,6 +357,12 @@ def ask():
                 "history_length": len(new_history),
             },
         })
+    place_body = _places_payload(
+        user_prompt, origin, session_id, history, last_ticker, last_url,
+        new_topic, topic_overlap, vision_description,
+    )
+    if place_body:
+        return jsonify(place_body)
     liveweb_raw = None
     liveweb_analyzed = None
     needs_live = False
@@ -505,6 +558,7 @@ def ask_stream():
     user_prompt = (data.get("message") or "").strip()
     personality = (data.get("personality") or "hope").lower().strip()
     browse_mode = _as_bool(data.get("browse_mode") or data.get("use_browser"))
+    origin = (data.get("origin") or "").strip() or None
     if not user_prompt:
         return error_response("Empty prompt", 400)
     if personality == "god":
@@ -549,6 +603,29 @@ def ask_stream():
     def generate():
         full = ""
         yield "data: " + json.dumps({"type": "start"}) + "\n\n"
+        if places and hasattr(places, "looks_like_place_query") and places.looks_like_place_query(user_prompt):
+            hit = places.search_nearby(origin, user_prompt, MAPS_API_KEY)
+            if hit.get("reply"):
+                full = sanitize_reply(hit["reply"])
+                yield "data: " + json.dumps({"type": "token", "text": full}) + "\n\n"
+                new_history = history + [
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": full},
+                ]
+                try:
+                    update_session(
+                        session_id,
+                        last_person=None,
+                        last_fact=full[:400],
+                        last_topic=new_topic or "places",
+                        history=new_history,
+                        last_ticker=last_ticker or None,
+                        last_url=last_url or None,
+                    )
+                except Exception as e:
+                    print(f"[Stream] memory update failed: {e}")
+                yield "data: " + json.dumps({"type": "done", "reply": full, "destination": hit.get("destination")}) + "\n\n"
+                return
         got = False
         for piece in _iter_openai_tokens(system_prompt, user_prompt, history):
             got = True
@@ -716,9 +793,11 @@ def maps_embed():
         print("[Maps] MAPS_API_KEY missing")
         return error_response("MAPS_API_KEY not set", 500)
     origin = (request.args.get("origin") or "").strip()
-    destination = (request.args.get("destination") or "Pembroke Pines, FL").strip()
+    destination = (request.args.get("destination") or "").strip()
+    if not destination:
+        destination = origin or "current location"
     if origin.lower() in {"", "current location", "current location,"}:
-        origin = "Pembroke Pines, FL"
+        origin = destination
     src = (
         "https://www.google.com/maps/embed/v1/directions"
         f"?key={urlquote(key)}&origin={urlquote(origin)}&destination={urlquote(destination)}"
@@ -793,6 +872,7 @@ if __name__ == "__main__":
     print("🎤 ElevenLabs voice enabled.")
     print("📈 Market quotes enabled:" if market else "🛑 Market module missing.")
     print("🗺️ Maps embed enabled:" if MAPS_API_KEY else "🛑 MAPS_API_KEY missing.")
+    print("📍 Places nearby enabled:" if places else "🛑 places.py missing.")
     try:
         app.run(host=host, port=port, debug=debug, use_reloader=False)
     except KeyboardInterrupt:
