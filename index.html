@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -85,6 +86,12 @@
     .browse-panel img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; display: none; background: #000; }
     .browse-panel img.on { display: block; }
     .browse-panel .blog { font-size: 11px; color: #9bb4c8; margin-top: 8px; max-height: 70px; overflow: auto; }
+    .map-panel { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(12px); z-index: 7; opacity: 0; pointer-events: none; transition: opacity 0.35s ease, transform 0.35s ease; }
+    .map-panel.on { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+    .map-panel.hide { opacity: 0; pointer-events: none; }
+    .map-panel .card { width: min(420px, 92vw); height: 280px; display: flex; flex-direction: column; }
+    .map-panel iframe { width: 100%; flex: 1; min-height: 180px; border: 0; border-radius: 8px; background: #000; }
+    .map-panel .blog { font-size: 11px; color: #9bb4c8; margin-top: 6px; }
     .card .top { display: flex; gap: 10px; }
     .card .pfp { height: 40px; width: 40px; background: #1a2433; border-radius: 5px; display: flex; justify-content: center; align-items: center; flex: 0 0 40px; }
     .card .title-1 { color: #e8f6ff; font-size: 16px; font-weight: 800; margin-left: 5px; }
@@ -186,7 +193,7 @@
       background: rgba(255,160,80,0.45);
       border-color: #ffb06a;
     }
-    @media (max-width: 720px) { .dock, .player, .browse-panel { bottom: 16px; } .pulsebar { top: 10px; height: 44px; } }
+    @media (max-width: 720px) { .dock, .player, .browse-panel, .map-panel { bottom: 16px; } .pulsebar { top: 10px; height: 44px; } }
   </style>
 </head>
 <body>
@@ -223,11 +230,13 @@
   </div>
   <div class="player" id="player"><div class="card"><button type="button" class="close-player" id="closePlayer">×</button><div class="top"><div class="pfp"><div class="playing"><div class="greenline line-1"></div><div class="greenline line-2"></div><div class="greenline line-3"></div><div class="greenline line-4"></div><div class="greenline line-5"></div></div></div><div class="texts"><p class="title-1">Hope Radio</p><p class="title-2">Coming soon</p></div></div><div class="controls"><svg class="volume_button" width="20" height="16" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M11.26 3.691A1.2 1.2 0 0 1 12 4.8v14.4a1.199 1.199 0 0 1-2.048.848L5.503 15.6H2.4a1.2 1.2 0 0 1-1.2-1.2V9.6a1.2 1.2 0 0 1 1.2-1.2h3.103l4.449-4.448a1.2 1.2 0 0 1 1.308-.26Z" clip-rule="evenodd"></path></svg><div class="volume"><div class="slider"><div class="green"></div></div><div class="circle"></div></div><div class="air"></div></div><div class="time"><div class="elapsed"></div></div><p class="timetext time_now">0:00</p><p class="timetext time_full">0:00</p></div></div>
   <div class="browse-panel" id="browsePanel"><div class="card"><button type="button" class="close-player" id="closeBrowse">×</button><div class="title-1" style="margin:4px 0 8px">Live browser</div><img id="browseImg" alt="browser frame" /><div class="blog" id="browseLog">Browser off. Say “Hope, open the browser and go to …” or tap the globe.</div></div></div>
+  <div class="map-panel" id="mapPanel"><div class="card"><button type="button" class="close-player" id="closeMap">×</button><div class="title-1" style="margin:4px 0 8px" id="mapTitle">Maps</div><iframe id="mapFrame" title="Hope maps" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe><div class="blog" id="mapLog">Say “Hope, directions to Miami from Pembroke Pines.”</div></div></div>
   <div class="ui"><div class="chat" id="chat"><header><span>Inside the orb</span><button type="button" id="exit">Fly out</button></header><div class="msgs" id="msgs"></div><div class="preview-row" id="imgPreview"><img id="imgThumb" alt="preview" /><button type="button" id="removeImage">Remove</button></div><form id="form"><textarea id="input" rows="1" placeholder="Say something…"></textarea><button type="submit">Send</button></form></div></div>
   <script>
     window.BACKEND_URL = window.BACKEND_URL || "https://hope-production-7e9d.up.railway.app";
     window.HOPE_BROWSE_MODE = false;
     window.CONCISE_MODE = true;
+    window.MAPS_API_KEY = "";
   </script>
   <script>
   (function () {
@@ -452,7 +461,7 @@
     function pos(n) { return [n.x*n.layer, n.y*n.layer, n.z*n.layer]; }
     function dist3(a, b) { const A=pos(a), B=pos(b); return Math.hypot(A[0]-B[0], A[1]-B[1], A[2]-B[2]); }
     for (let i = 0; i < nodes.length; i++) { const near = []; for (let j = 0; j < nodes.length; j++) { if (i === j || nodes[i].surface !== nodes[j].surface) continue; near.push({ j, d: dist3(nodes[i], nodes[j]) }); } near.sort((a,b) => a.d - b.d); const links = nodes[i].surface ? 5 : 3; for (let k = 0; k < links && k < near.length; k++) if (i < near[k].j) edges.push({ a:i, b:near[k].j, seed:Math.random() }); }
-    const S = { t:0, scale:1, targetScale:1, talk:0, targetTalk:0, ox:0, oy:0, tox:0, toy:0, rotY:0, rotX:0.28, mode:"idle", pulse:0, enter:0, targetEnter:0, inside:false, form:"orb", face:0, music:false, hopeOn:true, warm:0, browse:false, asleep:false, orbR:0 };
+    const S = { t:0, scale:1, targetScale:1, talk:0, targetTalk:0, ox:0, oy:0, tox:0, toy:0, rotY:0, rotX:0.28, mode:"idle", pulse:0, enter:0, targetEnter:0, inside:false, form:"orb", face:0, music:false, hopeOn:true, warm:0, browse:false, map:false, asleep:false, orbR:0 };
     function resize() { const dpr = Math.min(devicePixelRatio||1, 2); canvas.width = innerWidth*dpr; canvas.height = innerHeight*dpr; }
     addEventListener("resize", resize); resize();
     function rot(p, ax, ay) { let y = p.y*Math.cos(ax) - p.z*Math.sin(ax); let z = p.y*Math.sin(ax) + p.z*Math.cos(ax); let x = p.x*Math.cos(ay) + z*Math.sin(ay); z = -p.x*Math.sin(ay) + z*Math.cos(ay); return { x, y, z }; }
@@ -513,6 +522,8 @@
       dock.classList.toggle("hide", inside || S.music || S.asleep);
       playerEl.classList.toggle("on", S.music); playerEl.classList.toggle("hide", inside || S.asleep);
       browsePanel.classList.toggle("on", S.browse); browsePanel.classList.toggle("hide", inside || S.asleep);
+      const mapPanel = document.getElementById("mapPanel");
+      if (mapPanel) { mapPanel.classList.toggle("on", !!S.map); mapPanel.classList.toggle("hide", inside || S.asleep); }
       pulsebar.classList.toggle("talk", !!speak); pulsebar.classList.toggle("hide", inside);
       if (inside || S.asleep) settingsEl.classList.remove("on");
     }
@@ -629,6 +640,19 @@
       }
       if (/\b(do you have|can you use|what is|what's|whats|you have)\b.{0,24}\b(live )?browser\b/.test(t) || (/\blive browser\b/.test(t) && /\b(what|have|access|feature|mean)\b/.test(t))) {
         return "Yes. I have a live browser. Say enable live browser, or tell me to go to a site like YouTube.";
+      }
+      if (/\b((disable|turn off|close|stop)\b.{0,20}\bmaps?|maps?\b.{0,12}\b(off|close))\b/.test(t)) {
+        setMap(false);
+        return "Maps are off.";
+      }
+      const route = parseRoute(msg);
+      if (route && route.destination) {
+        setMap(true, route);
+        return "Opening the map to " + route.destination + ".";
+      }
+      if (/\b(open|show|enable|turn on)\b.{0,16}\bmaps?\b/.test(t) || /\bmaps? on\b/.test(t)) {
+        setMap(true, { origin: "current location", destination: "Pembroke Pines, FL" });
+        return "Maps are on.";
       }
       return null;
     }
@@ -781,6 +805,36 @@
       await sendToHope(text || "[image]");
     });
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+    function parseRoute(text) {
+      const t = String(text || "").trim();
+      const fromTo = t.match(/\b(?:from)\s+(.+?)\s+(?:to)\s+(.+)/i);
+      if (fromTo) return { origin: fromTo[1].trim(), destination: fromTo[2].replace(/[?.!]+$/, "").trim() };
+      const toFrom = t.match(/\b(?:to)\s+(.+?)\s+(?:from)\s+(.+)/i);
+      if (toFrom) return { origin: toFrom[2].trim(), destination: toFrom[1].replace(/[?.!]+$/, "").trim() };
+      const dest = t.match(/\b(?:directions? to|navigate to|route to|how (?:long|far) (?:is it )?to|take me to|drive to)\s+(.+)/i);
+      if (dest) return { origin: "current location", destination: dest[1].replace(/[?.!]+$/, "").trim() };
+      return null;
+    }
+    function setMap(on, route) {
+      const frame = document.getElementById("mapFrame");
+      const title = document.getElementById("mapTitle");
+      const log = document.getElementById("mapLog");
+      S.map = !!on;
+      if (!on) {
+        if (frame) frame.removeAttribute("src");
+        if (title) title.textContent = "Maps";
+        if (log) log.textContent = "Maps off.";
+        poke();
+        return;
+      }
+      const origin = (route && route.origin) || "current location";
+      const destination = (route && route.destination) || "Pembroke Pines, FL";
+      const backend = (window.BACKEND_URL || "").replace(/\/$/, "");
+      if (frame) frame.src = backend + "/maps-embed?origin=" + encodeURIComponent(origin) + "&destination=" + encodeURIComponent(destination);
+      if (title) title.textContent = route && route.destination ? ("Route to " + route.destination) : "Maps";
+      if (log) log.textContent = route ? ((route.origin || "current location") + " → " + route.destination) : "Maps on.";
+      poke();
+    }
     function looksLikeBrowse(text) {
       return /\b(open (the |live )?browser|turn on (the |live )?browser|enable (the |live )?browser|live browser|browse mode|go to|visit|open (https?:\/\/|www\.)|look up|google|youtube|search (for|the web)|navigate to)\b/i.test(String(text || ""));
     }
@@ -806,6 +860,7 @@
     document.getElementById("btnBrowser").addEventListener("click", (e) => { e.stopPropagation(); setBrowse(!document.getElementById("search").checked); });
     document.getElementById("search").addEventListener("change", (e) => setBrowse(e.target.checked));
     document.getElementById("closeBrowse").addEventListener("click", async (e) => { e.stopPropagation(); setBrowse(false); try { await fetch(`${window.BACKEND_URL}/browse-stop`, { method: "POST" }); } catch (_) {} });
+    document.getElementById("closeMap").addEventListener("click", (e) => { e.stopPropagation(); setMap(false); });
     setInterval(async () => {
       if (!window.HOPE_BROWSE_MODE) return;
       try {
