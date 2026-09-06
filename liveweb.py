@@ -8,6 +8,7 @@ Two separate tools:
 
 No hardcoded years or canned answers. Rank snippets against the user's question.
 When snippets contain a date or place, put those facts first in the summary.
+Ignore wiki "last edited on" stamps — those are not event dates.
 """
 from __future__ import annotations
 import re
@@ -110,6 +111,15 @@ MONTH_YEAR_RE = re.compile(
 PLACE_RE = re.compile(
     r"\b(?:in|at|held in|hosted (?:in|by)|takes place in|coming to|opens? in)\s+"
     r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})"
+)
+EVENT_YEAR_RE = re.compile(
+    r"\b((?:19|20)\d{2})\s+(Summer |Winter )?Olympics\b|"
+    r"\bOlympics\s+(?:in|of)\s+((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+EDIT_STAMP_RE = re.compile(
+    r"(last edited|posted on|updated on|published on)\b",
+    re.IGNORECASE,
 )
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
@@ -421,12 +431,14 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         score = _overlap(query, blob) * 10
         if death_re.search(blob):
             score += 20
-        if DATE_PATTERN.search(blob) or MONTH_YEAR_RE.search(blob):
+        if DATE_PATTERN.search(blob) or MONTH_YEAR_RE.search(blob) or EVENT_YEAR_RE.search(blob):
             score += 18
         if _domain_ok(r.get("href", "")):
             score += 12
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
             score -= 40
+        if EDIT_STAMP_RE.search(blob) and _overlap(query, blob) < 3:
+            score -= 15
         return score
 
     sorted_results = sorted(results, key=score_snippet, reverse=True)
@@ -451,28 +463,67 @@ def _clean_text(text: str) -> str:
     return t.strip(" -")
 
 
-def _extract_dates(text: str) -> List[str]:
-    dates = []
-    for m in MONTH_YEAR_RE.finditer(text or ""):
+def _sentence_window(text: str, start: int, end: int, pad: int = 90) -> str:
+    a = max(0, start - pad)
+    b = min(len(text or ""), end + pad)
+    return text[a:b]
+
+
+def _extract_dates(text: str, query: str = "") -> List[str]:
+    """Event dates only. Skip wiki 'last edited on' stamps."""
+    text = text or ""
+    scored: List[Tuple[int, str]] = []
+
+    for m in MONTH_YEAR_RE.finditer(text):
+        window = _sentence_window(text, m.start(), m.end())
+        if EDIT_STAMP_RE.search(window):
+            continue
         month, day, year = m.group(1), m.group(2), m.group(3)
-        if day:
-            chunk = f"{month} {day}, {year}"
-        else:
-            chunk = f"{month} {year}"
+        chunk = f"{month} {day}, {year}" if day else f"{month} {year}"
         chunk = re.sub(r"\s+", " ", chunk).strip()
-        if chunk and chunk not in dates:
-            dates.append(chunk)
-    for d in DATE_PATTERN.findall(text or ""):
-        if d not in dates:
-            dates.append(d)
-    return dates
+        score = _overlap(query, window) * 8
+        if re.search(r"\b(held|host|opens?|begins?|games|olympics?|release|debut|premiere)\b", window, re.I):
+            score += 20
+        scored.append((score, chunk))
+
+    for d in DATE_PATTERN.findall(text):
+        idx = text.find(d)
+        window = _sentence_window(text, idx, idx + len(d)) if idx >= 0 else text
+        if EDIT_STAMP_RE.search(window):
+            continue
+        score = _overlap(query, window) * 8
+        if re.search(r"\b(held|host|opens?|begins?|games|olympics?|release|debut)\b", window, re.I):
+            score += 20
+        scored.append((score, d))
+
+    for m in EVENT_YEAR_RE.finditer(text):
+        window = _sentence_window(text, m.start(), m.end())
+        if EDIT_STAMP_RE.search(window):
+            continue
+        label = re.sub(r"\s+", " ", m.group(0)).strip()
+        scored.append((_overlap(query, window) + 25, label))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out: List[str] = []
+    for score, chunk in scored:
+        if score < 6:
+            continue
+        if chunk not in out:
+            out.append(chunk)
+    return out
 
 
-def _extract_places(text: str) -> List[str]:
+def _extract_places(text: str, query: str = "") -> List[str]:
     places = []
-    for m in PLACE_RE.finditer(text or ""):
+    text = text or ""
+    for m in PLACE_RE.finditer(text):
+        window = _sentence_window(text, m.start(), m.end())
+        if EDIT_STAMP_RE.search(window):
+            continue
         p = m.group(1).strip()
         if p.lower() in PLACE_STOP:
+            continue
+        if query and _overlap(query, window) == 0 and _overlap(query, p) == 0:
             continue
         if p not in places:
             places.append(p)
@@ -515,9 +566,13 @@ def _best_sentences(query: str, raw_text: str, n: int = 3) -> List[str]:
     for s in sents:
         if HISTORY_PAGE_RE.search(s) and _overlap(query, s) < 2:
             continue
+        if EDIT_STAMP_RE.search(s) and _overlap(query, s) < 2:
+            continue
         score = _overlap(query, s) * 10
+        if EVENT_YEAR_RE.search(s):
+            score += 30
         if MONTH_YEAR_RE.search(s) or DATE_PATTERN.search(s):
-            score += 25
+            score += 20
         if PLACE_RE.search(s) and re.search(r"\b(where|hosted|city|venue|olympics)\b", query or "", re.I):
             score += 15
         ranked.append((score, s))
@@ -531,11 +586,11 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     is_death = bool(DEATH_PATTERN.search(q_low))
     is_site = bool(SITE_PATTERN.search(query or ""))
     wants_when = bool(re.search(
-        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut)\b",
+        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut|olympics?)\b",
         q_low,
     ))
     wants_where = bool(re.search(
-        r"\b(where|hosted|location|city|venue|held)\b",
+        r"\b(where|hosted|location|city|venue|held|olympics?)\b",
         q_low,
     ))
 
@@ -559,8 +614,8 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         if len(reliable_sources) < 1:
             return safe_note("Death claim unverified by reliable sources. Treat as unconfirmed.")
 
-    dates = _extract_dates(raw_text)
-    places = _extract_places(raw_text)
+    dates = _extract_dates(raw_text, query)
+    places = _extract_places(raw_text, query)
     nouns = _extract_proper_nouns(raw_text)
 
     def bold_once(s: str) -> str:
@@ -597,7 +652,7 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         return bold_once(summary)
 
     parts = []
-    if dates and (wants_when or dates):
+    if dates and wants_when:
         parts.append(f"Date: {dates[0]}.")
     if places and wants_where:
         parts.append(f"Place: {places[0]}.")
