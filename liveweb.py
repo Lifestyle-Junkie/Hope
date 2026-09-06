@@ -7,6 +7,7 @@ Two separate tools:
 - Computer Use browse     → ONLY when browse_mode=True (globe icon on).
 
 No hardcoded years or canned answers. Rank snippets against the user's question.
+When snippets contain a date or place, put those facts first in the summary.
 """
 from __future__ import annotations
 import re
@@ -99,6 +100,17 @@ DATE_PATTERN = re.compile(
     r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
     re.IGNORECASE
 )
+MONTH_YEAR_RE = re.compile(
+    r"\b("
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+    r")\s+(?:(\d{1,2})(?:st|nd|rd|th)?,?\s*)?((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+PLACE_RE = re.compile(
+    r"\b(?:in|at|held in|hosted (?:in|by)|takes place in|coming to|opens? in)\s+"
+    r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})"
+)
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 
@@ -107,6 +119,11 @@ STOP = {
     "is", "are", "was", "were", "be", "been", "what", "when", "where", "who",
     "which", "how", "why", "do", "does", "did", "can", "could", "would",
     "i", "me", "my", "you", "your", "it", "its", "this", "that", "please",
+}
+PLACE_STOP = {
+    "the", "a", "an", "this", "that", "these", "those", "disney", "theaters",
+    "theatres", "theater", "theatre", "october", "november", "december",
+    "january", "february", "march", "april", "june", "july", "august", "september",
 }
 
 LIVE_KEYWORDS = {
@@ -120,6 +137,7 @@ LIVE_KEYWORDS = {
     "weather", "forecast", "temperature",
     "president", "election", "elected",
     "album", "movie", "game", "trailer", "season",
+    "olympics", "olympic", "world cup",
 }
 
 RELIABLE_DOMAINS = {
@@ -267,11 +285,11 @@ def perform_live_search(
     raw_text = _merge_results(results, query=query)
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
+    print(f"[LiveWeb Debug] Analyzed: {analyzed[:180]}")
     return raw_text, analyzed
 
 
 def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
-    """Drop social/video hosts and history pages that don't match the question."""
     q_tokens = set(_tokens(query))
     kept = []
     for r in results:
@@ -283,7 +301,6 @@ def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
             print(f"[LiveWeb] Dropped off-topic: {(r.get('title') or '')[:70]}")
             continue
         if q_tokens and _overlap(query, blob) == 0 and "wiki" in href:
-            # generic wiki page with zero query words
             continue
         kept.append(r)
     return kept or results
@@ -404,8 +421,8 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         score = _overlap(query, blob) * 10
         if death_re.search(blob):
             score += 20
-        if DATE_PATTERN.search(blob):
-            score += 5
+        if DATE_PATTERN.search(blob) or MONTH_YEAR_RE.search(blob):
+            score += 18
         if _domain_ok(r.get("href", "")):
             score += 12
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
@@ -435,8 +452,31 @@ def _clean_text(text: str) -> str:
 
 
 def _extract_dates(text: str) -> List[str]:
-    dates = DATE_PATTERN.findall(text or "")
-    return list(dict.fromkeys(dates))
+    dates = []
+    for m in MONTH_YEAR_RE.finditer(text or ""):
+        month, day, year = m.group(1), m.group(2), m.group(3)
+        if day:
+            chunk = f"{month} {day}, {year}"
+        else:
+            chunk = f"{month} {year}"
+        chunk = re.sub(r"\s+", " ", chunk).strip()
+        if chunk and chunk not in dates:
+            dates.append(chunk)
+    for d in DATE_PATTERN.findall(text or ""):
+        if d not in dates:
+            dates.append(d)
+    return dates
+
+
+def _extract_places(text: str) -> List[str]:
+    places = []
+    for m in PLACE_RE.finditer(text or ""):
+        p = m.group(1).strip()
+        if p.lower() in PLACE_STOP:
+            continue
+        if p not in places:
+            places.append(p)
+    return places
 
 
 def _extract_proper_nouns(text: str, max_items: int = 6) -> List[str]:
@@ -469,13 +509,18 @@ def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
     return None
 
 
-def _best_sentences(query: str, raw_text: str, n: int = 2) -> List[str]:
+def _best_sentences(query: str, raw_text: str, n: int = 3) -> List[str]:
     sents = _split_sentences(raw_text)
     ranked = []
     for s in sents:
         if HISTORY_PAGE_RE.search(s) and _overlap(query, s) < 2:
             continue
-        ranked.append((_overlap(query, s), s))
+        score = _overlap(query, s) * 10
+        if MONTH_YEAR_RE.search(s) or DATE_PATTERN.search(s):
+            score += 25
+        if PLACE_RE.search(s) and re.search(r"\b(where|hosted|city|venue|olympics)\b", query or "", re.I):
+            score += 15
+        ranked.append((score, s))
     ranked.sort(key=lambda x: x[0], reverse=True)
     picked = [s for score, s in ranked if score > 0][:n]
     return picked or [s for _, s in ranked[:n]] or sents[:n]
@@ -485,6 +530,14 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     q_low = (query or "").lower()
     is_death = bool(DEATH_PATTERN.search(q_low))
     is_site = bool(SITE_PATTERN.search(query or ""))
+    wants_when = bool(re.search(
+        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut)\b",
+        q_low,
+    ))
+    wants_where = bool(re.search(
+        r"\b(where|hosted|location|city|venue|held)\b",
+        q_low,
+    ))
 
     if is_site:
         best = _best_site_result(query, results)
@@ -507,12 +560,13 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
             return safe_note("Death claim unverified by reliable sources. Treat as unconfirmed.")
 
     dates = _extract_dates(raw_text)
+    places = _extract_places(raw_text)
     nouns = _extract_proper_nouns(raw_text)
 
     def bold_once(s: str) -> str:
         used = set()
-        for ent in nouns + dates:
-            if ent in used:
+        for ent in dates + places + nouns:
+            if not ent or ent in used:
                 continue
             s = re.sub(rf"\b{re.escape(ent)}\b", f"**{ent}**", s, count=1)
             used.add(ent)
@@ -542,11 +596,17 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
             summary += f" (Names: {', '.join(nouns[:2])})"
         return bold_once(summary)
 
+    parts = []
+    if dates and (wants_when or dates):
+        parts.append(f"Date: {dates[0]}.")
+    if places and wants_where:
+        parts.append(f"Place: {places[0]}.")
     sents = _best_sentences(query, raw_text, n=2)
-    if not sents:
-        return bold_once("No meaningful summary derived.")
-    summary = _shorten(" ".join(sents), 420)
-    return bold_once(summary)
+    if sents:
+        parts.append(_shorten(" ".join(sents), 360))
+    if not parts:
+        return "No meaningful summary derived."
+    return bold_once(" ".join(parts))
 
 
 def safe_note(msg: str) -> str:
@@ -575,10 +635,9 @@ def cached_perform_live_search(
 if __name__ == "__main__":
     tests = [
         "what year is it",
-        "what's the latest news this week",
-        "who won the super bowl in 2025",
-        "what is the site for rainbet",
-        "How did Alan Turing die",
+        "when does VisionQuest come out",
+        "when is the next olympics and where",
+        "Spider-Man Brand New Day release date",
         "hi",
     ]
     print(f"[Info] DDG available: {_DDG_AVAILABLE}; {_DDG_IMPORT_ERR or ''}")
