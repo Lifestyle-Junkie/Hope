@@ -1,7 +1,10 @@
 """
 liveweb.py
 Live search + guarded factual extraction + optional real browser surfing.
-Browse / Computer Use ONLY when browse_mode=True (globe icon on).
+
+Two separate tools:
+- Text search (DuckDuckGo) → normal chat. Does NOT need the globe.
+- Computer Use browse     → ONLY when browse_mode=True (globe icon on).
 """
 from __future__ import annotations
 import re
@@ -22,6 +25,7 @@ except Exception as e_new:
     except Exception as e_old:
         _DDG_AVAILABLE = False
         _DDG_IMPORT_ERR = f"No DuckDuckGo backend: {e_old}"
+
 try:
     import jellyfish
     _SPELL_AVAILABLE = True
@@ -67,6 +71,22 @@ BROWSE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+IDENTITY_RE = re.compile(
+    r"\b(who (made|created|designed|built) you|who are you|what are you|"
+    r"your (name|creator|maker)|what'?s your name|training (data|cutoff)|"
+    r"knowledge cutoff|cut[- ]?off)\b",
+    re.IGNORECASE,
+)
+GREETING_RE = re.compile(
+    r"^\s*(hi|hello|hey|yo|sup|hiya|howdy|good\s*(morning|afternoon|evening)|"
+    r"what'?s\s*up|how\s*are\s*you|how'?s\s*it\s*going)[\s!?.]*$",
+    re.IGNORECASE,
+)
+FACT_QUESTION_RE = re.compile(
+    r"^\s*(who|what|when|where|which|whom|whose|how (many|much|long|far|old)|"
+    r"did|does|is|are|was|were|has|have|will|can)\b",
+    re.IGNORECASE,
+)
 DATE_PATTERN = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
     r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
@@ -74,11 +94,21 @@ DATE_PATTERN = re.compile(
 )
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
+
 LIVE_KEYWORDS = {
-    "when", "date", "release", "latest", "recent", "today", "this week",
-    "breaking", "update", "news", "launched", "announced", "died", "death",
-    "killed", "passed", "cause of death", "assassinated", "shot",
+    "when", "date", "release", "released", "latest", "recent", "today", "tonight",
+    "this week", "this year", "this month", "right now", "currently", "current",
+    "breaking", "update", "updated", "news", "headline", "launched", "announced",
+    "announcement", "came out", "coming out", "out now", "dropped",
+    "died", "death", "killed", "passed", "cause of death", "assassinated", "shot",
+    "who won", "winner", "score", "final score", "standings", "schedule",
+    "price", "stock", "worth", "net worth", "box office",
+    "weather", "forecast", "temperature",
+    "president", "election", "elected",
+    "album", "movie", "game", "trailer", "season",
+    "2024", "2025", "2026",
 }
+
 RELIABLE_DOMAINS = {
     "apnews.com", "associatedpress.com", "reuters.com", "bbc.com", "bbc.co.uk",
     "nytimes.com", "theguardian.com", "washingtonpost.com", "bloomberg.com",
@@ -91,7 +121,9 @@ SKIP_HOST_PARTS = {
     "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest."
 }
 
+
 def should_browse(query: str, browse_mode: bool = False) -> bool:
+    """Visual Computer Use only. Globe off → never browse."""
     if not browse_mode:
         return False
     q = (query or "").strip()
@@ -109,6 +141,7 @@ def should_browse(query: str, browse_mode: bool = False) -> bool:
         return True
     return True
 
+
 def browse_and_summarize(query: str) -> str:
     try:
         from webagent import browse_sync
@@ -123,11 +156,18 @@ def browse_and_summarize(query: str) -> str:
         print(f"[LiveWeb] browse_and_summarize error: {e}")
         return ""
 
+
 def needs_live_data(query: str, browse_mode: bool = False) -> bool:
+    """
+    Text web search for normal chat. browse_mode is ignored here.
+    Globe only affects should_browse(), not this.
+    """
     q = (query or "").strip()
     if not q:
         return False
-    if CODE_INTENT_RE.search(q) and not should_browse(q, browse_mode):
+    if GREETING_RE.search(q) or IDENTITY_RE.search(q):
+        return False
+    if CODE_INTENT_RE.search(q) and not BROWSE_RE.search(q):
         return False
     if LINK_FOLLOWUP_ONLY_RE.match(q):
         return False
@@ -138,9 +178,14 @@ def needs_live_data(query: str, browse_mode: bool = False) -> bool:
         return True
     if SITE_PATTERN.search(q):
         return True
+    if YEAR_PATTERN.search(q):
+        return True
     if any(k in low for k in LIVE_KEYWORDS):
         return True
+    if FACT_QUESTION_RE.search(q) and len(q.split()) >= 3:
+        return True
     return False
+
 
 def correct_name_spelling(name: str) -> str:
     if not _SPELL_AVAILABLE or not name:
@@ -161,6 +206,7 @@ def correct_name_spelling(name: str) -> str:
                 return " ".join(parts)
     return name
 
+
 def perform_live_search(
     query: str,
     max_results: int = 8,
@@ -168,11 +214,13 @@ def perform_live_search(
 ) -> Tuple[Optional[str], Optional[str]]:
     if not needs_live_data(query, browse_mode=browse_mode):
         return None, None
+
     if should_browse(query, browse_mode=browse_mode):
         browsed = browse_and_summarize(query)
         if browsed:
             return browsed, browsed
         print("[LiveWeb] Browser agent unavailable — falling back to snippet search.")
+
     corrected_query = query
     entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
     if entity_match:
@@ -180,20 +228,25 @@ def perform_live_search(
         corrected_query = query.replace(entity_match.group(0), corrected_name)
         if corrected_query != query:
             print(f"[LiveWeb] Corrected query: {query} -> {corrected_query}")
+
     if SITE_PATTERN.search(query or ""):
         if "official" not in corrected_query.lower():
             corrected_query = f"{corrected_query} official website"
+
     if not _DDG_AVAILABLE:
         return None, safe_note("Live search unavailable (install ddgs).")
+
     results = _search_duckduckgo(corrected_query, max_results=max_results)
     if not results:
         if DEATH_PATTERN.search(query or ""):
             return None, safe_note("No reliable sources confirming a death. Treat as unconfirmed.")
         return None, safe_note("No live results found.")
+
     raw_text = _merge_results(results, query=corrected_query)
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
     return raw_text, analyzed
+
 
 def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
     out: List[dict] = []
@@ -228,6 +281,7 @@ def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
         print(f"[LiveWeb] Search error: {e}")
     return out
 
+
 def _domain_ok(url: str) -> bool:
     if not url:
         return False
@@ -241,6 +295,7 @@ def _domain_ok(url: str) -> bool:
         print(f"[LiveWeb] URL parse error for '{url}': {e}")
         return False
 
+
 def _normalize_url(url: str) -> str:
     if not url:
         return ""
@@ -248,6 +303,7 @@ def _normalize_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url.lstrip("/")
     return url
+
 
 def _pretty_domain(url: str) -> str:
     try:
@@ -257,6 +313,7 @@ def _pretty_domain(url: str) -> str:
         return host or url
     except Exception:
         return url
+
 
 def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     if not results:
@@ -302,10 +359,12 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
         return None
     return best
 
+
 def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> str:
     death_re = re.compile(r"\b(die|died|death|killed|assassinated|shot)\b", re.IGNORECASE)
     entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
     entity = entity_match.group(0).lower() if entity_match else None
+
     def score_snippet(r):
         score = 0
         combined = f"{r.get('title', '')} {r.get('body', '')}".lower()
@@ -320,6 +379,7 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         if _domain_ok(r.get("href", "")):
             score += 20
         return score
+
     sorted_results = sorted(results, key=score_snippet, reverse=True)
     parts: List[str] = []
     for r in sorted_results:
@@ -335,14 +395,17 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         merged = merged[:char_limit].rsplit(" ", 1)[0] + "..."
     return merged
 
+
 def _clean_text(text: str) -> str:
     t = html.unescape(text or "")
     t = re.sub(r"\s+", " ", t)
     return t.strip(" -")
 
+
 def _extract_dates(text: str) -> List[str]:
     dates = DATE_PATTERN.findall(text or "")
     return list(dict.fromkeys(dates))
+
 
 def _extract_proper_nouns(text: str, max_items: int = 6) -> List[str]:
     matches = NOUN_PATTERN.findall(text or "")
@@ -356,13 +419,16 @@ def _extract_proper_nouns(text: str, max_items: int = 6) -> List[str]:
             out.append(m)
     return out[:max_items]
 
+
 def _shorten(txt: str, limit: int) -> str:
     if len(txt) <= limit:
         return txt
     return txt[:limit].rsplit(" ", 1)[0] + "..."
 
+
 def _split_sentences(text: str) -> List[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text or "") if s.strip()]
+
 
 def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
     for s in _split_sentences(text):
@@ -370,10 +436,12 @@ def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
             return s
     return None
 
+
 def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     q_low = (query or "").lower()
     is_death = bool(DEATH_PATTERN.search(q_low))
     is_site = bool(SITE_PATTERN.search(query or ""))
+
     if is_site:
         best = _best_site_result(query, results)
         if best and best.get("href"):
@@ -381,6 +449,7 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
             label = _pretty_domain(url) or "official site"
             return f"Official site: **[{label}]({url})**"
         return safe_note("Couldn't confidently find an official website link.")
+
     if is_death:
         reliable_sources = set()
         for r in results:
@@ -392,8 +461,10 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
                     print(f"[LiveWeb Debug] Reliable source found: {url}")
         if len(reliable_sources) < 1:
             return safe_note("Death claim unverified by reliable sources. Treat as unconfirmed.")
+
     dates = _extract_dates(raw_text)
     nouns = _extract_proper_nouns(raw_text)
+
     def bold_once(s: str) -> str:
         used = set()
         for ent in nouns + dates:
@@ -402,6 +473,7 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
             s = re.sub(rf"\b{re.escape(ent)}\b", f"**{ent}**", s, count=1)
             used.add(ent)
         return s
+
     if is_death:
         indicators = ["has died", "died", "was killed", "passed away", "shot", "assassinated"]
         sent = None
@@ -425,17 +497,21 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         if nouns and "killer" in q_low:
             summary += f" (Names: {', '.join(nouns[:2])})"
         return bold_once(summary)
+
     sents = _split_sentences(raw_text)[:2]
     if not sents:
         return bold_once("No meaningful summary derived.")
     summary = _shorten(" ".join(sents), 420)
     return bold_once(summary)
 
+
 def safe_note(msg: str) -> str:
     return f"**Note:** {msg}"
 
+
 _cache: dict = {}
 _CACHE_TTL = 90
+
 
 def cached_perform_live_search(
     query: str,
@@ -451,6 +527,7 @@ def cached_perform_live_search(
     _cache[key] = {"time": now, "raw": raw, "analyzed": analyzed}
     return raw, analyzed
 
+
 if __name__ == "__main__":
     tests = [
         "are there opensource smart rings",
@@ -459,6 +536,10 @@ if __name__ == "__main__":
         "How did Alan Turing die",
         "write me a html code for a dropshipping website",
         "go to home-assistant.io and tell me what it can do",
+        "who won the super bowl in 2025",
+        "what's the latest news this week",
+        "hi",
+        "who made you",
     ]
     print(f"[Info] DDG available: {_DDG_AVAILABLE}; {_DDG_IMPORT_ERR or ''}")
     for t in tests:
@@ -466,3 +547,4 @@ if __name__ == "__main__":
         print("  browse_mode=False should_browse:", should_browse(t, False))
         print("  browse_mode=True  should_browse:", should_browse(t, True))
         print("  needs_live (off):", needs_live_data(t, False))
+        print("  needs_live (on):", needs_live_data(t, True))
