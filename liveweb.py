@@ -5,6 +5,8 @@ Live search + guarded factual extraction + optional real browser surfing.
 Two separate tools:
 - Text search (DuckDuckGo) → normal chat. Does NOT need the globe.
 - Computer Use browse     → ONLY when browse_mode=True (globe icon on).
+
+No hardcoded years or canned answers. Rank snippets against the user's question.
 """
 from __future__ import annotations
 import re
@@ -87,6 +89,11 @@ FACT_QUESTION_RE = re.compile(
     r"did|does|is|are|was|were|has|have|will|can)\b",
     re.IGNORECASE,
 )
+HISTORY_PAGE_RE = re.compile(
+    r"\b(papal bull|inter gravissimas|gregory xiii|julian calendar|"
+    r"calendar era|modification of the julian)\b",
+    re.IGNORECASE,
+)
 DATE_PATTERN = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
     r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
@@ -94,6 +101,13 @@ DATE_PATTERN = re.compile(
 )
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
+
+STOP = {
+    "the", "a", "an", "of", "to", "for", "in", "on", "at", "with", "and", "or",
+    "is", "are", "was", "were", "be", "been", "what", "when", "where", "who",
+    "which", "how", "why", "do", "does", "did", "can", "could", "would",
+    "i", "me", "my", "you", "your", "it", "its", "this", "that", "please",
+}
 
 LIVE_KEYWORDS = {
     "when", "date", "release", "released", "latest", "recent", "today", "tonight",
@@ -106,7 +120,6 @@ LIVE_KEYWORDS = {
     "weather", "forecast", "temperature",
     "president", "election", "elected",
     "album", "movie", "game", "trailer", "season",
-    "2024", "2025", "2026",
 }
 
 RELIABLE_DOMAINS = {
@@ -122,8 +135,20 @@ SKIP_HOST_PARTS = {
 }
 
 
+def _tokens(text: str) -> List[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return [w for w in words if w not in STOP and len(w) > 1]
+
+
+def _overlap(query: str, text: str) -> int:
+    q = set(_tokens(query))
+    t = set(_tokens(text))
+    if not q:
+        return 0
+    return len(q & t)
+
+
 def should_browse(query: str, browse_mode: bool = False) -> bool:
-    """Visual Computer Use only. Globe off → never browse."""
     if not browse_mode:
         return False
     q = (query or "").strip()
@@ -158,10 +183,6 @@ def browse_and_summarize(query: str) -> str:
 
 
 def needs_live_data(query: str, browse_mode: bool = False) -> bool:
-    """
-    Text web search for normal chat. browse_mode is ignored here.
-    Globe only affects should_browse(), not this.
-    """
     q = (query or "").strip()
     if not q:
         return False
@@ -237,15 +258,35 @@ def perform_live_search(
         return None, safe_note("Live search unavailable (install ddgs).")
 
     results = _search_duckduckgo(corrected_query, max_results=max_results)
+    results = _filter_offtopic(query, results)
     if not results:
         if DEATH_PATTERN.search(query or ""):
             return None, safe_note("No reliable sources confirming a death. Treat as unconfirmed.")
         return None, safe_note("No live results found.")
 
-    raw_text = _merge_results(results, query=corrected_query)
+    raw_text = _merge_results(results, query=query)
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
     return raw_text, analyzed
+
+
+def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
+    """Drop social/video hosts and history pages that don't match the question."""
+    q_tokens = set(_tokens(query))
+    kept = []
+    for r in results:
+        href = (r.get("href") or "").lower()
+        blob = f"{r.get('title', '')} {r.get('body', '')}"
+        if any(x in href for x in SKIP_HOST_PARTS):
+            continue
+        if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 2:
+            print(f"[LiveWeb] Dropped off-topic: {(r.get('title') or '')[:70]}")
+            continue
+        if q_tokens and _overlap(query, blob) == 0 and "wiki" in href:
+            # generic wiki page with zero query words
+            continue
+        kept.append(r)
+    return kept or results
 
 
 def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
@@ -319,11 +360,8 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     if not results:
         return None
     q = re.sub(r"[^a-z0-9\s]", " ", (query or "").lower())
-    stop = {
-        "what", "is", "the", "site", "website", "url", "link", "for", "official",
-        "page", "homepage", "of", "a", "an", "to", "go", "find", "where", "can", "i",
-        "send", "me", "give", "drop", "share"
-    }
+    stop = STOP | {"site", "website", "url", "link", "official", "page", "homepage",
+                   "send", "give", "drop", "share", "find", "go"}
     tokens = [t for t in q.split() if t and t not in stop]
     brand = tokens[0] if tokens else ""
     scored = []
@@ -332,7 +370,7 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
         if not href:
             continue
         host = _pretty_domain(href)
-        score = 0
+        score = _overlap(query, f"{r.get('title', '')} {r.get('body', '')} {host}")
         title = (r.get("title") or "").lower()
         body = (r.get("body") or "").lower()
         if any(x in host for x in SKIP_HOST_PARTS):
@@ -348,36 +386,30 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
         path = urlparse(href).path or ""
         if path in ("", "/"):
             score += 8
-        elif path.count("/") >= 3:
-            score -= 5
         scored.append((score, {**r, "href": href}))
     if not scored:
         return None
     scored.sort(key=lambda x: x[0], reverse=True)
     best_score, best = scored[0]
-    if best_score < 10:
+    if best_score < 2:
         return None
     return best
 
 
 def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> str:
     death_re = re.compile(r"\b(die|died|death|killed|assassinated|shot)\b", re.IGNORECASE)
-    entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
-    entity = entity_match.group(0).lower() if entity_match else None
 
     def score_snippet(r):
-        score = 0
-        combined = f"{r.get('title', '')} {r.get('body', '')}".lower()
-        if death_re.search(combined):
+        blob = f"{r.get('title', '')} {r.get('body', '')}"
+        score = _overlap(query, blob) * 10
+        if death_re.search(blob):
             score += 20
-        if DATE_PATTERN.search(combined):
+        if DATE_PATTERN.search(blob):
             score += 5
-        if NOUN_PATTERN.search(combined):
-            score += 10
-        if entity and entity in combined:
-            score += 15
         if _domain_ok(r.get("href", "")):
-            score += 20
+            score += 12
+        if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
+            score -= 40
         return score
 
     sorted_results = sorted(results, key=score_snippet, reverse=True)
@@ -435,6 +467,18 @@ def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
         if keyword.lower() in s.lower():
             return s
     return None
+
+
+def _best_sentences(query: str, raw_text: str, n: int = 2) -> List[str]:
+    sents = _split_sentences(raw_text)
+    ranked = []
+    for s in sents:
+        if HISTORY_PAGE_RE.search(s) and _overlap(query, s) < 2:
+            continue
+        ranked.append((_overlap(query, s), s))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    picked = [s for score, s in ranked if score > 0][:n]
+    return picked or [s for _, s in ranked[:n]] or sents[:n]
 
 
 def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
@@ -498,7 +542,7 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
             summary += f" (Names: {', '.join(nouns[:2])})"
         return bold_once(summary)
 
-    sents = _split_sentences(raw_text)[:2]
+    sents = _best_sentences(query, raw_text, n=2)
     if not sents:
         return bold_once("No meaningful summary derived.")
     summary = _shorten(" ".join(sents), 420)
@@ -530,21 +574,14 @@ def cached_perform_live_search(
 
 if __name__ == "__main__":
     tests = [
-        "are there opensource smart rings",
-        "what is the site for rainbet",
-        "send me the link",
-        "How did Alan Turing die",
-        "write me a html code for a dropshipping website",
-        "go to home-assistant.io and tell me what it can do",
-        "who won the super bowl in 2025",
+        "what year is it",
         "what's the latest news this week",
+        "who won the super bowl in 2025",
+        "what is the site for rainbet",
+        "How did Alan Turing die",
         "hi",
-        "who made you",
     ]
     print(f"[Info] DDG available: {_DDG_AVAILABLE}; {_DDG_IMPORT_ERR or ''}")
     for t in tests:
         print("\nQuery:", t)
-        print("  browse_mode=False should_browse:", should_browse(t, False))
-        print("  browse_mode=True  should_browse:", should_browse(t, True))
-        print("  needs_live (off):", needs_live_data(t, False))
-        print("  needs_live (on):", needs_live_data(t, True))
+        print("  needs_live:", needs_live_data(t, False))
