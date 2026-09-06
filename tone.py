@@ -100,8 +100,8 @@ WHEN_WHERE_RE = re.compile(
     r"opens?|debut|hosted|location|city|venue|olympics?)\b",
     re.IGNORECASE,
 )
-LIVE_DATE_LINE_RE = re.compile(r"\bDate:\s*([^\n.]+)", re.IGNORECASE)
-LIVE_PLACE_LINE_RE = re.compile(r"\bPlace:\s*([^\n.]+)", re.IGNORECASE)
+LIVE_DATE_LINE_RE = re.compile(r"\bDate:\s*(.+)", re.IGNORECASE)
+LIVE_PLACE_LINE_RE = re.compile(r"\bPlace:\s*(.+)", re.IGNORECASE)
 STOP = {
     "how", "did", "does", "do", "the", "a", "an", "of", "to", "for", "in", "on", "at", "with",
     "when", "what", "who", "why", "is", "are", "was", "were", "will", "and", "or", "out",
@@ -127,11 +127,13 @@ _COLOR_MAP = {
 
 MODEL = "gpt-5.6-terra"
 
+
 def _openai_available() -> bool:
     if not openai:
         return False
     key = os.getenv("OPENAI_API_KEY") or getattr(openai, "api_key", None)
     return bool(key)
+
 
 def _get_client():
     if not openai:
@@ -147,13 +149,16 @@ def _get_client():
         print(f"[Tone] Client create error: {type(e).__name__}: {e}")
         return None
 
+
 def _sanitize_md(text: str) -> str:
     if not text:
         return ""
     fences: List[str] = []
+
     def _save_fence(m: re.Match) -> str:
         fences.append(m.group(0))
         return f"\0FENCE{len(fences) - 1}\0"
+
     text = re.sub(r"```[\s\S]*?```", _save_fence, text)
     text = re.sub(r"<\s*/?\s*(?:b|strong)\s*>", "**", text)
     text = re.sub(r"<[^>]+>", "", text)
@@ -162,6 +167,7 @@ def _sanitize_md(text: str) -> str:
     for i, fence in enumerate(fences):
         text = text.replace(f"\0FENCE{i}\0", fence)
     return text.strip()
+
 
 def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
     if not source:
@@ -175,6 +181,7 @@ def _primary_entity(source: str, fallback: Optional[str] = None) -> str:
             return c
     return fallback or "This subject"
 
+
 def _extract_url(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
@@ -187,15 +194,31 @@ def _extract_url(text: Optional[str]) -> Optional[str]:
         return f"https://{host}"
     return None
 
+
 def _format_site_link(url: str, label: Optional[str] = None) -> str:
     host = re.sub(r"^https?://(www\.)?", "", url, flags=re.IGNORECASE).split("/")[0]
     label = label or host
     return f"[{label}]({url})"
 
+
 def _usable_live(liveweb_fact: Optional[str]) -> bool:
     if not liveweb_fact:
         return False
     return not liveweb_fact.lower().startswith("**note:**")
+
+
+def _clean_live_field(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = re.sub(r"\*+", "", raw)
+    s = re.sub(r"https?://\S+", "", s)
+    s = s.replace("|", " ")
+    s = re.sub(r"\s+", " ", s).strip(" .-")
+    s = re.split(r"\s+-\s+", s, maxsplit=1)[0].strip()
+    if len(s) > 80:
+        s = s[:80].rsplit(" ", 1)[0]
+    return s or None
+
 
 def _live_when_where_reply(personality: str, liveweb_fact: str, prompt: str) -> Optional[str]:
     """If liveweb already extracted Date:/Place:, speak those. No hedging."""
@@ -205,19 +228,20 @@ def _live_when_where_reply(personality: str, liveweb_fact: str, prompt: str) -> 
         return None
     date_m = LIVE_DATE_LINE_RE.search(liveweb_fact)
     place_m = LIVE_PLACE_LINE_RE.search(liveweb_fact)
-    date = date_m.group(1).strip(" .") if date_m else None
-    place = place_m.group(1).strip(" .") if place_m else None
+    date = _clean_live_field(date_m.group(1) if date_m else None)
+    place = _clean_live_field(place_m.group(1) if place_m else None)
     if not date and not place:
         return None
     bits = []
     if date:
         bits.append(date)
-    if place:
+    if place and (not date or place.lower() not in date.lower()):
         bits.append(f"in {place}" if date else place)
     fact = " ".join(bits)
     if personality == "god":
         return f"Dear child, {fact}."
     return f"{fact}, boss."
+
 
 def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
     if not history:
@@ -238,12 +262,14 @@ def _last_html_from_history(history: Optional[List[Any]]) -> Optional[str]:
         print(f"[Tone] last_html extract error: {e}")
     return None
 
+
 def _pick_color_from_prompt(prompt: str) -> Optional[str]:
     low = (prompt or "").lower()
     for name, hex_ in _COLOR_MAP.items():
         if re.search(rf"\b{name}\b", low):
             return hex_
     return None
+
 
 def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
     if not prev_html or not prompt:
@@ -432,6 +458,7 @@ def _apply_simple_html_edits(prev_html: str, prompt: str) -> Optional[str]:
             changed = True
     return html if changed else None
 
+
 def _call_openai(system: str, user: str, max_tokens=180) -> str:
     client = _get_client()
     if not client:
@@ -469,6 +496,7 @@ def _call_openai(system: str, user: str, max_tokens=180) -> str:
         print(f"[Tone] All attempts failed: {type(last_err).__name__}: {last_err}")
     return "Sorry boss, I hit a temporary glitch. Ask me that again, sir."
 
+
 def _extract_message_text(resp) -> str:
     try:
         choice = resp.choices[0]
@@ -494,6 +522,7 @@ def _extract_message_text(resp) -> str:
         print(f"[Tone] Extract error: {e}")
     return ""
 
+
 def _finalize_code_content(content: str) -> str:
     content = (content or "").strip()
     if not content:
@@ -506,6 +535,7 @@ def _finalize_code_content(content: str) -> str:
     )
     lang = "html" if looks_html else "text"
     return f"```{lang}\n{content}\n```"
+
 
 def _style_variant(user: str) -> Tuple[str, str, str, str]:
     low = (user or "").lower()
@@ -523,6 +553,7 @@ def _style_variant(user: str) -> Tuple[str, str, str, str]:
         ("#0f1410", "#1a221c", "#a3e635", "#ecfccb"),
     ]
     return variants[seed]
+
 
 def _html_store_fallback(user: str) -> str:
     low = (user or "").lower()
@@ -785,6 +816,7 @@ def _html_store_fallback(user: str) -> str:
 {html}
 ```"""
 
+
 def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     is_iteration_payload = "previous html" in (user or "").lower()
     client = _get_client()
@@ -859,6 +891,7 @@ def _call_openai_code(system: str, user: str, max_tokens=2500) -> str:
     print("[Tone] Using local HTML fallback after empty model responses")
     return _html_store_fallback(user)
 
+
 def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
     lines = []
     if previous_fact:
@@ -866,6 +899,7 @@ def _build_fact_block(previous_fact: Optional[str], liveweb_fact: Optional[str])
     if liveweb_fact and not liveweb_fact.lower().startswith("**note:**"):
         lines.append(f"Live snippet: {liveweb_fact}")
     return "\n".join(lines)
+
 
 def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> bool:
     if previous_fact and DEATH_QUERY_RE.search(previous_fact):
@@ -876,12 +910,14 @@ def _has_support_for_death(previous_fact: Optional[str], liveweb_fact: Optional[
         return True
     return False
 
+
 def _place_reply(personality: str, fact: str) -> str:
     fact = (fact or "").strip()
     if personality == "god":
         lowered = fact[0].lower() + fact[1:] if fact else fact
         return f"Dear child, {lowered}"
     return f"{fact} Want the map, boss?"
+
 
 def generate_with_tone(
     prompt: str,
@@ -1012,6 +1048,7 @@ def generate_with_tone(
         "- If the snippet contains a calendar date (month + day + year, or month + year), say that date.\n"
         "- Never replace a real date with 'this fall', 'soon', 'this year', or 'not specified'.\n"
         "- Never say you need to look it up if the snippet already answered it.\n"
+        "- Never use memorized years (like 2024 Paris) if the Live snippet names a different year or city.\n"
         "- Olympics / movies / shows / phones / sports: give date and city when the snippet has them.\n"
     )
 
@@ -1119,6 +1156,7 @@ def generate_with_tone(
             "Answer the question with the specific date/place from LIVE FACTS when present."
         )
     return _call_openai(system_prompt, user_prompt, max_tokens=160)
+
 
 if __name__ == "__main__":
     print(generate_with_tone("hi"))
