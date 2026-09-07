@@ -8,8 +8,7 @@ Search order for normal chat:
 
 Computer Use browse → ONLY when browse_mode=True (globe icon on).
 
-No hardcoded years or canned answers.
-Ignore wiki "last edited" / article bylines.
+Wikipedia / Fandom are never extracted and are dropped from hits.
 A date only counts if the same window has premiere/release/hosted/olympics/debut.
 """
 from __future__ import annotations
@@ -147,8 +146,8 @@ EDIT_STAMP_RE = re.compile(
 )
 EVENT_CUE_RE = re.compile(
     r"\b(premiere|premieres|premiered|release date|releases?|released|"
-    r"airs?|debuts?|debuted|opens?|opening|hosted|host city|host|"
-    r"olympics?|olympic games|disney\+|streaming)\b",
+    r"coming|launch|launches|airs?|debuts?|debuted|opens?|opening|hosted|"
+    r"host city|host|olympics?|olympic games|disney\+|streaming)\b",
     re.IGNORECASE,
 )
 YEAR_PATTERN = re.compile(r"\b((?:19|20)\d{2})\b")
@@ -183,18 +182,59 @@ RELIABLE_DOMAINS = {
     "apnews.com", "associatedpress.com", "reuters.com", "bbc.com", "bbc.co.uk",
     "nytimes.com", "theguardian.com", "washingtonpost.com", "bloomberg.com",
     "wsj.com", "npr.org", "abcnews.go.com", "cbsnews.com", "cnn.com",
-    "wikipedia.org", "aljazeera.com", "foxnews.com", "usatoday.com",
+    "aljazeera.com", "foxnews.com", "usatoday.com",
     "nbcnews.com", "axios.com", "pbs.org", "olympics.com", "ioc.ch",
     "marvel.com", "disneyplus.com", "disney.com", "variety.com",
     "hollywoodreporter.com", "deadline.com",
+    "rockstargames.com", "xbox.com", "playstation.com", "gamespot.com", "ign.com",
 }
 EXTRACT_FIRST_DOMAINS = (
-    "marvel.com", "disneyplus.com", "disney.com", "olympics.com",
-    "wikipedia.org", "variety.com", "tvline.com",
+    "rockstargames.com",
+    "xbox.com",
+    "playstation.com",
+    "store.steampowered.com",
+    "steampowered.com",
+    "nintendo.com",
+    "epicgames.com",
+    "marvel.com",
+    "disneyplus.com",
+    "disney.com",
+    "lucasfilm.com",
+    "starwars.com",
+    "olympics.com",
+    "nba.com",
+    "nfl.com",
+    "mlb.com",
+    "espn.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "variety.com",
+    "hollywoodreporter.com",
+    "deadline.com",
+    "gamespot.com",
+    "ign.com",
+    "polygon.com",
+    "kotaku.com",
+    "pcgamer.com",
+    "theverge.com",
+    "bloomberg.com",
+    "reuters.com",
+    "apnews.com",
+    "nytimes.com",
+    "cnn.com",
+    "nbcnews.com",
+    "abcnews.go.com",
+    "cbsnews.com",
+)
+WIKI_HOSTS = (
+    "wikipedia.org",
+    "wikimedia.org",
+    "fandom.com",
 )
 SKIP_HOST_PARTS = {
     "facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.",
-    "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest."
+    "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest.",
+    "wikipedia.", "wikimedia.", "fandom.com",
 }
 
 
@@ -217,6 +257,34 @@ def _overlap(query: str, text: str) -> int:
 
 def _wants_next(query: str) -> bool:
     return bool(re.search(r"\b(next|upcoming|coming|future)\b", query or "", re.I))
+
+
+def _host(url: str) -> str:
+    try:
+        host = urlparse(_normalize_url(url)).netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+
+def _is_wiki(url: str) -> bool:
+    host = _host(url)
+    if not host:
+        return False
+    return any(host == w or host.endswith("." + w) for w in WIKI_HOSTS)
+
+
+def _drop_wiki(results: List[dict]) -> List[dict]:
+    kept = []
+    for r in results or []:
+        href = r.get("href") or ""
+        if _is_wiki(href) or "wikipedia" in href.lower() or "fandom.com" in href.lower():
+            print(f"[LiveWeb] Dropped wiki: {(r.get('title') or '')[:70]}")
+            continue
+        kept.append(r)
+    return kept
 
 
 def _rewrite_query(query: str) -> str:
@@ -315,8 +383,6 @@ def correct_name_spelling(name: str) -> str:
     return name
 
 
-# ---------- AnySearch (same contract as anysearch_cli.py) ----------
-
 def _anysearch_headers() -> dict:
     headers = {
         "Content-Type": "application/json",
@@ -364,10 +430,13 @@ def _search_anysearch(query: str, max_results: int = 5) -> List[dict]:
         if title or body or href:
             out.append({"title": title, "body": body, "href": href})
             print(f"[LiveWeb] AnySearch hit: {title[:60]} ({href})")
-    return out
+    return _drop_wiki(out)
 
 
 def _extract_anysearch(url: str) -> str:
+    if _is_wiki(url):
+        print(f"[LiveWeb] Refusing wiki extract: {url}")
+        return ""
     url = _normalize_url(url)
     if not url:
         return ""
@@ -383,30 +452,25 @@ def _extract_anysearch(url: str) -> str:
     return content or title
 
 
-def _host(url: str) -> str:
-    try:
-        host = urlparse(_normalize_url(url)).netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host
-    except Exception:
-        return ""
-
-
 def _official_extract_urls(results: List[dict]) -> List[str]:
     ranked = []
     for r in results:
         href = r.get("href") or ""
+        if _is_wiki(href):
+            continue
         host = _host(href)
         if not host or any(x in host for x in SKIP_HOST_PARTS):
             continue
         score = 0
         for i, dom in enumerate(EXTRACT_FIRST_DOMAINS):
             if host == dom or host.endswith("." + dom):
-                score = 100 - i
+                score = 200 - i
                 break
         if _domain_ok(href):
-            score = max(score, 20)
+            score = max(score, 40)
+        title = f"{r.get('title', '')} {r.get('body', '')}"
+        if DATE_PATTERN.search(title) and EVENT_CUE_RE.search(title):
+            score += 80
         if score:
             ranked.append((score, href))
     ranked.sort(key=lambda x: x[0], reverse=True)
@@ -417,6 +481,13 @@ def _official_extract_urls(results: List[dict]) -> List[str]:
             seen.add(href)
             urls.append(href)
     return urls[:3]
+
+
+def _dates_from_hits(results: List[dict], query: str) -> List[str]:
+    blob = " | ".join(
+        f"{r.get('title', '')} {r.get('body', '')}" for r in (results or [])[:8]
+    )
+    return _extract_dates(blob, query)
 
 
 def perform_live_search(
@@ -445,6 +516,9 @@ def perform_live_search(
 
     print(f"[LiveWeb] AnySearch search: {corrected_query}")
     results = _search_anysearch(corrected_query, max_results=min(max_results, 8))
+    results = _drop_wiki(results)
+
+    title_dates = _dates_from_hits(results, query)
 
     extracted_pages = []
     for url in _official_extract_urls(results):
@@ -454,11 +528,18 @@ def perform_live_search(
         if len(extracted_pages) >= 2:
             break
 
+    if title_dates and not extracted_pages:
+        raw_text = _merge_results(results, query=query)
+        analyzed = f"Date: **{title_dates[0]}**."
+        print(f"[LiveWeb] Using search-title date: {title_dates[0]}")
+        return raw_text, analyzed
+
     if not results:
         print("[LiveWeb] AnySearch empty — trying DuckDuckGo.")
         if _DDG_AVAILABLE:
-            results = _search_duckduckgo(corrected_query, max_results=max_results)
+            results = _drop_wiki(_search_duckduckgo(corrected_query, max_results=max_results))
             results = _filter_offtopic(query, results)
+            title_dates = title_dates or _dates_from_hits(results, query)
 
     if not results and not extracted_pages:
         if not _DDG_AVAILABLE and not ANYSEARCH_API_KEY:
@@ -476,7 +557,9 @@ def perform_live_search(
 
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
-    print(f"[LiveWeb Debug] Analyzed: {analyzed[:180]}")
+    if title_dates and "Date:" not in (analyzed or ""):
+        analyzed = f"Date: **{title_dates[0]}**. {analyzed or ''}".strip()
+    print(f"[LiveWeb Debug] Analyzed: {(analyzed or '')[:180]}")
     return raw_text, analyzed
 
 
@@ -486,6 +569,8 @@ def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
     kept = []
     for r in results:
         href = (r.get("href") or "").lower()
+        if _is_wiki(href):
+            continue
         blob = f"{r.get('title', '')} {r.get('body', '')}"
         if any(x in href for x in SKIP_HOST_PARTS):
             continue
@@ -495,7 +580,7 @@ def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
         if wants_next and PAST_GAMES_NOISE_RE.search(blob) and not re.search(r"\b2028\b|\b2032\b|\b2034\b", blob):
             print(f"[LiveWeb] Dropped past-games noise: {(r.get('title') or '')[:70]}")
             continue
-        if q_tokens and _overlap(query, blob) == 0 and "wiki" in href:
+        if q_tokens and _overlap(query, blob) == 0:
             continue
         kept.append(r)
     return kept or results
@@ -532,11 +617,11 @@ def _search_duckduckgo(query: str, max_results: int = 8) -> List[dict]:
             print(f"[LiveWeb] Search error (legacy path): {e}")
     except Exception as e:
         print(f"[LiveWeb] Search error: {e}")
-    return out
+    return _drop_wiki(out)
 
 
 def _domain_ok(url: str) -> bool:
-    if not url:
+    if not url or _is_wiki(url):
         return False
     try:
         host = _host(url)
@@ -570,7 +655,7 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     scored = []
     for r in results:
         href = _normalize_url(r.get("href") or "")
-        if not href:
+        if not href or _is_wiki(href):
             continue
         host = _pretty_domain(href)
         score = _overlap(query, f"{r.get('title', '')} {r.get('body', '')} {host}")
@@ -626,7 +711,7 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         if _domain_ok(r.get("href", "")):
             score += 12
         href = (r.get("href") or "").lower()
-        if "olympics.com" in href or "marvel.com" in href or "disneyplus.com" in href:
+        if any(d in href for d in ("olympics.com", "marvel.com", "disneyplus.com", "rockstargames.com", "xbox.com")):
             score += 24
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
             score -= 40
@@ -648,6 +733,8 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
     parts: List[str] = []
     for r in sorted_results:
         href = (r.get("href") or "").strip()
+        if _is_wiki(href):
+            continue
         seg = f"{r.get('title', '')} - {r.get('body', '')}".strip()
         if href:
             seg = f"{seg} ({href})"
@@ -838,7 +925,7 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         if len(reliable_sources) < 1:
             return safe_note("Death claim unverified by reliable sources. Treat as unconfirmed.")
 
-    dates = _extract_dates(raw_text, query)
+    dates = _extract_dates(raw_text, query) or _dates_from_hits(results, query)
     places = _extract_places(raw_text, query)
     nouns = _extract_proper_nouns(raw_text)
 
@@ -916,7 +1003,7 @@ if __name__ == "__main__":
         "what year is it",
         "when does VisionQuest come out",
         "when is the next olympics and where",
-        "Spider-Man Brand New Day release date",
+        "when is gta 6 release date",
         "hi",
     ]
     print(f"[Info] AnySearch key set: {bool(ANYSEARCH_API_KEY)}")
