@@ -10,6 +10,8 @@ Hope v2 API server
 - places.py: live nearby search from the user's GPS (no hardcoded stores)
 - Places NEVER runs on olympics / premiere / release / hosted-event questions
 - If liveweb locks a Date:, speak it and skip tone
+- Do not glue last_topic onto a new named title (Doomsday + Wolverine bleed)
+- what time / what year use the clock, not live search
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import json
 import threading
 import traceback
 import importlib.metadata
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Iterator
 
 from flask import Flask, request, jsonify, Response
@@ -43,6 +46,11 @@ from links import (
     link_request_reply,
     prefer_site_url_from_prompt,
 )
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None  # type: ignore
 
 try:
     import places
@@ -127,11 +135,28 @@ EVENT_NOT_PLACES_RE = re.compile(
     re.IGNORECASE,
 )
 DATE_LOCK_RE = re.compile(r"Date:\s*\**([^*\n.]+)", re.IGNORECASE)
-WHEN_Q_RE = re.compile(r"\b(when|release|premiere|coming out|date)\b", re.IGNORECASE)
+PLACE_LOCK_RE = re.compile(r"Place:\s*\**([^*\n.]+)", re.IGNORECASE)
+WHEN_Q_RE = re.compile(r"\b(when|release|premiere|coming out|date|where|year)\b", re.IGNORECASE)
+NAMED_TITLE_RE = re.compile(
+    r"\b("
+    r"gta|grand theft|visionquest|vision quest|wolverine|insomniac|"
+    r"avengers|doomsday|olympics?|matrix|spider[- ]?man"
+    r")\b",
+    re.IGNORECASE,
+)
+CLOCK_RE = re.compile(
+    r"^\s*(what|what'?s)\s+(time|year|date)(\s+is\s+it)?\s*\??\s*$",
+    re.IGNORECASE,
+)
+OLYMPICS_RE = re.compile(r"\bolympics?\b", re.IGNORECASE)
 
 
 def _is_event_query(text: str) -> bool:
     return bool(EVENT_NOT_PLACES_RE.search(text or ""))
+
+
+def _named_title(text: str) -> bool:
+    return bool(NAMED_TITLE_RE.search(text or ""))
 
 
 def _locked_date(analyzed: Optional[str]) -> Optional[str]:
@@ -141,6 +166,48 @@ def _locked_date(analyzed: Optional[str]) -> Optional[str]:
     if not m:
         return None
     return m.group(1).strip(" *.")
+
+
+def _locked_place(analyzed: Optional[str]) -> Optional[str]:
+    if not analyzed:
+        return None
+    m = PLACE_LOCK_RE.search(analyzed)
+    if not m:
+        return None
+    return m.group(1).strip(" *.")
+
+
+def _now_eastern() -> datetime:
+    if ZoneInfo is not None:
+        try:
+            return datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            pass
+    return datetime.now()
+
+
+def _clock_reply(text: str) -> Optional[str]:
+    if not CLOCK_RE.search(text or ""):
+        return None
+    now = _now_eastern()
+    low = text.lower()
+    if "year" in low:
+        return f"{now.year}."
+    if "time" in low:
+        return now.strftime("%I:%M %p").lstrip("0") + " Eastern."
+    return now.strftime("%B %d, %Y") + "."
+
+
+def _build_search_query(user_prompt: str, last_topic: str, reuse_context: bool, word_count: int) -> str:
+    q = (user_prompt or "").strip()
+    if OLYMPICS_RE.search(q) and re.search(r"\b(next|where|when|year|held)\b", q, re.I):
+        q = "2028 Summer Olympics Los Angeles host city"
+        print(f"[LiveWeb] olympics rewrite: {q}")
+        return q
+    if reuse_context and last_topic and word_count <= 8 and not _named_title(user_prompt):
+        q = f"{user_prompt} {last_topic}".strip()
+        print(f"[LiveWeb] follow-up search: {q!r}")
+    return q
 
 
 def _extract_entity_from_text(text: str) -> Optional[str]:
@@ -274,6 +341,18 @@ def ask():
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
 
+    clock = _clock_reply(user_prompt)
+    if clock:
+        print(f"[Ask] Clock reply: {clock}")
+        return jsonify({
+            "reply": clock,
+            "context_used": False,
+            "liveweb_raw": None,
+            "liveweb_analyzed": None,
+            "vision_note": None,
+            "memory": {},
+        })
+
     vision_description = None
     if image_data and image_mod and hasattr(image_mod, "process_image_upload"):
         try:
@@ -315,6 +394,8 @@ def ask():
         reuse_context = True
     if last_fact_mem and is_short_message:
         reuse_context = True
+    if _named_title(user_prompt) and last_topic and not same_topic(last_topic, new_topic):
+        reuse_context = False
 
     chosen_context_person = explicit_context if explicit_context else (last_person if reuse_context else None)
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
@@ -450,10 +531,7 @@ def ask():
                 needs_live = bool(liveweb.needs_live_data(user_prompt))
 
     if liveweb and needs_live:
-        search_query = user_prompt
-        if reuse_context and last_topic and word_count <= 10:
-            search_query = f"{user_prompt} {last_topic}".strip()
-            print(f"[LiveWeb] follow-up search: {search_query!r}")
+        search_query = _build_search_query(user_prompt, last_topic, reuse_context, word_count)
         if "die" in user_prompt.lower() or "death" in user_prompt.lower() or "killer" in user_prompt.lower():
             if chosen_context_person and (pronoun_detected or vague_followup_detected):
                 search_query = (
@@ -486,10 +564,17 @@ def ask():
         effective_prompt += f"\n\nImage context: {vision_description}"
 
     date_hit = _locked_date(liveweb_analyzed)
+    place_hit = _locked_place(liveweb_analyzed)
     reply = None
     if date_hit and WHEN_Q_RE.search(user_prompt):
-        reply = f"{date_hit}."
+        if place_hit and OLYMPICS_RE.search(user_prompt):
+            reply = f"{date_hit} in {place_hit}."
+        else:
+            reply = f"{date_hit}."
         print(f"[Ask] Using locked date, skip tone: {reply}")
+    elif place_hit and OLYMPICS_RE.search(user_prompt) and re.search(r"\bwhere\b", user_prompt, re.I):
+        reply = f"{place_hit}."
+        print(f"[Ask] Using locked place, skip tone: {reply}")
     elif tone and hasattr(tone, "generate_with_tone") and OPENAI_AVAILABLE:
         try:
             reply = tone.generate_with_tone(
@@ -661,6 +746,18 @@ def ask_stream():
     if not user_prompt:
         return error_response("Empty prompt", 400)
 
+    clock = _clock_reply(user_prompt)
+    if clock:
+        def clock_gen():
+            yield "data: " + json.dumps({"type": "start"}) + "\n\n"
+            yield "data: " + json.dumps({"type": "token", "text": clock}) + "\n\n"
+            yield "data: " + json.dumps({"type": "done", "reply": clock}) + "\n\n"
+        return Response(
+            clock_gen(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+        )
+
     if personality == "god":
         session_id = f"discord-{(request.remote_addr or 'anon')}"
     else:
@@ -678,7 +775,8 @@ def ask_stream():
         for h in history
     ]
     new_topic = topic_of(user_prompt)
-    reuse_context = True
+    word_count = len(user_prompt.split())
+    reuse_context = not (_named_title(user_prompt) and last_topic and not same_topic(last_topic, new_topic))
     chosen_context_person = last_person if reuse_context else None
     chosen_previous_fact = last_fact_mem if reuse_context else None
 
@@ -692,9 +790,7 @@ def ask_stream():
             if not browse_mode:
                 needs_live = bool(liveweb.needs_live_data(user_prompt))
 
-    stream_query = user_prompt
-    if last_topic and len(user_prompt.split()) <= 10:
-        stream_query = f"{user_prompt} {last_topic}".strip()
+    stream_query = _build_search_query(user_prompt, last_topic, reuse_context, word_count)
 
     if liveweb and needs_live and hasattr(liveweb, "perform_live_search"):
         try:
@@ -709,13 +805,22 @@ def ask_stream():
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
     system_prompt = _hope_system_prompt(personality, chosen_context_person, chained_fact, liveweb_analyzed)
     date_hit = _locked_date(liveweb_analyzed)
+    place_hit = _locked_place(liveweb_analyzed)
 
     def generate():
         full = ""
         yield "data: " + json.dumps({"type": "start"}) + "\n\n"
+        locked = None
         if date_hit and WHEN_Q_RE.search(user_prompt):
-            full = sanitize_reply(f"{date_hit}.")
-            print(f"[Ask-stream] Using locked date, skip tone: {full}")
+            if place_hit and OLYMPICS_RE.search(user_prompt):
+                locked = f"{date_hit} in {place_hit}."
+            else:
+                locked = f"{date_hit}."
+        elif place_hit and OLYMPICS_RE.search(user_prompt) and re.search(r"\bwhere\b", user_prompt, re.I):
+            locked = f"{place_hit}."
+        if locked:
+            full = sanitize_reply(locked)
+            print(f"[Ask-stream] Using locked date/place, skip tone: {full}")
             yield "data: " + json.dumps({"type": "token", "text": full}) + "\n\n"
             new_history = history + [
                 {"role": "user", "content": user_prompt},
