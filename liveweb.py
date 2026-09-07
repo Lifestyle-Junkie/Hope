@@ -1,15 +1,13 @@
 """
 liveweb.py
 Live search + guarded factual extraction + optional real browser surfing.
-
 Search order for normal chat:
   1) AnySearch API (search + extract official pages)
   2) DuckDuckGo snippets if AnySearch is down
-
 Computer Use browse → ONLY when browse_mode=True (globe icon on).
-
 Wikipedia / Fandom / countdown sites are never extracted.
-Prefer "Coming/Launch November 19, 2026" over trailer dates on the same page.
+Prefer "Coming/Launch November 19, 2026" over trailer / published-on dates.
+Try the next official URL if extract 422s.
 """
 from __future__ import annotations
 
@@ -97,6 +95,10 @@ GREETING_RE = re.compile(
     r"what'?s\s*up|how\s*are\s*you|how'?s\s*it\s*going)[\s!?.]*$",
     re.IGNORECASE,
 )
+CLOCK_RE = re.compile(
+    r"^\s*(what|what'?s)\s+(time|year|date)(\s+is\s+it)?\s*\??\s*$",
+    re.IGNORECASE,
+)
 FACT_QUESTION_RE = re.compile(
     r"^\s*(who|what|when|where|which|whom|whose|how (many|much|long|far|old)|"
     r"did|does|is|are|was|were|has|have|will|can)\b",
@@ -113,7 +115,8 @@ PAST_GAMES_NOISE_RE = re.compile(
     re.IGNORECASE,
 )
 VAGUE_SEASON_RE = re.compile(
-    r"\b(this (fall|spring|summer|winter)|coming soon|later this year)\b",
+    r"\b(this (fall|spring|summer|winter)|coming soon|later this year|"
+    r"fall 20\d{2}|spring 20\d{2}|summer 20\d{2}|winter 20\d{2})\b",
     re.IGNORECASE,
 )
 TRAILER_NOISE_RE = re.compile(
@@ -148,7 +151,7 @@ EVENT_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 EDIT_STAMP_RE = re.compile(
-    r"(last edited|posted on|updated on|published on|page last changed|"
+    r"(last edited|posted on|updated on|published on|published|page last changed|"
     r"this page was last edited|3 days ago|hours ago|minutes ago)\b",
     re.IGNORECASE,
 )
@@ -305,16 +308,14 @@ def _drop_wiki(results: List[dict]) -> List[dict]:
 def _rewrite_query(query: str) -> str:
     q = (query or "").strip()
     low = q.lower()
-    if re.search(r"\b(next|upcoming).{0,20}olympics?\b", low) or re.search(
-        r"\bolympics?.{0,20}(next|where|when)\b", low
-    ):
+    if CLOCK_RE.search(q):
+        return q
+    if re.search(r"\bolympics?\b", low) and re.search(r"\b(next|where|when|year|held)\b", low):
         if "winter" in low:
-            return "next Winter Olympics host city year"
-        return "next Olympic Games host city year"
+            return "2030 Winter Olympics host city"
+        return "2028 Summer Olympics Los Angeles host city"
     if re.search(r"\bwhen does\b.+\b(come|come out|release|drop)\b", low):
         return re.sub(r"[?!.]", "", q) + " premiere release date"
-    if re.search(r"\bwhat year is it\b", low):
-        return "current year today's date"
     return q
 
 
@@ -327,6 +328,8 @@ def should_browse(query: str, browse_mode: bool = False) -> bool:
     if CODE_INTENT_RE.search(q) and not BROWSE_RE.search(q):
         return False
     if LINK_FOLLOWUP_ONLY_RE.match(q):
+        return False
+    if CLOCK_RE.search(q):
         return False
     if BROWSE_RE.search(q):
         return True
@@ -356,7 +359,7 @@ def needs_live_data(query: str, browse_mode: bool = False) -> bool:
     q = (query or "").strip()
     if not q:
         return False
-    if GREETING_RE.search(q) or IDENTITY_RE.search(q):
+    if GREETING_RE.search(q) or IDENTITY_RE.search(q) or CLOCK_RE.search(q):
         return False
     if CODE_INTENT_RE.search(q) and not BROWSE_RE.search(q):
         return False
@@ -467,14 +470,18 @@ def _extract_anysearch(url: str) -> str:
     return content or title
 
 
-def _official_extract_urls(results: List[dict]) -> List[str]:
+def _official_extract_urls(results: List[dict], query: str = "") -> List[str]:
     ranked = []
+    qtok = set(_tokens(query))
     for r in results:
         href = r.get("href") or ""
         if _is_wiki(href):
             continue
         host = _host(href)
         if not host or any(x in host or x in href.lower() for x in SKIP_HOST_PARTS):
+            continue
+        blob = f"{r.get('title', '')} {r.get('body', '')}"
+        if qtok and _overlap(query, blob + " " + host) == 0:
             continue
         score = 0
         for i, dom in enumerate(EXTRACT_FIRST_DOMAINS):
@@ -483,9 +490,12 @@ def _official_extract_urls(results: List[dict]) -> List[str]:
                 break
         if _domain_ok(href):
             score = max(score, 40)
-        title = f"{r.get('title', '')} {r.get('body', '')}"
-        if DATE_PATTERN.search(title) and EVENT_CUE_RE.search(title):
+        if DATE_PATTERN.search(blob) and EVENT_CUE_RE.search(blob):
             score += 80
+        if TRAILER_NOISE_RE.search(blob):
+            score -= 30
+        if VAGUE_SEASON_RE.search(blob) and not DATE_PATTERN.search(blob):
+            score -= 25
         if score:
             ranked.append((score, href))
     ranked.sort(key=lambda x: x[0], reverse=True)
@@ -495,7 +505,7 @@ def _official_extract_urls(results: List[dict]) -> List[str]:
         if href not in seen:
             seen.add(href)
             urls.append(href)
-    return urls[:1]
+    return urls[:3]
 
 
 def _dates_from_hits(results: List[dict], query: str) -> List[str]:
@@ -512,7 +522,6 @@ def perform_live_search(
 ) -> Tuple[Optional[str], Optional[str]]:
     if not needs_live_data(query, browse_mode=browse_mode):
         return None, None
-
     if should_browse(query, browse_mode=browse_mode):
         browsed = browse_and_summarize(query)
         if browsed:
@@ -532,15 +541,16 @@ def perform_live_search(
     print(f"[LiveWeb] AnySearch search: {corrected_query}")
     results = _search_anysearch(corrected_query, max_results=min(max_results, 8))
     results = _drop_wiki(results)
-
+    results = _filter_offtopic(query, results)
     title_dates = _dates_from_hits(results, query)
 
     extracted_pages = []
-    for url in _official_extract_urls(results):
+    for url in _official_extract_urls(results, query):
         page = _extract_anysearch(url)
         if page:
             extracted_pages.append(f"{page} ({url})")
-        break
+            break
+        print(f"[LiveWeb] Extract empty/422, trying next official URL")
 
     if title_dates and not extracted_pages:
         raw_text = _merge_results(results, query=query)
@@ -548,7 +558,7 @@ def perform_live_search(
         print(f"[LiveWeb] Using search-title date: {title_dates[0]}")
         return raw_text, analyzed
 
-    if not results:
+    if not results and not extracted_pages:
         print("[LiveWeb] AnySearch empty — trying DuckDuckGo.")
         if _DDG_AVAILABLE:
             results = _drop_wiki(_search_duckduckgo(corrected_query, max_results=max_results))
@@ -567,8 +577,8 @@ def perform_live_search(
         raw_text = extracted_pages[0][:6000]
     else:
         raw_text = _merge_results(results, query=query)
-
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
+
     analyzed = _analyze_with_safety(query, results, raw_text)
     page_dates = _extract_dates(raw_text, query)
     best_date = (page_dates or title_dates or [None])[0]
@@ -786,6 +796,8 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
     def consider(chunk: str, window: str, base: int) -> None:
         if EDIT_STAMP_RE.search(window):
             return
+        if VAGUE_SEASON_RE.search(window) and not DATE_PATTERN.search(chunk):
+            return
         if not EVENT_CUE_RE.search(window) and not LAUNCH_CUE_RE.search(window):
             return
         score = base + _overlap(query, window) * 8
@@ -809,12 +821,10 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
         chunk = f"{month} {day}, {year}" if day else f"{month} {year}"
         chunk = re.sub(r"\s+", " ", chunk).strip()
         consider(chunk, window, 10)
-
     for d in DATE_PATTERN.findall(text):
         idx = text.find(d)
         window = _sentence_window(text, idx, idx + len(d)) if idx >= 0 else text
         consider(d, window, 18)
-
     for m in EVENT_YEAR_RE.finditer(text):
         window = _sentence_window(text, m.start(), m.end())
         label = re.sub(r"\s+", " ", m.group(0)).strip()
@@ -840,6 +850,8 @@ def _extract_places(text: str, query: str = "") -> List[str]:
     for m in PLACE_RE.finditer(text):
         window = _sentence_window(text, m.start(), m.end())
         if EDIT_STAMP_RE.search(window):
+            continue
+        if PAST_GAMES_NOISE_RE.search(window) and wants_next:
             continue
         p = m.group(1).strip()
         if p.lower() in PLACE_STOP:
@@ -931,7 +943,6 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         r"\b(where|hosted|location|city|venue|held|olympics?|next)\b",
         q_low,
     ))
-
     if is_site:
         best = _best_site_result(query, results)
         if best and best.get("href"):
@@ -1032,6 +1043,7 @@ if __name__ == "__main__":
         "when does VisionQuest come out",
         "when is the next olympics and where",
         "when is gta 6 release date",
+        "when does avengers doomsday come out",
         "hi",
     ]
     print(f"[Info] AnySearch key set: {bool(ANYSEARCH_API_KEY)}")
