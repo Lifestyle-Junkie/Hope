@@ -8,8 +8,8 @@ Search order for normal chat:
 
 Computer Use browse → ONLY when browse_mode=True (globe icon on).
 
-Wikipedia / Fandom are never extracted and are dropped from hits.
-A date only counts if the same window has premiere/release/hosted/olympics/debut.
+Wikipedia / Fandom / countdown sites are never extracted.
+Prefer "Coming/Launch November 19, 2026" over trailer dates on the same page.
 """
 from __future__ import annotations
 
@@ -114,6 +114,14 @@ PAST_GAMES_NOISE_RE = re.compile(
 )
 VAGUE_SEASON_RE = re.compile(
     r"\b(this (fall|spring|summer|winter)|coming soon|later this year)\b",
+    re.IGNORECASE,
+)
+TRAILER_NOISE_RE = re.compile(
+    r"\b(extended look|trailer|teaser|gameplay reveal|now playing)\b",
+    re.IGNORECASE,
+)
+LAUNCH_CUE_RE = re.compile(
+    r"\b(coming|launch(?:es|ed)?|releases?|released|premiere[sd]?|debuts?)\b",
     re.IGNORECASE,
 )
 DATE_PATTERN = re.compile(
@@ -235,6 +243,7 @@ SKIP_HOST_PARTS = {
     "facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.",
     "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest.",
     "wikipedia.", "wikimedia.", "fandom.com",
+    "vicountdown.", "countdown.",
 }
 
 
@@ -280,8 +289,14 @@ def _drop_wiki(results: List[dict]) -> List[dict]:
     kept = []
     for r in results or []:
         href = r.get("href") or ""
-        if _is_wiki(href) or "wikipedia" in href.lower() or "fandom.com" in href.lower():
-            print(f"[LiveWeb] Dropped wiki: {(r.get('title') or '')[:70]}")
+        host = _host(href)
+        if (
+            _is_wiki(href)
+            or "wikipedia" in href.lower()
+            or "fandom.com" in href.lower()
+            or any(part in (host + href.lower()) for part in SKIP_HOST_PARTS)
+        ):
+            print(f"[LiveWeb] Dropped skip-host: {(r.get('title') or '')[:70]}")
             continue
         kept.append(r)
     return kept
@@ -434,8 +449,8 @@ def _search_anysearch(query: str, max_results: int = 5) -> List[dict]:
 
 
 def _extract_anysearch(url: str) -> str:
-    if _is_wiki(url):
-        print(f"[LiveWeb] Refusing wiki extract: {url}")
+    if _is_wiki(url) or any(p in (url or "").lower() for p in SKIP_HOST_PARTS):
+        print(f"[LiveWeb] Refusing extract: {url}")
         return ""
     url = _normalize_url(url)
     if not url:
@@ -459,7 +474,7 @@ def _official_extract_urls(results: List[dict]) -> List[str]:
         if _is_wiki(href):
             continue
         host = _host(href)
-        if not host or any(x in host for x in SKIP_HOST_PARTS):
+        if not host or any(x in host or x in href.lower() for x in SKIP_HOST_PARTS):
             continue
         score = 0
         for i, dom in enumerate(EXTRACT_FIRST_DOMAINS):
@@ -480,7 +495,7 @@ def _official_extract_urls(results: List[dict]) -> List[str]:
         if href not in seen:
             seen.add(href)
             urls.append(href)
-    return urls[:3]
+    return urls[:1]
 
 
 def _dates_from_hits(results: List[dict], query: str) -> List[str]:
@@ -525,8 +540,7 @@ def perform_live_search(
         page = _extract_anysearch(url)
         if page:
             extracted_pages.append(f"{page} ({url})")
-        if len(extracted_pages) >= 2:
-            break
+        break
 
     if title_dates and not extracted_pages:
         raw_text = _merge_results(results, query=query)
@@ -550,15 +564,17 @@ def perform_live_search(
 
     raw_text = ""
     if extracted_pages:
-        raw_text = " | ".join(extracted_pages)
-        raw_text = raw_text[:6000]
+        raw_text = extracted_pages[0][:6000]
     else:
         raw_text = _merge_results(results, query=query)
 
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
-    if title_dates and "Date:" not in (analyzed or ""):
-        analyzed = f"Date: **{title_dates[0]}**. {analyzed or ''}".strip()
+    page_dates = _extract_dates(raw_text, query)
+    best_date = (page_dates or title_dates or [None])[0]
+    if best_date:
+        analyzed = f"Date: **{best_date}**."
+        print(f"[LiveWeb] Locked date: {best_date}")
     print(f"[LiveWeb Debug] Analyzed: {(analyzed or '')[:180]}")
     return raw_text, analyzed
 
@@ -717,6 +733,8 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
             score -= 40
         if EDIT_STAMP_RE.search(blob):
             score -= 25
+        if TRAILER_NOISE_RE.search(blob):
+            score -= 20
         if wants_next and PAST_GAMES_NOISE_RE.search(blob):
             score -= 30
         years = [int(m.group(1)) for m in re.finditer(r"\b((?:19|20)\d{2})\b", blob)]
@@ -753,7 +771,7 @@ def _clean_text(text: str) -> str:
     return t.strip(" -")
 
 
-def _sentence_window(text: str, start: int, end: int, pad: int = 90) -> str:
+def _sentence_window(text: str, start: int, end: int, pad: int = 70) -> str:
     a = max(0, start - pad)
     b = min(len(text or ""), end + pad)
     return text[a:b]
@@ -768,11 +786,18 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
     def consider(chunk: str, window: str, base: int) -> None:
         if EDIT_STAMP_RE.search(window):
             return
-        if not EVENT_CUE_RE.search(window):
+        if not EVENT_CUE_RE.search(window) and not LAUNCH_CUE_RE.search(window):
             return
         score = base + _overlap(query, window) * 8
-        if EVENT_CUE_RE.search(window):
-            score += 20
+        low = window.lower()
+        if LAUNCH_CUE_RE.search(window) and chunk.lower() in low:
+            score += 55
+        if TRAILER_NOISE_RE.search(window):
+            score -= 45
+        if not re.search(r"\d{1,2}", chunk):
+            score -= 20
+        if DATE_PATTERN.search(chunk):
+            score += 25
         y = _year_from_chunk(chunk)
         if wants_next and y is not None:
             score += 22 if y >= now_y else -12
@@ -788,7 +813,7 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
     for d in DATE_PATTERN.findall(text):
         idx = text.find(d)
         window = _sentence_window(text, idx, idx + len(d)) if idx >= 0 else text
-        consider(d, window, 12)
+        consider(d, window, 18)
 
     for m in EVENT_YEAR_RE.finditer(text):
         window = _sentence_window(text, m.start(), m.end())
@@ -868,6 +893,8 @@ def _best_sentences(query: str, raw_text: str, n: int = 3) -> List[str]:
         if HISTORY_PAGE_RE.search(s) and _overlap(query, s) < 2:
             continue
         if EDIT_STAMP_RE.search(s):
+            continue
+        if TRAILER_NOISE_RE.search(s):
             continue
         if VAGUE_SEASON_RE.search(s) and not YEAR_PATTERN.search(s):
             continue
@@ -967,9 +994,10 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
         parts.append(f"Date: {dates[0]}.")
     if places and wants_where:
         parts.append(f"Place: {places[0]}.")
-    sents = _best_sentences(query, raw_text, n=2)
-    if sents:
-        parts.append(_shorten(" ".join(sents), 360))
+    if not parts:
+        sents = _best_sentences(query, raw_text, n=2)
+        if sents:
+            parts.append(_shorten(" ".join(sents), 360))
     if not parts:
         return "No meaningful summary derived."
     return bold_once(" ".join(parts))
