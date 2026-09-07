@@ -8,6 +8,7 @@ Hope v2 API server
 - /ask-stream: SSE token stream so the UI can paint the reply as it arrives
 - /maps-embed: Google Maps directions iframe (key stays in Railway)
 - places.py: live nearby search from the user's GPS (no hardcoded stores)
+- Places NEVER runs on olympics / premiere / release / hosted-event questions
 """
 from __future__ import annotations
 import os
@@ -17,7 +18,7 @@ import threading
 import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List, Iterator
-from flask import Flask, request, jsonify, Response, redirect
+from flask import Flask, request, jsonify, Response
 from urllib.parse import quote as urlquote
 from flask_cors import CORS
 import requests
@@ -53,6 +54,8 @@ try:
 except Exception:
     openai = None  # type: ignore
     print("[Debug] OpenAI import failed.")
+
+
 def safe_import(name: str):
     try:
         m = __import__(name)
@@ -61,6 +64,8 @@ def safe_import(name: str):
     except Exception as e:
         print(f"[Error] Import {name} failed: {e}")
         return None
+
+
 tone = safe_import("tone")
 emailer = safe_import("emailer")
 image_mod = safe_import("image")
@@ -74,6 +79,7 @@ for fn in [
 ]:
     if os.path.exists(fn):
         print(f"✅ {fn} found")
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 print(f"[Debug] OpenAI key loaded (length: {len(OPENAI_API_KEY)} chars).")
 OPENAI_AVAILABLE = bool(OPENAI_API_KEY and openai)
@@ -82,24 +88,42 @@ if not OPENAI_AVAILABLE:
 else:
     openai.api_key = OPENAI_API_KEY
     print("🔐 OpenAI enabled.")
+
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = "DAQ2lZdypaQsApLOpVPq"
 MAPS_API_KEY = os.getenv("MAPS_API_KEY", "")
 print(f"[Debug] Maps key loaded (length: {len(MAPS_API_KEY)} chars).")
+
 app = Flask(__name__)
 CORS(app)
+
 PRONOUN_RE = re.compile(r"\b(he|she|they|him|her|them|his|hers|their|theirs)\b", re.IGNORECASE)
 VAGUE_FOLLOWUP_RE = re.compile(
     r"\b(who was (he|she|that)|what did (he|she|they)|who was the killer|what did he represent|"
     r"how did (he|she|they) die|what about|and if|what if|if (it|that|they|he|she)|"
     r"what would|how much would|how many would|my (money|investment|1k|thousand)|"
     r"at that price|at the price|goes to|reaches|turns to|what would my|"
-    r"on top of|like of|the 1k|of the|that one|same one|previous|earlier)\b",
+    r"on top of|like of|the 1k|of the|that one|same one|previous|earlier|"
+    r"where will it|where is it|located)\b",
     re.IGNORECASE,
 )
 NUMBER_FOLLOWUP_RE = re.compile(r"\b(\d+[\d,]*\.?\d*\s*\$?|\$\s*\d+|\d+\s*shares?|1k|thousand)\b", re.IGNORECASE)
 CAP_SEQ_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 BOLD_ENTITY_RE = re.compile(r"\*\*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\*\*")
+EVENT_NOT_PLACES_RE = re.compile(
+    r"\b("
+    r"olympics?|olympic games|visionquest|premiere|premieres|"
+    r"release date|released|debuts?|hosted|host city|host cities|"
+    r"world cup|super bowl|grammys|when does|when is the next"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_event_query(text: str) -> bool:
+    return bool(EVENT_NOT_PLACES_RE.search(text or ""))
+
+
 def _extract_entity_from_text(text: str) -> Optional[str]:
     if not text:
         return None
@@ -113,6 +137,8 @@ def _extract_entity_from_text(text: str) -> Optional[str]:
         if c.lower() not in STOPWORDS and len(c) > 2:
             return c
     return None
+
+
 def _is_unverified_death_line(text: str) -> bool:
     if not text:
         return False
@@ -121,8 +147,12 @@ def _is_unverified_death_line(text: str) -> bool:
         or "no reliable" in text.lower()
         or "unconfirmed" in text.lower()
     )
+
+
 def error_response(msg: str, status=500):
     return jsonify({"error": msg}), status
+
+
 def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Optional[str]:
     previous_fact = sanitize_reply(previous_fact) if previous_fact else None
     liveweb_fact = sanitize_reply(liveweb_fact) if liveweb_fact else None
@@ -135,6 +165,8 @@ def merge_facts(previous_fact: Optional[str], liveweb_fact: Optional[str]) -> Op
             return previous_fact
         return f"{previous_fact} | {liveweb_fact}"
     return previous_fact or liveweb_fact
+
+
 def _concise_trim(text: str) -> str:
     if not text:
         return text
@@ -142,22 +174,31 @@ def _concise_trim(text: str) -> str:
     if len(first) > 10:
         return first
     return text[:160]
+
+
 def _as_bool(val) -> bool:
     if isinstance(val, bool):
         return val
     if val is None:
         return False
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _places_payload(user_prompt: str, origin: Optional[str], session_id: str, history, last_ticker, last_url, new_topic, topic_overlap, vision_description):
+    if _is_event_query(user_prompt):
+        print("[Places] skipped event / premiere / olympics query")
+        return None
     if not (places and hasattr(places, "looks_like_place_query")):
         return None
     if not places.looks_like_place_query(user_prompt):
         return None
     hit = places.search_nearby(origin, user_prompt, MAPS_API_KEY)
     print(f"[Places] ok={hit.get('ok')} dest={hit.get('destination')!r}")
-    if not hit.get("reply"):
+    reply = hit.get("reply") or ""
+    if (not reply) or "ZERO_RESULTS" in reply or "couldn't find" in reply.lower():
+        print("[Places] empty / ZERO_RESULTS — fall through to liveweb")
         return None
-    reply = sanitize_reply(hit["reply"])
+    reply = sanitize_reply(reply)
     new_history = history + [
         {"role": "user", "content": user_prompt},
         {"role": "assistant", "content": reply},
@@ -188,6 +229,8 @@ def _places_payload(user_prompt: str, origin: Optional[str], session_id: str, hi
             "history_length": len(new_history),
         },
     }
+
+
 @app.route("/ask", methods=["POST", "OPTIONS"])
 def ask():
     if request.method == "OPTIONS":
@@ -375,6 +418,10 @@ def ask():
                 needs_live = bool(liveweb.needs_live_data(user_prompt))
     if liveweb and needs_live:
         search_query = user_prompt
+        if reuse_context and (last_topic or last_fact_mem) and word_count <= 10:
+            extra = " ".join(x for x in [last_topic, last_fact_mem[:120]] if x)
+            search_query = f"{user_prompt} {extra}".strip()
+            print(f"[LiveWeb] follow-up search: {search_query!r}")
         if "die" in user_prompt.lower() or "death" in user_prompt.lower() or "killer" in user_prompt.lower():
             if chosen_context_person and (pronoun_detected or vague_followup_detected):
                 search_query = (
@@ -477,6 +524,8 @@ def ask():
             "history_length": len(new_history),
         },
     })
+
+
 def _hope_system_prompt(personality: str, context: Optional[str], previous_fact: Optional[str], liveweb_fact: Optional[str]) -> str:
     if personality == "god":
         prompt = (
@@ -488,6 +537,7 @@ def _hope_system_prompt(personality: str, context: Optional[str], previous_fact:
             "You are Hope, an AI designed by your creator Nick. "
             "Keep answers SHORT and natural. For math, give the final number only. "
             "Use conversation context. Never invent numbers that contradict earlier context. "
+            "If Live snippet has a Date or Place, say that. Do not invent a nearby store. "
             "You have a live browser feature. If the user says enable live browser, turn on live browser, "
             "open the browser, or go to a website, you CAN do that. Confirm it and ask where to go. "
             "Never say you cannot browse the web. Emojis are allowed but do not overuse them."
@@ -502,6 +552,8 @@ def _hope_system_prompt(personality: str, context: Optional[str], previous_fact:
     if extra:
         prompt += "\n\n=== CURRENT MEMORY ===\n" + "\n".join(extra) + "\n=== END MEMORY ==="
     return prompt
+
+
 def _iter_openai_tokens(system_prompt: str, user_prompt: str, history: List[Dict[str, str]], max_tokens: int = 220) -> Iterator[str]:
     messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
     for h in (history or [])[-12:]:
@@ -547,6 +599,8 @@ def _iter_openai_tokens(system_prompt: str, user_prompt: str, history: List[Dict
     except Exception as e:
         print(f"[Stream] OpenAI error: {e}")
         return
+
+
 @app.route("/ask-stream", methods=["POST", "OPTIONS"])
 def ask_stream():
     if request.method == "OPTIONS":
@@ -589,24 +643,34 @@ def ask_stream():
             needs_live = bool(browse_mode)
             if not browse_mode:
                 needs_live = bool(liveweb.needs_live_data(user_prompt))
+    stream_query = user_prompt
+    if last_topic and len(user_prompt.split()) <= 10:
+        stream_query = f"{user_prompt} {last_topic} {last_fact_mem[:80]}".strip()
     if liveweb and needs_live and hasattr(liveweb, "perform_live_search"):
         try:
             try:
-                raw, analyzed = liveweb.perform_live_search(user_prompt, browse_mode=browse_mode)
+                raw, analyzed = liveweb.perform_live_search(stream_query, browse_mode=browse_mode)
             except TypeError:
-                raw, analyzed = liveweb.perform_live_search(user_prompt)
+                raw, analyzed = liveweb.perform_live_search(stream_query)
             liveweb_analyzed = sanitize_reply(analyzed or "")
         except Exception as e:
             print(f"[LiveWeb/stream] {e}")
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
     system_prompt = _hope_system_prompt(personality, chosen_context_person, chained_fact, liveweb_analyzed)
+
     def generate():
         full = ""
         yield "data: " + json.dumps({"type": "start"}) + "\n\n"
-        if places and hasattr(places, "looks_like_place_query") and places.looks_like_place_query(user_prompt):
+        if (
+            places
+            and hasattr(places, "looks_like_place_query")
+            and places.looks_like_place_query(user_prompt)
+            and not _is_event_query(user_prompt)
+        ):
             hit = places.search_nearby(origin, user_prompt, MAPS_API_KEY)
-            if hit.get("reply"):
-                full = sanitize_reply(hit["reply"])
+            reply = hit.get("reply") or ""
+            if reply and "ZERO_RESULTS" not in reply and "couldn't find" not in reply.lower():
+                full = sanitize_reply(reply)
                 yield "data: " + json.dumps({"type": "token", "text": full}) + "\n\n"
                 new_history = history + [
                     {"role": "user", "content": user_prompt},
@@ -626,6 +690,7 @@ def ask_stream():
                     print(f"[Stream] memory update failed: {e}")
                 yield "data: " + json.dumps({"type": "done", "reply": full, "destination": hit.get("destination")}) + "\n\n"
                 return
+            print("[Places/stream] skipped ZERO_RESULTS / event fallback")
         got = False
         for piece in _iter_openai_tokens(system_prompt, user_prompt, history):
             got = True
@@ -652,6 +717,7 @@ def ask_stream():
         except Exception as e:
             print(f"[Stream] memory update failed: {e}")
         yield "data: " + json.dumps({"type": "done", "reply": full}) + "\n\n"
+
     return Response(
         generate(),
         mimetype="text/event-stream",
@@ -661,6 +727,8 @@ def ask_stream():
             "Connection": "keep-alive",
         },
     )
+
+
 @app.route("/welcome", methods=["GET", "POST", "OPTIONS"])
 def welcome():
     if request.method == "OPTIONS":
@@ -696,6 +764,8 @@ def welcome():
         "reply": reply,
         "memory": {"last_topic": last_topic, "has_history": bool(history)},
     })
+
+
 @app.route("/quote", methods=["GET", "OPTIONS"])
 def quote():
     if request.method == "OPTIONS":
@@ -719,6 +789,8 @@ def quote():
         "market_state": q.get("market_state"),
         "line": line,
     })
+
+
 @app.route("/speak", methods=["POST", "OPTIONS"])
 def speak():
     if request.method == "OPTIONS":
@@ -758,6 +830,8 @@ def speak():
     except Exception as e:
         print(f"[Speak] Error: {e}")
         return error_response(f"TTS failed: {str(e)}", 500)
+
+
 @app.route("/send-email", methods=["POST"])
 def send_email_route():
     if not emailer:
@@ -781,9 +855,13 @@ def send_email_route():
             print(f"[Email] Error: {e}")
             return error_response("Internal email error", 500)
     return error_response("send_email function not found", 500)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+
 @app.route("/maps-embed", methods=["GET", "OPTIONS"])
 def maps_embed():
     if request.method == "OPTIONS":
@@ -811,6 +889,8 @@ def maps_embed():
         "</body></html>"
     )
     return Response(html, mimetype="text/html")
+
+
 @app.route("/browse-frame", methods=["GET", "OPTIONS"])
 def browse_frame():
     if request.method == "OPTIONS":
@@ -826,6 +906,8 @@ def browse_frame():
             "url": "",
             "updated_at": 0,
         })
+
+
 @app.route("/browse-stop", methods=["POST", "OPTIONS"])
 def browse_stop():
     if request.method == "OPTIONS":
@@ -838,6 +920,8 @@ def browse_stop():
     except Exception as e:
         print(f"[Browse] Stop failed: {e}")
         return jsonify({"ok": False, "stopped": False, "error": str(e)})
+
+
 @app.route("/clear-memory", methods=["POST", "OPTIONS"])
 def clear_memory():
     if request.method == "OPTIONS":
@@ -845,12 +929,17 @@ def clear_memory():
     clear_web_memory()
     print("[Memory] Cleared WEB_MEMORY_KEY")
     return jsonify({"ok": True, "cleared": WEB_MEMORY_KEY})
+
+
 _discord_started = False
+
+
 def _start_discord_background():
     global _discord_started
     if _discord_started:
         return
     _discord_started = True
+
     def run_discord():
         try:
             from discord_bot import start_discord_bot
@@ -858,10 +947,14 @@ def _start_discord_background():
             start_discord_bot()
         except Exception as e:
             print(f"[Discord] Failed to start: {e}")
+
     t = threading.Thread(target=run_discord, daemon=True)
     t.start()
     print("🤖 Discord bot thread started (gunicorn mode)")
+
+
 _start_discord_background()
+
 if __name__ == "__main__":
     host = os.getenv("HOPE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("HOPE_PORT", "5002")))
