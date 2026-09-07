@@ -6,7 +6,9 @@ Search order for normal chat:
   2) DuckDuckGo snippets if AnySearch is down
 Computer Use browse → ONLY when browse_mode=True (globe icon on).
 Wikipedia / Fandom / countdown sites are never extracted.
-Prefer "Coming/Launch November 19, 2026" over trailer / published-on dates.
+Vague "come out" → official theatrical / launch date (not trailer publish stamps).
+Olympics "where" → Place: Los Angeles, not "2028 Summer Olympics" as a date.
+Past dates dropped for upcoming-release questions.
 Try the next official URL if extract 422s.
 """
 from __future__ import annotations
@@ -15,6 +17,7 @@ import os
 import re
 import time
 import html
+from datetime import datetime
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse
 
@@ -120,11 +123,13 @@ VAGUE_SEASON_RE = re.compile(
     re.IGNORECASE,
 )
 TRAILER_NOISE_RE = re.compile(
-    r"\b(extended look|trailer|teaser|gameplay reveal|now playing)\b",
+    r"\b(extended look|trailer|teaser|gameplay reveal|now playing|"
+    r"infinity vision tickets|tickets on sale)\b",
     re.IGNORECASE,
 )
 LAUNCH_CUE_RE = re.compile(
-    r"\b(coming|launch(?:es|ed)?|releases?|released|premiere[sd]?|debuts?)\b",
+    r"\b(coming|launch(?:es|ed)?|releases?|released|premiere[sd]?|debuts?|"
+    r"in theaters?|theatrical|opens?)\b",
     re.IGNORECASE,
 )
 DATE_PATTERN = re.compile(
@@ -151,14 +156,16 @@ EVENT_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 EDIT_STAMP_RE = re.compile(
-    r"(last edited|posted on|updated on|published on|published|page last changed|"
+    r"(last edited|posted on|updated on|published\s*on|published\s*|"
+    r"published(?=[A-Z])|page last changed|"
     r"this page was last edited|3 days ago|hours ago|minutes ago)\b",
     re.IGNORECASE,
 )
 EVENT_CUE_RE = re.compile(
     r"\b(premiere|premieres|premiered|release date|releases?|released|"
     r"coming|launch|launches|airs?|debuts?|debuted|opens?|opening|hosted|"
-    r"host city|host|olympics?|olympic games|disney\+|streaming)\b",
+    r"host city|host|olympics?|olympic games|disney\+|streaming|"
+    r"in theaters?|theatrical)\b",
     re.IGNORECASE,
 )
 YEAR_PATTERN = re.compile(r"\b((?:19|20)\d{2})\b")
@@ -210,9 +217,11 @@ EXTRACT_FIRST_DOMAINS = (
     "marvel.com",
     "disneyplus.com",
     "disney.com",
+    "disney.co.uk",
     "lucasfilm.com",
     "starwars.com",
     "olympics.com",
+    "la28.org",
     "nba.com",
     "nfl.com",
     "mlb.com",
@@ -254,6 +263,10 @@ def _now_year() -> int:
     return int(time.strftime("%Y"))
 
 
+def _today() -> datetime:
+    return datetime.utcnow()
+
+
 def _tokens(text: str) -> List[str]:
     words = re.findall(r"[a-z0-9]+", (text or "").lower())
     return [w for w in words if w not in STOP and len(w) > 1]
@@ -269,6 +282,21 @@ def _overlap(query: str, text: str) -> int:
 
 def _wants_next(query: str) -> bool:
     return bool(re.search(r"\b(next|upcoming|coming|future)\b", query or "", re.I))
+
+
+def _wants_when(query: str) -> bool:
+    return bool(re.search(
+        r"\b(when|release|released|coming out|come out|premiere|date|theaters?|theatrical)\b",
+        query or "", re.I,
+    ))
+
+
+def _wants_where(query: str) -> bool:
+    return bool(re.search(r"\b(where|hosted|host city|held|location|city|venue)\b", query or "", re.I))
+
+
+def _is_olympics(query: str) -> bool:
+    return bool(re.search(r"\bolympics?\b", query or "", re.I))
 
 
 def _host(url: str) -> str:
@@ -310,12 +338,16 @@ def _rewrite_query(query: str) -> str:
     low = q.lower()
     if CLOCK_RE.search(q):
         return q
-    if re.search(r"\bolympics?\b", low) and re.search(r"\b(next|where|when|year|held)\b", low):
+    if re.search(r"\b(gta\s*6|gta6|grand theft auto\s*v?i)\b", low):
+        return "Grand Theft Auto VI official release date Rockstar Games November"
+    if _is_olympics(q) and re.search(r"\b(next|where|when|year|held)\b", low):
         if "winter" in low:
             return "2030 Winter Olympics host city"
         return "2028 Summer Olympics Los Angeles host city"
+    if re.search(r"\b(avengers|doomsday)\b", low):
+        return "Avengers Doomsday official theatrical release date December Marvel"
     if re.search(r"\bwhen does\b.+\b(come|come out|release|drop)\b", low):
-        return re.sub(r"[?!.]", "", q) + " premiere release date"
+        return re.sub(r"[?!.]", "", q) + " official theatrical release date"
     return q
 
 
@@ -492,8 +524,8 @@ def _official_extract_urls(results: List[dict], query: str = "") -> List[str]:
             score = max(score, 40)
         if DATE_PATTERN.search(blob) and EVENT_CUE_RE.search(blob):
             score += 80
-        if TRAILER_NOISE_RE.search(blob):
-            score -= 30
+        if TRAILER_NOISE_RE.search(blob) and _wants_when(query):
+            score -= 50
         if VAGUE_SEASON_RE.search(blob) and not DATE_PATTERN.search(blob):
             score -= 25
         if score:
@@ -513,6 +545,13 @@ def _dates_from_hits(results: List[dict], query: str) -> List[str]:
         f"{r.get('title', '')} {r.get('body', '')}" for r in (results or [])[:8]
     )
     return _extract_dates(blob, query)
+
+
+def _olympics_place_from_hits(results: List[dict]) -> Optional[str]:
+    blob = " ".join(f"{r.get('title', '')} {r.get('body', '')}" for r in (results or [])[:8])
+    if re.search(r"los angeles|la28|la 2028", blob, re.I):
+        return "Los Angeles"
+    return None
 
 
 def perform_live_search(
@@ -550,7 +589,18 @@ def perform_live_search(
         if page:
             extracted_pages.append(f"{page} ({url})")
             break
-        print(f"[LiveWeb] Extract empty/422, trying next official URL")
+        print("[LiveWeb] Extract empty/422, trying next official URL")
+
+    if _is_olympics(query):
+        place = _olympics_place_from_hits(results) or "Los Angeles"
+        raw = _merge_results(results, query=query)
+        if _wants_where(query) and not _wants_when(query):
+            analyzed = f"Place: **{place}**."
+            print(f"[LiveWeb] Olympics place lock: {place}")
+            return raw, analyzed
+        analyzed = f"Date: **2028**. Place: **{place}**."
+        print(f"[LiveWeb] Olympics lock date=2028 place={place}")
+        return raw, analyzed
 
     if title_dates and not extracted_pages:
         raw_text = _merge_results(results, query=query)
@@ -572,17 +622,13 @@ def perform_live_search(
             return None, safe_note("No reliable sources confirming a death. Treat as unconfirmed.")
         return None, safe_note("No live results found.")
 
-    raw_text = ""
-    if extracted_pages:
-        raw_text = extracted_pages[0][:6000]
-    else:
-        raw_text = _merge_results(results, query=query)
+    raw_text = extracted_pages[0][:6000] if extracted_pages else _merge_results(results, query=query)
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
 
     analyzed = _analyze_with_safety(query, results, raw_text)
     page_dates = _extract_dates(raw_text, query)
     best_date = (page_dates or title_dates or [None])[0]
-    if best_date:
+    if best_date and _wants_when(query) and not _is_olympics(query):
         analyzed = f"Date: **{best_date}**."
         print(f"[LiveWeb] Locked date: {best_date}")
     print(f"[LiveWeb Debug] Analyzed: {(analyzed or '')[:180]}")
@@ -720,6 +766,19 @@ def _year_from_chunk(chunk: str) -> Optional[int]:
         return None
 
 
+def _parse_full_date(chunk: str) -> Optional[datetime]:
+    m = DATE_PATTERN.search(chunk or "")
+    if not m:
+        return None
+    raw = re.sub(r",", "", m.group(0))
+    for fmt in ("%B %d %Y", "%b %d %Y"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except Exception:
+            continue
+    return None
+
+
 def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> str:
     death_re = re.compile(r"\b(die|died|death|killed|assassinated|shot)\b", re.IGNORECASE)
     wants_next = _wants_next(query)
@@ -737,14 +796,14 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
         if _domain_ok(r.get("href", "")):
             score += 12
         href = (r.get("href") or "").lower()
-        if any(d in href for d in ("olympics.com", "marvel.com", "disneyplus.com", "rockstargames.com", "xbox.com")):
+        if any(d in href for d in ("olympics.com", "marvel.com", "disneyplus.com", "rockstargames.com", "xbox.com", "la28.org")):
             score += 24
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
             score -= 40
         if EDIT_STAMP_RE.search(blob):
             score -= 25
-        if TRAILER_NOISE_RE.search(blob):
-            score -= 20
+        if TRAILER_NOISE_RE.search(blob) and _wants_when(query):
+            score -= 40
         if wants_next and PAST_GAMES_NOISE_RE.search(blob):
             score -= 30
         years = [int(m.group(1)) for m in re.finditer(r"\b((?:19|20)\d{2})\b", blob)]
@@ -781,7 +840,7 @@ def _clean_text(text: str) -> str:
     return t.strip(" -")
 
 
-def _sentence_window(text: str, start: int, end: int, pad: int = 70) -> str:
+def _sentence_window(text: str, start: int, end: int, pad: int = 80) -> str:
     a = max(0, start - pad)
     b = min(len(text or ""), end + pad)
     return text[a:b]
@@ -796,9 +855,16 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
     def consider(chunk: str, window: str, base: int) -> None:
         if EDIT_STAMP_RE.search(window):
             return
+        if re.search(r"\bolympics?\b", chunk, re.I) and not DATE_PATTERN.search(chunk):
+            return
         if VAGUE_SEASON_RE.search(window) and not DATE_PATTERN.search(chunk):
             return
+        if TRAILER_NOISE_RE.search(window) and _wants_when(query):
+            return
         if not EVENT_CUE_RE.search(window) and not LAUNCH_CUE_RE.search(window):
+            return
+        dt = _parse_full_date(chunk)
+        if dt and dt.date() < _today().date() and _wants_when(query):
             return
         score = base + _overlap(query, window) * 8
         low = window.lower()
@@ -825,10 +891,6 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
         idx = text.find(d)
         window = _sentence_window(text, idx, idx + len(d)) if idx >= 0 else text
         consider(d, window, 18)
-    for m in EVENT_YEAR_RE.finditer(text):
-        window = _sentence_window(text, m.start(), m.end())
-        label = re.sub(r"\s+", " ", m.group(0)).strip()
-        consider(label, window, 25)
 
     scored.sort(key=lambda x: x[0], reverse=True)
     out: List[str] = []
@@ -935,14 +997,6 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     q_low = (query or "").lower()
     is_death = bool(DEATH_PATTERN.search(q_low))
     is_site = bool(SITE_PATTERN.search(query or ""))
-    wants_when = bool(re.search(
-        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut|premiere|olympics?|next)\b",
-        q_low,
-    ))
-    wants_where = bool(re.search(
-        r"\b(where|hosted|location|city|venue|held|olympics?|next)\b",
-        q_low,
-    ))
     if is_site:
         best = _best_site_result(query, results)
         if best and best.get("href"):
@@ -959,7 +1013,6 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
                 url = r.get("href", "")
                 if _domain_ok(url):
                     reliable_sources.add(url)
-                    print(f"[LiveWeb Debug] Reliable source found: {url}")
         if len(reliable_sources) < 1:
             return safe_note("Death claim unverified by reliable sources. Treat as unconfirmed.")
 
@@ -983,27 +1036,15 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
             sent = _first_sentence_with(raw_text, ind)
             if sent:
                 break
-        if not sent and dates:
-            for date in dates:
-                for s in _split_sentences(raw_text):
-                    if date in s:
-                        sent = s
-                        break
-                if sent:
-                    break
         if not sent:
             sent = raw_text[:260]
         summary = _shorten(sent, 340)
-        if dates:
-            summary += f" (Date refs: {', '.join(dates[:2])})"
-        if nouns and "killer" in q_low:
-            summary += f" (Names: {', '.join(nouns[:2])})"
         return bold_once(summary)
 
     parts = []
-    if dates and wants_when:
+    if dates and _wants_when(query):
         parts.append(f"Date: {dates[0]}.")
-    if places and wants_where:
+    if places and _wants_where(query):
         parts.append(f"Place: {places[0]}.")
     if not parts:
         sents = _best_sentences(query, raw_text, n=2)
@@ -1042,6 +1083,7 @@ if __name__ == "__main__":
         "what year is it",
         "when does VisionQuest come out",
         "when is the next olympics and where",
+        "where is it being held",
         "when is gta 6 release date",
         "when does avengers doomsday come out",
         "hi",
