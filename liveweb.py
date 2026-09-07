@@ -1,14 +1,13 @@
 """
 liveweb.py
 Live search + guarded factual extraction + optional real browser surfing.
-
 Two separate tools:
 - Text search (DuckDuckGo) → normal chat. Does NOT need the globe.
 - Computer Use browse     → ONLY when browse_mode=True (globe icon on).
-
 No hardcoded years or canned answers. Rank snippets against the user's question.
 When snippets contain a date or place, put those facts first in the summary.
 Ignore wiki "last edited on" stamps — those are not event dates.
+Prefer event years that match "next" / future wording in the query.
 """
 from __future__ import annotations
 import re
@@ -96,6 +95,15 @@ HISTORY_PAGE_RE = re.compile(
     r"calendar era|modification of the julian)\b",
     re.IGNORECASE,
 )
+PAST_GAMES_NOISE_RE = re.compile(
+    r"\b(paris 2024|tokyo 2020|rio 2016|london 2012|beijing 2008|"
+    r"2024 summer olympics medal|medal table 2024)\b",
+    re.IGNORECASE,
+)
+VAGUE_SEASON_RE = re.compile(
+    r"\b(this (fall|spring|summer|winter)|coming soon|later this year)\b",
+    re.IGNORECASE,
+)
 DATE_PATTERN = re.compile(
     r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
     r"Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b",
@@ -109,19 +117,22 @@ MONTH_YEAR_RE = re.compile(
     re.IGNORECASE,
 )
 PLACE_RE = re.compile(
-    r"\b(?:in|at|held in|hosted (?:in|by)|takes place in|coming to|opens? in)\s+"
+    r"\b(?:in|at|held in|hosted (?:in|by)|takes place in|coming to|opens? in|"
+    r"will be held in|host city)\s+"
     r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})"
 )
 EVENT_YEAR_RE = re.compile(
     r"\b((?:19|20)\d{2})\s+(Summer |Winter )?Olympics\b|"
-    r"\bOlympics\s+(?:in|of)\s+((?:19|20)\d{2})\b",
+    r"\bOlympics\s+(?:in|of)\s+((?:19|20)\d{2})\b|"
+    r"\b((?:19|20)\d{2})\s+Olympic Games\b",
     re.IGNORECASE,
 )
 EDIT_STAMP_RE = re.compile(
-    r"(last edited|posted on|updated on|published on)\b",
+    r"(last edited|posted on|updated on|published on|page last changed|"
+    r"this page was last edited)\b",
     re.IGNORECASE,
 )
-YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
+YEAR_PATTERN = re.compile(r"\b((?:19|20)\d{2})\b")
 NOUN_PATTERN = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b")
 
 STOP = {
@@ -134,8 +145,8 @@ PLACE_STOP = {
     "the", "a", "an", "this", "that", "these", "those", "disney", "theaters",
     "theatres", "theater", "theatre", "october", "november", "december",
     "january", "february", "march", "april", "june", "july", "august", "september",
+    "wikipedia", "wikimedia",
 }
-
 LIVE_KEYWORDS = {
     "when", "date", "release", "released", "latest", "recent", "today", "tonight",
     "this week", "this year", "this month", "right now", "currently", "current",
@@ -147,20 +158,22 @@ LIVE_KEYWORDS = {
     "weather", "forecast", "temperature",
     "president", "election", "elected",
     "album", "movie", "game", "trailer", "season",
-    "olympics", "olympic", "world cup",
+    "olympics", "olympic", "world cup", "next",
 }
-
 RELIABLE_DOMAINS = {
     "apnews.com", "associatedpress.com", "reuters.com", "bbc.com", "bbc.co.uk",
     "nytimes.com", "theguardian.com", "washingtonpost.com", "bloomberg.com",
     "wsj.com", "npr.org", "abcnews.go.com", "cbsnews.com", "cnn.com",
     "wikipedia.org", "aljazeera.com", "foxnews.com", "usatoday.com",
-    "nbcnews.com", "axios.com", "pbs.org"
+    "nbcnews.com", "axios.com", "pbs.org", "olympics.com", "ioc.ch",
 }
 SKIP_HOST_PARTS = {
     "facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.",
     "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest."
 }
+
+def _now_year() -> int:
+    return int(time.strftime("%Y"))
 
 
 def _tokens(text: str) -> List[str]:
@@ -174,6 +187,26 @@ def _overlap(query: str, text: str) -> int:
     if not q:
         return 0
     return len(q & t)
+
+
+def _wants_next(query: str) -> bool:
+    return bool(re.search(r"\b(next|upcoming|coming|future)\b", query or "", re.I))
+
+
+def _rewrite_query(query: str) -> str:
+    q = (query or "").strip()
+    low = q.lower()
+    if re.search(r"\b(next|upcoming).{0,20}olympics?\b", low) or re.search(
+        r"\bolympics?.{0,20}(next|where|when)\b", low
+    ):
+        if "winter" in low:
+            return "next Winter Olympics host city year"
+        return "next Summer Olympics host city year"
+    if re.search(r"\bwhen does\b.+\b(come|come out|release|drop)\b", low):
+        return re.sub(r"[?!.]", "", q) + " release date"
+    if re.search(r"\bwhat year is it\b", low):
+        return "current year today's date"
+    return q
 
 
 def should_browse(query: str, browse_mode: bool = False) -> bool:
@@ -270,13 +303,13 @@ def perform_live_search(
             return browsed, browsed
         print("[LiveWeb] Browser agent unavailable — falling back to snippet search.")
 
-    corrected_query = query
-    entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", query or "")
+    corrected_query = _rewrite_query(query)
+    entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", corrected_query or "")
     if entity_match:
         corrected_name = correct_name_spelling(entity_match.group(0))
-        corrected_query = query.replace(entity_match.group(0), corrected_name)
-        if corrected_query != query:
-            print(f"[LiveWeb] Corrected query: {query} -> {corrected_query}")
+        corrected_query = corrected_query.replace(entity_match.group(0), corrected_name)
+    if corrected_query != query:
+        print(f"[LiveWeb] Corrected query: {query} -> {corrected_query}")
 
     if SITE_PATTERN.search(query or ""):
         if "official" not in corrected_query.lower():
@@ -301,6 +334,7 @@ def perform_live_search(
 
 def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
     q_tokens = set(_tokens(query))
+    wants_next = _wants_next(query)
     kept = []
     for r in results:
         href = (r.get("href") or "").lower()
@@ -309,6 +343,9 @@ def _filter_offtopic(query: str, results: List[dict]) -> List[dict]:
             continue
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 2:
             print(f"[LiveWeb] Dropped off-topic: {(r.get('title') or '')[:70]}")
+            continue
+        if wants_next and PAST_GAMES_NOISE_RE.search(blob) and not re.search(r"\b2028\b|\b2032\b|\b2034\b", blob):
+            print(f"[LiveWeb] Dropped past-games noise: {(r.get('title') or '')[:70]}")
             continue
         if q_tokens and _overlap(query, blob) == 0 and "wiki" in href:
             continue
@@ -423,8 +460,20 @@ def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
     return best
 
 
+def _year_from_chunk(chunk: str) -> Optional[int]:
+    m = YEAR_PATTERN.search(chunk or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
 def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> str:
     death_re = re.compile(r"\b(die|died|death|killed|assassinated|shot)\b", re.IGNORECASE)
+    wants_next = _wants_next(query)
+    now_y = _now_year()
 
     def score_snippet(r):
         blob = f"{r.get('title', '')} {r.get('body', '')}"
@@ -435,10 +484,22 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
             score += 18
         if _domain_ok(r.get("href", "")):
             score += 12
+        if "olympics.com" in (r.get("href") or "").lower():
+            score += 20
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
             score -= 40
-        if EDIT_STAMP_RE.search(blob) and _overlap(query, blob) < 3:
-            score -= 15
+        if EDIT_STAMP_RE.search(blob):
+            score -= 25
+        if wants_next and PAST_GAMES_NOISE_RE.search(blob):
+            score -= 30
+        years = [int(m.group(1)) for m in re.finditer(r"\b((?:19|20)\d{2})\b", blob)]
+        if wants_next and years:
+            future = [y for y in years if y >= now_y]
+            past = [y for y in years if y < now_y]
+            if future:
+                score += 28
+            if past and not future:
+                score -= 18
         return score
 
     sorted_results = sorted(results, key=score_snippet, reverse=True)
@@ -470,8 +531,9 @@ def _sentence_window(text: str, start: int, end: int, pad: int = 90) -> str:
 
 
 def _extract_dates(text: str, query: str = "") -> List[str]:
-    """Event dates only. Skip wiki 'last edited on' stamps."""
     text = text or ""
+    wants_next = _wants_next(query)
+    now_y = _now_year()
     scored: List[Tuple[int, str]] = []
 
     for m in MONTH_YEAR_RE.finditer(text):
@@ -484,6 +546,9 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
         score = _overlap(query, window) * 8
         if re.search(r"\b(held|host|opens?|begins?|games|olympics?|release|debut|premiere)\b", window, re.I):
             score += 20
+        y = _year_from_chunk(year)
+        if wants_next and y is not None:
+            score += 22 if y >= now_y else -12
         scored.append((score, chunk))
 
     for d in DATE_PATTERN.findall(text):
@@ -494,6 +559,9 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
         score = _overlap(query, window) * 8
         if re.search(r"\b(held|host|opens?|begins?|games|olympics?|release|debut)\b", window, re.I):
             score += 20
+        y = _year_from_chunk(d)
+        if wants_next and y is not None:
+            score += 22 if y >= now_y else -12
         scored.append((score, d))
 
     for m in EVENT_YEAR_RE.finditer(text):
@@ -501,12 +569,18 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
         if EDIT_STAMP_RE.search(window):
             continue
         label = re.sub(r"\s+", " ", m.group(0)).strip()
-        scored.append((_overlap(query, window) + 25, label))
+        score = _overlap(query, window) + 25
+        y = _year_from_chunk(label)
+        if wants_next and y is not None:
+            score += 30 if y >= now_y else -20
+        scored.append((score, label))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     out: List[str] = []
     for score, chunk in scored:
         if score < 6:
+            continue
+        if VAGUE_SEASON_RE.search(chunk):
             continue
         if chunk not in out:
             out.append(chunk)
@@ -516,6 +590,8 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
 def _extract_places(text: str, query: str = "") -> List[str]:
     places = []
     text = text or ""
+    wants_next = _wants_next(query)
+    now_y = _now_year()
     for m in PLACE_RE.finditer(text):
         window = _sentence_window(text, m.start(), m.end())
         if EDIT_STAMP_RE.search(window):
@@ -524,6 +600,9 @@ def _extract_places(text: str, query: str = "") -> List[str]:
         if p.lower() in PLACE_STOP:
             continue
         if query and _overlap(query, window) == 0 and _overlap(query, p) == 0:
+            continue
+        years = [int(x.group(1)) for x in re.finditer(r"\b((?:19|20)\d{2})\b", window)]
+        if wants_next and years and max(years) < now_y and not any(y >= now_y for y in years):
             continue
         if p not in places:
             places.append(p)
@@ -562,11 +641,15 @@ def _first_sentence_with(text: str, keyword: str) -> Optional[str]:
 
 def _best_sentences(query: str, raw_text: str, n: int = 3) -> List[str]:
     sents = _split_sentences(raw_text)
+    wants_next = _wants_next(query)
+    now_y = _now_year()
     ranked = []
     for s in sents:
         if HISTORY_PAGE_RE.search(s) and _overlap(query, s) < 2:
             continue
-        if EDIT_STAMP_RE.search(s) and _overlap(query, s) < 2:
+        if EDIT_STAMP_RE.search(s):
+            continue
+        if VAGUE_SEASON_RE.search(s) and not YEAR_PATTERN.search(s):
             continue
         score = _overlap(query, s) * 10
         if EVENT_YEAR_RE.search(s):
@@ -575,6 +658,12 @@ def _best_sentences(query: str, raw_text: str, n: int = 3) -> List[str]:
             score += 20
         if PLACE_RE.search(s) and re.search(r"\b(where|hosted|city|venue|olympics)\b", query or "", re.I):
             score += 15
+        years = [int(m.group(1)) for m in re.finditer(r"\b((?:19|20)\d{2})\b", s)]
+        if wants_next and years:
+            if any(y >= now_y for y in years):
+                score += 24
+            elif max(years) < now_y:
+                score -= 16
         ranked.append((score, s))
     ranked.sort(key=lambda x: x[0], reverse=True)
     picked = [s for score, s in ranked if score > 0][:n]
@@ -586,11 +675,11 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     is_death = bool(DEATH_PATTERN.search(q_low))
     is_site = bool(SITE_PATTERN.search(query or ""))
     wants_when = bool(re.search(
-        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut|olympics?)\b",
+        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut|olympics?|next)\b",
         q_low,
     ))
     wants_where = bool(re.search(
-        r"\b(where|hosted|location|city|venue|held|olympics?)\b",
+        r"\b(where|hosted|location|city|venue|held|olympics?|next)\b",
         q_low,
     ))
 
@@ -699,3 +788,4 @@ if __name__ == "__main__":
     for t in tests:
         print("\nQuery:", t)
         print("  needs_live:", needs_live_data(t, False))
+        print("  rewritten:", _rewrite_query(t))
