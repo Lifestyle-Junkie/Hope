@@ -1,20 +1,30 @@
 """
 liveweb.py
 Live search + guarded factual extraction + optional real browser surfing.
-Two separate tools:
-- Text search (DuckDuckGo) → normal chat. Does NOT need the globe.
-- Computer Use browse     → ONLY when browse_mode=True (globe icon on).
-No hardcoded years or canned answers. Rank snippets against the user's question.
-When snippets contain a date or place, put those facts first in the summary.
-Ignore wiki "last edited on" stamps — those are not event dates.
-Prefer event years that match "next" / future wording in the query.
+
+Search order for normal chat:
+  1) AnySearch API (search + extract official pages)
+  2) DuckDuckGo snippets if AnySearch is down
+
+Computer Use browse → ONLY when browse_mode=True (globe icon on).
+
+No hardcoded years or canned answers.
+Ignore wiki "last edited" / article bylines.
+A date only counts if the same window has premiere/release/hosted/olympics/debut.
 """
 from __future__ import annotations
+
+import os
 import re
 import time
 import html
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse
+
+try:
+    import requests
+except Exception:
+    requests = None  # type: ignore
 
 _DDG_IMPORT_ERR = None
 try:
@@ -35,6 +45,9 @@ try:
 except ImportError:
     _SPELL_AVAILABLE = False
     print("[LiveWeb] Install jellyfish for better name correction.")
+
+ANYSEARCH_API_KEY = os.getenv("ANYSEARCH_API_KEY", "").strip()
+ANYSEARCH_BASE = os.getenv("ANYSEARCH_API_BASE_URL", "https://api.anysearch.com").rstrip("/")
 
 DEATH_PATTERN = re.compile(
     r"\b(how did|cause of death|what (?:killed|happened to)|did .* die|when did .* die|"
@@ -129,7 +142,13 @@ EVENT_YEAR_RE = re.compile(
 )
 EDIT_STAMP_RE = re.compile(
     r"(last edited|posted on|updated on|published on|page last changed|"
-    r"this page was last edited)\b",
+    r"this page was last edited|3 days ago|hours ago|minutes ago)\b",
+    re.IGNORECASE,
+)
+EVENT_CUE_RE = re.compile(
+    r"\b(premiere|premieres|premiered|release date|releases?|released|"
+    r"airs?|debuts?|debuted|opens?|opening|hosted|host city|host|"
+    r"olympics?|olympic games|disney\+|streaming)\b",
     re.IGNORECASE,
 )
 YEAR_PATTERN = re.compile(r"\b((?:19|20)\d{2})\b")
@@ -166,11 +185,18 @@ RELIABLE_DOMAINS = {
     "wsj.com", "npr.org", "abcnews.go.com", "cbsnews.com", "cnn.com",
     "wikipedia.org", "aljazeera.com", "foxnews.com", "usatoday.com",
     "nbcnews.com", "axios.com", "pbs.org", "olympics.com", "ioc.ch",
+    "marvel.com", "disneyplus.com", "disney.com", "variety.com",
+    "hollywoodreporter.com", "deadline.com",
 }
+EXTRACT_FIRST_DOMAINS = (
+    "marvel.com", "disneyplus.com", "disney.com", "olympics.com",
+    "wikipedia.org", "variety.com", "tvline.com",
+)
 SKIP_HOST_PARTS = {
     "facebook.", "twitter.", "x.com", "instagram.", "youtube.", "reddit.",
     "substack.com", "medium.com", "tiktok.", "linkedin.", "pinterest."
 }
+
 
 def _now_year() -> int:
     return int(time.strftime("%Y"))
@@ -201,9 +227,9 @@ def _rewrite_query(query: str) -> str:
     ):
         if "winter" in low:
             return "next Winter Olympics host city year"
-        return "next Summer Olympics host city year"
+        return "next Olympic Games host city year"
     if re.search(r"\bwhen does\b.+\b(come|come out|release|drop)\b", low):
-        return re.sub(r"[?!.]", "", q) + " release date"
+        return re.sub(r"[?!.]", "", q) + " premiere release date"
     if re.search(r"\bwhat year is it\b", low):
         return "current year today's date"
     return q
@@ -289,6 +315,110 @@ def correct_name_spelling(name: str) -> str:
     return name
 
 
+# ---------- AnySearch (same contract as anysearch_cli.py) ----------
+
+def _anysearch_headers() -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "X-Anysearch-Client": "hope/1.0",
+    }
+    if ANYSEARCH_API_KEY:
+        headers["Authorization"] = f"Bearer {ANYSEARCH_API_KEY}"
+    return headers
+
+
+def _anysearch_post(path: str, payload: dict) -> Optional[dict]:
+    if requests is None:
+        print("[LiveWeb] requests missing — cannot call AnySearch.")
+        return None
+    try:
+        resp = requests.post(
+            f"{ANYSEARCH_BASE}{path}",
+            json=payload,
+            headers=_anysearch_headers(),
+            timeout=30,
+        )
+        body = resp.json() if resp.content else {}
+        if resp.status_code >= 400 or (isinstance(body, dict) and body.get("code", 0) != 0):
+            print(f"[LiveWeb] AnySearch {path} error: {resp.status_code} {body}")
+            return None
+        return body if isinstance(body, dict) else None
+    except Exception as e:
+        print(f"[LiveWeb] AnySearch {path} failed: {e}")
+        return None
+
+
+def _search_anysearch(query: str, max_results: int = 5) -> List[dict]:
+    envelope = _anysearch_post("/v1/search", {
+        "query": query,
+        "max_results": max(1, min(int(max_results), 10)),
+    })
+    if not envelope:
+        return []
+    data = envelope.get("data") or {}
+    out: List[dict] = []
+    for item in data.get("results") or []:
+        title = (item.get("title") or "").strip()
+        body = (item.get("content") or item.get("snippet") or "").strip()
+        href = (item.get("url") or item.get("href") or item.get("link") or "").strip()
+        if title or body or href:
+            out.append({"title": title, "body": body, "href": href})
+            print(f"[LiveWeb] AnySearch hit: {title[:60]} ({href})")
+    return out
+
+
+def _extract_anysearch(url: str) -> str:
+    url = _normalize_url(url)
+    if not url:
+        return ""
+    envelope = _anysearch_post("/v1/extract", {"url": url})
+    if not envelope:
+        return ""
+    data = envelope.get("data") or {}
+    content = (data.get("content") or "").strip()
+    title = (data.get("title") or "").strip()
+    print(f"[LiveWeb] Extracted {url} ({len(content)} chars)")
+    if title and content:
+        return f"{title}\n{content}"
+    return content or title
+
+
+def _host(url: str) -> str:
+    try:
+        host = urlparse(_normalize_url(url)).netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
+
+def _official_extract_urls(results: List[dict]) -> List[str]:
+    ranked = []
+    for r in results:
+        href = r.get("href") or ""
+        host = _host(href)
+        if not host or any(x in host for x in SKIP_HOST_PARTS):
+            continue
+        score = 0
+        for i, dom in enumerate(EXTRACT_FIRST_DOMAINS):
+            if host == dom or host.endswith("." + dom):
+                score = 100 - i
+                break
+        if _domain_ok(href):
+            score = max(score, 20)
+        if score:
+            ranked.append((score, href))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    seen = set()
+    urls = []
+    for _, href in ranked:
+        if href not in seen:
+            seen.add(href)
+            urls.append(href)
+    return urls[:3]
+
+
 def perform_live_search(
     query: str,
     max_results: int = 8,
@@ -301,7 +431,7 @@ def perform_live_search(
         browsed = browse_and_summarize(query)
         if browsed:
             return browsed, browsed
-        print("[LiveWeb] Browser agent unavailable — falling back to snippet search.")
+        print("[LiveWeb] Browser agent unavailable — falling back to search.")
 
     corrected_query = _rewrite_query(query)
     entity_match = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b", corrected_query or "")
@@ -310,22 +440,40 @@ def perform_live_search(
         corrected_query = corrected_query.replace(entity_match.group(0), corrected_name)
     if corrected_query != query:
         print(f"[LiveWeb] Corrected query: {query} -> {corrected_query}")
+    if SITE_PATTERN.search(query or "") and "official" not in corrected_query.lower():
+        corrected_query = f"{corrected_query} official website"
 
-    if SITE_PATTERN.search(query or ""):
-        if "official" not in corrected_query.lower():
-            corrected_query = f"{corrected_query} official website"
+    print(f"[LiveWeb] AnySearch search: {corrected_query}")
+    results = _search_anysearch(corrected_query, max_results=min(max_results, 8))
 
-    if not _DDG_AVAILABLE:
-        return None, safe_note("Live search unavailable (install ddgs).")
+    extracted_pages = []
+    for url in _official_extract_urls(results):
+        page = _extract_anysearch(url)
+        if page:
+            extracted_pages.append(f"{page} ({url})")
+        if len(extracted_pages) >= 2:
+            break
 
-    results = _search_duckduckgo(corrected_query, max_results=max_results)
-    results = _filter_offtopic(query, results)
     if not results:
+        print("[LiveWeb] AnySearch empty — trying DuckDuckGo.")
+        if _DDG_AVAILABLE:
+            results = _search_duckduckgo(corrected_query, max_results=max_results)
+            results = _filter_offtopic(query, results)
+
+    if not results and not extracted_pages:
+        if not _DDG_AVAILABLE and not ANYSEARCH_API_KEY:
+            return None, safe_note("Live search unavailable (set ANYSEARCH_API_KEY or install ddgs).")
         if DEATH_PATTERN.search(query or ""):
             return None, safe_note("No reliable sources confirming a death. Treat as unconfirmed.")
         return None, safe_note("No live results found.")
 
-    raw_text = _merge_results(results, query=query)
+    raw_text = ""
+    if extracted_pages:
+        raw_text = " | ".join(extracted_pages)
+        raw_text = raw_text[:6000]
+    else:
+        raw_text = _merge_results(results, query=query)
+
     print(f"[LiveWeb Debug] Raw text (trunc): {raw_text[:200]}{'...' if len(raw_text) > 200 else ''}")
     analyzed = _analyze_with_safety(query, results, raw_text)
     print(f"[LiveWeb Debug] Analyzed: {analyzed[:180]}")
@@ -391,10 +539,7 @@ def _domain_ok(url: str) -> bool:
     if not url:
         return False
     try:
-        parsed = urlparse(url)
-        host = (parsed.netloc or "").lower()
-        if host.startswith("www."):
-            host = host[4:]
+        host = _host(url)
         return any(host == d or host.endswith("." + d) for d in RELIABLE_DOMAINS)
     except Exception as e:
         print(f"[LiveWeb] URL parse error for '{url}': {e}")
@@ -411,13 +556,7 @@ def _normalize_url(url: str) -> str:
 
 
 def _pretty_domain(url: str) -> str:
-    try:
-        host = urlparse(url).netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-        return host or url
-    except Exception:
-        return url
+    return _host(url) or url
 
 
 def _best_site_result(query: str, results: List[dict]) -> Optional[dict]:
@@ -482,10 +621,13 @@ def _merge_results(results: List[dict], query: str, char_limit: int = 2400) -> s
             score += 20
         if DATE_PATTERN.search(blob) or MONTH_YEAR_RE.search(blob) or EVENT_YEAR_RE.search(blob):
             score += 18
+        if EVENT_CUE_RE.search(blob):
+            score += 16
         if _domain_ok(r.get("href", "")):
             score += 12
-        if "olympics.com" in (r.get("href") or "").lower():
-            score += 20
+        href = (r.get("href") or "").lower()
+        if "olympics.com" in href or "marvel.com" in href or "disneyplus.com" in href:
+            score += 24
         if HISTORY_PAGE_RE.search(blob) and _overlap(query, blob) < 3:
             score -= 40
         if EDIT_STAMP_RE.search(blob):
@@ -536,44 +678,35 @@ def _extract_dates(text: str, query: str = "") -> List[str]:
     now_y = _now_year()
     scored: List[Tuple[int, str]] = []
 
-    for m in MONTH_YEAR_RE.finditer(text):
-        window = _sentence_window(text, m.start(), m.end())
+    def consider(chunk: str, window: str, base: int) -> None:
         if EDIT_STAMP_RE.search(window):
-            continue
-        month, day, year = m.group(1), m.group(2), m.group(3)
-        chunk = f"{month} {day}, {year}" if day else f"{month} {year}"
-        chunk = re.sub(r"\s+", " ", chunk).strip()
-        score = _overlap(query, window) * 8
-        if re.search(r"\b(held|host|opens?|begins?|games|olympics?|release|debut|premiere)\b", window, re.I):
+            return
+        if not EVENT_CUE_RE.search(window):
+            return
+        score = base + _overlap(query, window) * 8
+        if EVENT_CUE_RE.search(window):
             score += 20
-        y = _year_from_chunk(year)
+        y = _year_from_chunk(chunk)
         if wants_next and y is not None:
             score += 22 if y >= now_y else -12
         scored.append((score, chunk))
 
+    for m in MONTH_YEAR_RE.finditer(text):
+        window = _sentence_window(text, m.start(), m.end())
+        month, day, year = m.group(1), m.group(2), m.group(3)
+        chunk = f"{month} {day}, {year}" if day else f"{month} {year}"
+        chunk = re.sub(r"\s+", " ", chunk).strip()
+        consider(chunk, window, 10)
+
     for d in DATE_PATTERN.findall(text):
         idx = text.find(d)
         window = _sentence_window(text, idx, idx + len(d)) if idx >= 0 else text
-        if EDIT_STAMP_RE.search(window):
-            continue
-        score = _overlap(query, window) * 8
-        if re.search(r"\b(held|host|opens?|begins?|games|olympics?|release|debut)\b", window, re.I):
-            score += 20
-        y = _year_from_chunk(d)
-        if wants_next and y is not None:
-            score += 22 if y >= now_y else -12
-        scored.append((score, d))
+        consider(d, window, 12)
 
     for m in EVENT_YEAR_RE.finditer(text):
         window = _sentence_window(text, m.start(), m.end())
-        if EDIT_STAMP_RE.search(window):
-            continue
         label = re.sub(r"\s+", " ", m.group(0)).strip()
-        score = _overlap(query, window) + 25
-        y = _year_from_chunk(label)
-        if wants_next and y is not None:
-            score += 30 if y >= now_y else -20
-        scored.append((score, label))
+        consider(label, window, 25)
 
     scored.sort(key=lambda x: x[0], reverse=True)
     out: List[str] = []
@@ -654,8 +787,10 @@ def _best_sentences(query: str, raw_text: str, n: int = 3) -> List[str]:
         score = _overlap(query, s) * 10
         if EVENT_YEAR_RE.search(s):
             score += 30
+        if EVENT_CUE_RE.search(s) and (MONTH_YEAR_RE.search(s) or DATE_PATTERN.search(s)):
+            score += 28
         if MONTH_YEAR_RE.search(s) or DATE_PATTERN.search(s):
-            score += 20
+            score += 12
         if PLACE_RE.search(s) and re.search(r"\b(where|hosted|city|venue|olympics)\b", query or "", re.I):
             score += 15
         years = [int(m.group(1)) for m in re.finditer(r"\b((?:19|20)\d{2})\b", s)]
@@ -675,7 +810,7 @@ def _analyze_with_safety(query: str, results: List[dict], raw_text: str) -> str:
     is_death = bool(DEATH_PATTERN.search(q_low))
     is_site = bool(SITE_PATTERN.search(query or ""))
     wants_when = bool(re.search(
-        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut|olympics?|next)\b",
+        r"\b(when|date|release|released|schedule|scheduled|due|coming out|opens?|debut|premiere|olympics?|next)\b",
         q_low,
     ))
     wants_where = bool(re.search(
@@ -784,6 +919,7 @@ if __name__ == "__main__":
         "Spider-Man Brand New Day release date",
         "hi",
     ]
+    print(f"[Info] AnySearch key set: {bool(ANYSEARCH_API_KEY)}")
     print(f"[Info] DDG available: {_DDG_AVAILABLE}; {_DDG_IMPORT_ERR or ''}")
     for t in tests:
         print("\nQuery:", t)
