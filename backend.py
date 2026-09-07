@@ -9,8 +9,10 @@ Hope v2 API server
 - /maps-embed: Google Maps directions iframe (key stays in Railway)
 - places.py: live nearby search from the user's GPS (no hardcoded stores)
 - Places NEVER runs on olympics / premiere / release / hosted-event questions
+- If liveweb locks a Date:, speak it and skip tone
 """
 from __future__ import annotations
+
 import os
 import re
 import json
@@ -18,10 +20,12 @@ import threading
 import traceback
 import importlib.metadata
 from typing import Optional, Dict, Any, List, Iterator
+
 from flask import Flask, request, jsonify, Response
 from urllib.parse import quote as urlquote
 from flask_cors import CORS
 import requests
+
 from sanitize import sanitize_reply
 from memory import (
     WEB_MEMORY_KEY,
@@ -39,15 +43,18 @@ from links import (
     link_request_reply,
     prefer_site_url_from_prompt,
 )
+
 try:
     import places
 except Exception:
     places = None  # type: ignore
     print("[Error] Import places failed.")
+
 try:
     print(f"[Debug] Flask version: {importlib.metadata.version('flask')}")
 except Exception:
     pass
+
 try:
     import openai
     print(f"[Debug] OpenAI lib present.")
@@ -71,6 +78,7 @@ emailer = safe_import("emailer")
 image_mod = safe_import("image")
 liveweb = safe_import("liveweb") or safe_import("Liveweb")
 market = safe_import("market")
+
 print("📂 Working directory:", os.getcwd())
 for fn in [
     "tone.py", "emailer.py", "image.py", "liveweb.py", "Liveweb.py",
@@ -118,10 +126,21 @@ EVENT_NOT_PLACES_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+DATE_LOCK_RE = re.compile(r"Date:\s*\**([^*\n.]+)", re.IGNORECASE)
+WHEN_Q_RE = re.compile(r"\b(when|release|premiere|coming out|date)\b", re.IGNORECASE)
 
 
 def _is_event_query(text: str) -> bool:
     return bool(EVENT_NOT_PLACES_RE.search(text or ""))
+
+
+def _locked_date(analyzed: Optional[str]) -> Optional[str]:
+    if not analyzed:
+        return None
+    m = DATE_LOCK_RE.search(analyzed)
+    if not m:
+        return None
+    return m.group(1).strip(" *.")
 
 
 def _extract_entity_from_text(text: str) -> Optional[str]:
@@ -239,6 +258,7 @@ def ask():
         data = request.get_json(force=True) or {}
     except Exception:
         return error_response("Invalid JSON", 400)
+
     user_prompt = (data.get("message") or "").strip()
     concise = bool(data.get("concise", True))
     explicit_context = data.get("context") or None
@@ -253,16 +273,19 @@ def ask():
     )
     if not user_prompt and not image_data:
         return error_response("Empty prompt", 400)
+
     vision_description = None
     if image_data and image_mod and hasattr(image_mod, "process_image_upload"):
         try:
             vision_description = image_mod.process_image_upload(image_data)
         except Exception as e:
             print(f"[Image] Error: {e}")
+
     if personality == "god":
         session_id = f"discord-{(request.remote_addr or 'anon')}"
     else:
         session_id = WEB_MEMORY_KEY
+
     session_data = get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
     last_fact_mem = sanitize_reply(session_data.get("last_fact") or "")
@@ -274,6 +297,7 @@ def ask():
         {"role": h.get("role", "user"), "content": sanitize_reply(h.get("content") or "")}
         for h in history
     ]
+
     new_topic = topic_of(user_prompt)
     topic_overlap = same_topic(last_topic, new_topic)
     pronoun_detected = PRONOUN_RE.search(user_prompt)
@@ -282,6 +306,7 @@ def ask():
     link_followup = is_link_followup(user_prompt)
     word_count = len(user_prompt.split())
     is_short_message = word_count <= 12
+
     reuse_context = False
     if (pronoun_detected or vague_followup_detected or number_followup
             or topic_overlap or is_short_message or link_followup):
@@ -290,12 +315,15 @@ def ask():
         reuse_context = True
     if last_fact_mem and is_short_message:
         reuse_context = True
+
     chosen_context_person = explicit_context if explicit_context else (last_person if reuse_context else None)
     chosen_previous_fact = previous_fact_client or (last_fact_mem if reuse_context else None)
+
     print(
         f"[Session] id={session_id} Reuse: {reuse_context} | Short: {is_short_message} | "
         f"Words: {word_count} | History: {len(history)} | last_ticker={last_ticker} | last_url={last_url}"
     )
+
     link_req = link_request_reply(user_prompt)
     if link_req:
         reply, url = link_req
@@ -328,6 +356,7 @@ def ask():
                 "history_length": len(new_history),
             },
         })
+
     if link_followup:
         url = last_url or extract_url_from_text(chosen_previous_fact) or extract_url_from_text(last_fact_mem)
         if url:
@@ -362,6 +391,7 @@ def ask():
                     "history_length": len(new_history),
                 },
             })
+
     market_result = None
     if market and hasattr(market, "quote_reply_for_prompt"):
         market_result = market.quote_reply_for_prompt(
@@ -400,12 +430,14 @@ def ask():
                 "history_length": len(new_history),
             },
         })
+
     place_body = _places_payload(
         user_prompt, origin, session_id, history, last_ticker, last_url,
         new_topic, topic_overlap, vision_description,
     )
     if place_body:
         return jsonify(place_body)
+
     liveweb_raw = None
     liveweb_analyzed = None
     needs_live = False
@@ -416,11 +448,11 @@ def ask():
             needs_live = bool(browse_mode)
             if not browse_mode:
                 needs_live = bool(liveweb.needs_live_data(user_prompt))
+
     if liveweb and needs_live:
         search_query = user_prompt
-        if reuse_context and (last_topic or last_fact_mem) and word_count <= 10:
-            extra = " ".join(x for x in [last_topic, last_fact_mem[:120]] if x)
-            search_query = f"{user_prompt} {extra}".strip()
+        if reuse_context and last_topic and word_count <= 10:
+            search_query = f"{user_prompt} {last_topic}".strip()
             print(f"[LiveWeb] follow-up search: {search_query!r}")
         if "die" in user_prompt.lower() or "death" in user_prompt.lower() or "killer" in user_prompt.lower():
             if chosen_context_person and (pronoun_detected or vague_followup_detected):
@@ -447,12 +479,18 @@ def ask():
                 print(f"[LiveWeb] Analyzed (trunc): {liveweb_analyzed[:180]}{'...' if len(liveweb_analyzed) > 180 else ''}")
         except Exception as e:
             print(f"[LiveWeb] Error: {e}")
+
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
     effective_prompt = user_prompt
     if vision_description:
         effective_prompt += f"\n\nImage context: {vision_description}"
+
+    date_hit = _locked_date(liveweb_analyzed)
     reply = None
-    if tone and hasattr(tone, "generate_with_tone") and OPENAI_AVAILABLE:
+    if date_hit and WHEN_Q_RE.search(user_prompt):
+        reply = f"{date_hit}."
+        print(f"[Ask] Using locked date, skip tone: {reply}")
+    elif tone and hasattr(tone, "generate_with_tone") and OPENAI_AVAILABLE:
         try:
             reply = tone.generate_with_tone(
                 effective_prompt,
@@ -465,12 +503,15 @@ def ask():
         except Exception as e:
             print(f"[Tone] Error: {e}")
             reply = None
+
     if not reply:
         reply = liveweb_analyzed if liveweb_analyzed else "No data available."
+
     reply = sanitize_reply(reply)
-    if concise:
+    if concise and not date_hit:
         reply = _concise_trim(reply)
         reply = sanitize_reply(reply)
+
     if last_topic and new_topic and not topic_overlap:
         new_entity = _extract_entity_from_text(reply) or _extract_entity_from_text(liveweb_analyzed or "")
     else:
@@ -480,6 +521,7 @@ def ask():
             or _extract_entity_from_text(liveweb_analyzed or "")
             or chosen_context_person
         )
+
     store_fact = None
     if reply and not _is_unverified_death_line(reply):
         store_fact = reply[:400]
@@ -487,6 +529,7 @@ def ask():
         store_fact = liveweb_analyzed[:300]
     elif chained_fact and not _is_unverified_death_line(chained_fact):
         store_fact = sanitize_reply(chained_fact)[:300]
+
     found_url = (
         extract_url_from_text(reply)
         or extract_url_from_text(liveweb_analyzed)
@@ -495,6 +538,7 @@ def ask():
         or None
     )
     found_url = prefer_site_url_from_prompt(user_prompt, found_url)
+
     new_history = history + [
         {"role": "user", "content": user_prompt},
         {"role": "assistant", "content": reply},
@@ -537,9 +581,9 @@ def _hope_system_prompt(personality: str, context: Optional[str], previous_fact:
             "You are Hope, an AI designed by your creator Nick. "
             "Keep answers SHORT and natural. For math, give the final number only. "
             "Use conversation context. Never invent numbers that contradict earlier context. "
-            "If Live snippet has a Date or Place, say that. Do not invent a nearby store. "
-            "You have a live browser feature. If the user says enable live browser, turn on live browser, "
-            "open the browser, or go to a website, you CAN do that. Confirm it and ask where to go. "
+            "If Live snippet has a Date or Place, say THAT date or place. Do not invent. "
+            "Do NOT ask to enable the live browser when a Date is already in the Live snippet. "
+            "Only mention the live browser if the user explicitly asked to browse or turn the globe on. "
             "Never say you cannot browse the web. Emojis are allowed but do not overuse them."
         )
     extra = []
@@ -609,16 +653,19 @@ def ask_stream():
         data = request.get_json(force=True) or {}
     except Exception:
         return error_response("Invalid JSON", 400)
+
     user_prompt = (data.get("message") or "").strip()
     personality = (data.get("personality") or "hope").lower().strip()
     browse_mode = _as_bool(data.get("browse_mode") or data.get("use_browser"))
     origin = (data.get("origin") or "").strip() or None
     if not user_prompt:
         return error_response("Empty prompt", 400)
+
     if personality == "god":
         session_id = f"discord-{(request.remote_addr or 'anon')}"
     else:
         session_id = WEB_MEMORY_KEY
+
     session_data = get_session(session_id) or {}
     last_person = session_data.get("last_person") or ""
     last_fact_mem = sanitize_reply(session_data.get("last_fact") or "")
@@ -634,6 +681,7 @@ def ask_stream():
     reuse_context = True
     chosen_context_person = last_person if reuse_context else None
     chosen_previous_fact = last_fact_mem if reuse_context else None
+
     liveweb_analyzed = None
     needs_live = False
     if liveweb and hasattr(liveweb, "needs_live_data"):
@@ -643,9 +691,11 @@ def ask_stream():
             needs_live = bool(browse_mode)
             if not browse_mode:
                 needs_live = bool(liveweb.needs_live_data(user_prompt))
+
     stream_query = user_prompt
     if last_topic and len(user_prompt.split()) <= 10:
-        stream_query = f"{user_prompt} {last_topic} {last_fact_mem[:80]}".strip()
+        stream_query = f"{user_prompt} {last_topic}".strip()
+
     if liveweb and needs_live and hasattr(liveweb, "perform_live_search"):
         try:
             try:
@@ -655,12 +705,36 @@ def ask_stream():
             liveweb_analyzed = sanitize_reply(analyzed or "")
         except Exception as e:
             print(f"[LiveWeb/stream] {e}")
+
     chained_fact = merge_facts(chosen_previous_fact, liveweb_analyzed)
     system_prompt = _hope_system_prompt(personality, chosen_context_person, chained_fact, liveweb_analyzed)
+    date_hit = _locked_date(liveweb_analyzed)
 
     def generate():
         full = ""
         yield "data: " + json.dumps({"type": "start"}) + "\n\n"
+        if date_hit and WHEN_Q_RE.search(user_prompt):
+            full = sanitize_reply(f"{date_hit}.")
+            print(f"[Ask-stream] Using locked date, skip tone: {full}")
+            yield "data: " + json.dumps({"type": "token", "text": full}) + "\n\n"
+            new_history = history + [
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": full},
+            ]
+            try:
+                update_session(
+                    session_id,
+                    last_person=_extract_entity_from_text(full) or chosen_context_person,
+                    last_fact=full[:400],
+                    last_topic=new_topic or last_topic,
+                    history=new_history,
+                    last_ticker=last_ticker or None,
+                    last_url=last_url or None,
+                )
+            except Exception as e:
+                print(f"[Stream] memory update failed: {e}")
+            yield "data: " + json.dumps({"type": "done", "reply": full}) + "\n\n"
+            return
         if (
             places
             and hasattr(places, "looks_like_place_query")
